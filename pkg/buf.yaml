@@ -1,0 +1,10 @@
+version: v2
+modules:
+  - path: proto
+    name: buf.build/packages/shared
+breaking:
+  use:
+    - FILE
+lint:
+  use:
+    - DEFAULT
