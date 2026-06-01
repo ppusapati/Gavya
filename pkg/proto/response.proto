@@ -1,0 +1,61 @@
+syntax = "proto3";
+
+package packages.api.v1.response;
+option go_package = "p9e.in/samavaya/packages/api/v1/response;response";
+// option objc_class_prefix = "P9Errors";
+
+import "google/protobuf/descriptor.proto";
+import "google/protobuf/wrappers.proto";
+import "packages/proto/context.proto";
+
+message Status {
+  int32 code = 1;
+  CanonicalReason reason = 2;
+  string message = 3;
+  string domain_reason = 4;
+};
+
+extend google.protobuf.EnumOptions {
+  int32 default_code = 1108;
+}
+
+extend google.protobuf.EnumValueOptions {
+  int32 code = 1109;
+}
+
+message EmptyRequest {}
+message EmptyResponse {}
+
+message BaseResponse {
+    Status status = 1; // Status code, e.g., 200 for success
+    google.protobuf.StringValue id = 2; // ULID of the newly created record
+    packages.api.v1.context.TenantContext tenant_context = 3;
+    map<string, string> metadata = 4;
+    bool success = 5; // Whether the operation was successful
+    string message = 6; // Human-readable message
+  }
+
+enum CanonicalReason {
+    CANONICAL_REASON_UNSPECIFIED = 0;
+  CREATION_FAILED = 1 [(packages.api.v1.response.code) = 400];
+  UPDATE_FAILED = 2 [(packages.api.v1.response.code) = 400];
+  DELETE_FAILED = 3 [(packages.api.v1.response.code) = 400];
+  VALIDATION_FAILED = 4 [(packages.api.v1.response.code) = 400];
+  INVALID_REQUEST = 5 [(packages.api.v1.response.code) = 400];
+  NOT_FOUND = 6 [(packages.api.v1.response.code) = 404];
+  JSON_TRANSACTION_FAIL = 7 [(packages.api.v1.response.code) = 400];
+  UNAUTHORIZED = 8 [(packages.api.v1.response.code) = 401]; // For unauthorized access
+  FORBIDDEN_OPERATION = 9 [(packages.api.v1.response.code) = 403]; // For forbidden operations on MDM data
+  CONFLICT = 10 [(packages.api.v1.response.code) = 409]; // For conflicts, e.g., duplicate entities
+  INTERNAL_SERVER_ERROR = 11 [(packages.api.v1.response.code) = 500]; // For internal server errors
+    // Multi-Tenant Errors
+    TENANT_NOT_FOUND = 12 [(packages.api.v1.response.code) = 404];
+    DUPLICATE_TENANT = 13 [(packages.api.v1.response.code) = 400];
+    TENANT_CREATION_FAILED = 14 [(packages.api.v1.response.code) = 500];
+    TENANT_ACCESS_DENIED = 15 [(packages.api.v1.response.code) = 403]; // For unauthorized access to tenant-specific data
+   CREATED_SUCCESSFULLY = 16 [(packages.api.v1.response.code) = 200];
+  UPDATED_SUCCESSFULLY =17 [(packages.api.v1.response.code) = 200];
+  DELETED_SUCCESSFULLY =18 [(packages.api.v1.response.code) = 200];
+  FOUND_SUCCESSFULLY =19 [(packages.api.v1.response.code) = 200];
+}
+

@@ -1,0 +1,254 @@
+syntax = "proto3";
+
+package packages.api.v1.enums;
+
+option go_package = "p9e.in/samavaya/packages/api/v1/enums;enums";
+
+// =============================================================================
+// Generic Priority Enum
+// Used for: Maintenance requests, Approval workflows, Task prioritization
+// =============================================================================
+enum Priority {
+  PRIORITY_UNSPECIFIED = 0;
+  PRIORITY_LOW = 1;
+  PRIORITY_MEDIUM = 2;
+  PRIORITY_HIGH = 3;
+  PRIORITY_CRITICAL = 4;
+}
+
+// =============================================================================
+// Generic Frequency Enum
+// Used for: Depreciation schedules, Recurring tasks, Report generation
+// =============================================================================
+enum Frequency {
+  FREQUENCY_UNSPECIFIED = 0;
+  FREQUENCY_DAILY = 1;
+  FREQUENCY_WEEKLY = 2;
+  FREQUENCY_BI_WEEKLY = 3;
+  FREQUENCY_MONTHLY = 4;
+  FREQUENCY_QUARTERLY = 5;
+  FREQUENCY_SEMI_ANNUAL = 6;
+  FREQUENCY_ANNUAL = 7;
+}
+
+// =============================================================================
+// Generic Approval Status Enum
+// Used for: Workflow approvals, Form approvals, Document approvals
+// =============================================================================
+enum ApprovalStatus {
+  APPROVAL_STATUS_UNSPECIFIED = 0;
+  APPROVAL_STATUS_PENDING = 1;
+  APPROVAL_STATUS_IN_PROGRESS = 2;
+  APPROVAL_STATUS_APPROVED = 3;
+  APPROVAL_STATUS_REJECTED = 4;
+  APPROVAL_STATUS_CANCELLED = 5;
+  APPROVAL_STATUS_ESCALATED = 6;
+  APPROVAL_STATUS_EXPIRED = 7;
+  APPROVAL_STATUS_REMINDER = 8;
+}
+
+// =============================================================================
+// Generic Wave Status Enum
+// Used for: WMS wave management, Fulfillment wave processing
+// =============================================================================
+enum WaveStatus {
+  WAVE_STATUS_UNSPECIFIED = 0;
+  WAVE_STATUS_DRAFT = 1;
+  WAVE_STATUS_PLANNED = 2;
+  WAVE_STATUS_RELEASED = 3;
+  WAVE_STATUS_IN_PROGRESS = 4;
+  WAVE_STATUS_COMPLETED = 5;
+  WAVE_STATUS_CANCELLED = 6;
+}
+
+// =============================================================================
+// Generic Pick List Status Enum
+// Used for: WMS picking operations, Fulfillment picking
+// =============================================================================
+enum PickListStatus {
+  PICK_LIST_STATUS_UNSPECIFIED = 0;
+  PICK_LIST_STATUS_PENDING = 1;
+  PICK_LIST_STATUS_ASSIGNED = 2;
+  PICK_LIST_STATUS_IN_PROGRESS = 3;
+  PICK_LIST_STATUS_COMPLETED = 4;
+  PICK_LIST_STATUS_PARTIAL = 5;
+  PICK_LIST_STATUS_CANCELLED = 6;
+}
+
+// =============================================================================
+// Generic Pick Type Enum
+// Used for: WMS pick strategies, Fulfillment pick methods
+// =============================================================================
+enum PickType {
+  PICK_TYPE_UNSPECIFIED = 0;
+  PICK_TYPE_SINGLE = 1;
+  PICK_TYPE_BATCH = 2;
+  PICK_TYPE_CLUSTER = 3;
+  PICK_TYPE_ZONE = 4;
+}
+
+// =============================================================================
+// Generic Action Type Enum
+// Used for: Approval actions, Workflow actions
+// =============================================================================
+enum ActionType {
+  ACTION_TYPE_UNSPECIFIED = 0;
+  ACTION_TYPE_APPROVE = 1;
+  ACTION_TYPE_REJECT = 2;
+  ACTION_TYPE_DELEGATE = 3;
+  ACTION_TYPE_REQUEST_INFO = 4;
+  ACTION_TYPE_WITHDRAW = 5;
+  ACTION_TYPE_REASSIGN = 6;
+  ACTION_TYPE_ESCALATE = 7;
+}
+
+// =============================================================================
+// Generic Quarter Enum
+// Used for: TDS reporting, GST filing, Financial periods
+// =============================================================================
+enum Quarter {
+  QUARTER_UNSPECIFIED = 0;
+  QUARTER_Q1 = 1;
+  QUARTER_Q2 = 2;
+  QUARTER_Q3 = 3;
+  QUARTER_Q4 = 4;
+}
+
+// =============================================================================
+// Generic Day of Week Enum
+// Used for: Scheduling, Recurring events
+// =============================================================================
+enum DayOfWeek {
+  DAY_OF_WEEK_UNSPECIFIED = 0;
+  DAY_OF_WEEK_SUNDAY = 1;
+  DAY_OF_WEEK_MONDAY = 2;
+  DAY_OF_WEEK_TUESDAY = 3;
+  DAY_OF_WEEK_WEDNESDAY = 4;
+  DAY_OF_WEEK_THURSDAY = 5;
+  DAY_OF_WEEK_FRIDAY = 6;
+  DAY_OF_WEEK_SATURDAY = 7;
+}
+
+// =============================================================================
+// Generic Month Enum
+// Used for: Financial periods, Reporting cycles
+// =============================================================================
+enum Month {
+  MONTH_UNSPECIFIED = 0;
+  MONTH_JANUARY = 1;
+  MONTH_FEBRUARY = 2;
+  MONTH_MARCH = 3;
+  MONTH_APRIL = 4;
+  MONTH_MAY = 5;
+  MONTH_JUNE = 6;
+  MONTH_JULY = 7;
+  MONTH_AUGUST = 8;
+  MONTH_SEPTEMBER = 9;
+  MONTH_OCTOBER = 10;
+  MONTH_NOVEMBER = 11;
+  MONTH_DECEMBER = 12;
+}
+
+// =============================================================================
+// Generic Gender Enum
+// Used for: Employee profiles, Customer records
+// =============================================================================
+enum Gender {
+  GENDER_UNSPECIFIED = 0;
+  GENDER_MALE = 1;
+  GENDER_FEMALE = 2;
+  GENDER_OTHER = 3;
+  GENDER_PREFER_NOT_TO_SAY = 4;
+}
+
+// =============================================================================
+// Generic Address Type Enum
+// Used for: Customer addresses, Shipping addresses, Employee addresses
+// =============================================================================
+enum AddressType {
+  ADDRESS_TYPE_UNSPECIFIED = 0;
+  ADDRESS_TYPE_RESIDENTIAL = 1;
+  ADDRESS_TYPE_COMMERCIAL = 2;
+  ADDRESS_TYPE_BILLING = 3;
+  ADDRESS_TYPE_SHIPPING = 4;
+  ADDRESS_TYPE_PERMANENT = 5;
+  ADDRESS_TYPE_TEMPORARY = 6;
+}
+
+// =============================================================================
+// Generic Contact Type Enum
+// Used for: Contact management, Communication preferences
+// =============================================================================
+enum ContactType {
+  CONTACT_TYPE_UNSPECIFIED = 0;
+  CONTACT_TYPE_EMAIL = 1;
+  CONTACT_TYPE_PHONE = 2;
+  CONTACT_TYPE_MOBILE = 3;
+  CONTACT_TYPE_FAX = 4;
+  CONTACT_TYPE_WHATSAPP = 5;
+}
+
+// =============================================================================
+// Generic Sort Order Enum
+// Used for: List queries, Search results ordering
+// =============================================================================
+enum SortOrder {
+  SORT_ORDER_UNSPECIFIED = 0;
+  SORT_ORDER_ASC = 1;
+  SORT_ORDER_DESC = 2;
+}
+
+// =============================================================================
+// Generic Status Enum (Generic lifecycle status)
+// Used for: Generic entity status tracking
+// =============================================================================
+enum GenericStatus {
+  GENERIC_STATUS_UNSPECIFIED = 0;
+  GENERIC_STATUS_DRAFT = 1;
+  GENERIC_STATUS_ACTIVE = 2;
+  GENERIC_STATUS_INACTIVE = 3;
+  GENERIC_STATUS_PENDING = 4;
+  GENERIC_STATUS_APPROVED = 5;
+  GENERIC_STATUS_REJECTED = 6;
+  GENERIC_STATUS_COMPLETED = 7;
+  GENERIC_STATUS_CANCELLED = 8;
+  GENERIC_STATUS_ARCHIVED = 9;
+}
+
+// =============================================================================
+// Generic Unit of Time Enum
+// Used for: Duration specifications, SLA configurations
+// =============================================================================
+enum TimeUnit {
+  TIME_UNIT_UNSPECIFIED = 0;
+  TIME_UNIT_SECONDS = 1;
+  TIME_UNIT_MINUTES = 2;
+  TIME_UNIT_HOURS = 3;
+  TIME_UNIT_DAYS = 4;
+  TIME_UNIT_WEEKS = 5;
+  TIME_UNIT_MONTHS = 6;
+  TIME_UNIT_YEARS = 7;
+}
+
+// =============================================================================
+// Generic Comparison Operator Enum
+// Used for: Filter operations, Rule conditions
+// =============================================================================
+enum ComparisonOperator {
+  COMPARISON_OPERATOR_UNSPECIFIED = 0;
+  COMPARISON_OPERATOR_EQUALS = 1;
+  COMPARISON_OPERATOR_NOT_EQUALS = 2;
+  COMPARISON_OPERATOR_GREATER_THAN = 3;
+  COMPARISON_OPERATOR_GREATER_THAN_OR_EQUALS = 4;
+  COMPARISON_OPERATOR_LESS_THAN = 5;
+  COMPARISON_OPERATOR_LESS_THAN_OR_EQUALS = 6;
+  COMPARISON_OPERATOR_CONTAINS = 7;
+  COMPARISON_OPERATOR_NOT_CONTAINS = 8;
+  COMPARISON_OPERATOR_STARTS_WITH = 9;
+  COMPARISON_OPERATOR_ENDS_WITH = 10;
+  COMPARISON_OPERATOR_IN = 11;
+  COMPARISON_OPERATOR_NOT_IN = 12;
+  COMPARISON_OPERATOR_BETWEEN = 13;
+  COMPARISON_OPERATOR_IS_NULL = 14;
+  COMPARISON_OPERATOR_IS_NOT_NULL = 15;
+}

@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package packages.api.v1.data;
+option go_package = "p9e.in/samavaya/packages/api/v1/data;data";
+import "packages/proto/query.proto";
+import "google/protobuf/struct.proto";
+
+message DynamicValue{
+    oneof value{
+      int32 int_value=2;
+      int64 long_value=3;
+      float float_value=4;
+      double double_value=5;
+      string string_value=6;
+      bool bool_value=7;
+      google.protobuf.NullValue null_value=8;
+      google.protobuf.Struct json_value=9;
+    }
+  }
+  
+  message DynamicValueFilter{
+    oneof filter{
+      packages.api.v1.query.Int32FilterOperators int_value=2;
+       packages.api.v1.query.Int64FilterOperators long_value=3;
+       packages.api.v1.query.FloatFilterOperators float_value=4;
+       packages.api.v1.query.DoubleFilterOperators double_value=5;
+       packages.api.v1.query.StringFilterOperation string_value=6;
+       packages.api.v1.query.BooleanFilterOperators bool_value=7;
+       packages.api.v1.query.NullFilterOperators null_value=8;
+    }
+  }

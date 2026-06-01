@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package packages.api.v1.message;
+
+option go_package = "p9e.in/samavaya/packages/api/v1/message;message";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/any.proto";
+
+// Generic response message wrapper for simple success/error responses
+message Message {
+  bool success = 1;
+  string message = 2;
+  string code = 3;
+  map<string, string> metadata = 4;
+}
+
+message EventMessage {
+  string key = 1;
+  google.protobuf.Any value = 2;
+  google.protobuf.Timestamp event_time =3;
+  string topic =4;
+  map<string, string> headers = 5; // optional metadata
+
+  // Optional broker-specific info
+  int32 partition = 6;
+  int64 offset = 7;
+
+  enum AckPolicy {
+    NONE = 0;
+    LEADER = 1;
+    ALL = 2;
+  }
+
+  AckPolicy ack_policy = 8;
+}

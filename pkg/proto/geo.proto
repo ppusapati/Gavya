@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package packages.api.v1.geo;
+option go_package = "p9e.in/samavaya/packages/api/v1/geo;geo";
+import "google/protobuf/struct.proto";
+message Geo{
+
+    string country=1;
+    string region=2;
+    //State or province
+    string state=3;
+    string city=4;
+    string zip_code=5;
+    string line1=6;
+    string line2=7;
+    string line3=8;
+    
+    //Geo geojson
+    google.protobuf.Struct geo=100;
+  }
+  

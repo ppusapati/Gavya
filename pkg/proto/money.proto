@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package packages.api.v1.money;
+
+option go_package = "p9e.in/samavaya/packages/api/v1/money;money";
+
+import "google/protobuf/timestamp.proto";
+
+// =============================================================================
+// MONEY
+// =============================================================================
+// Industry-standard money representation using minor units (paise/cents).
+// Avoids floating-point precision issues.
+//
+// Examples:
+//   ₹1,00,000.50  = {currency: "INR", amount_minor: 10000050}
+//   $1,234.56     = {currency: "USD", amount_minor: 123456}
+//   ₹0.01         = {currency: "INR", amount_minor: 1}
+//
+// Max value (int64): ₹92,23,37,20,36,854.77 (sufficient for most enterprises)
+
+message Money {
+  string currency = 1; // ISO 4217 currency code: INR, USD, EUR
+  int64 amount_minor = 2; // Amount in minor units (paise/cents)
+}
+
+// MoneyWithRate includes exchange rate for multi-currency transactions.
+// Used when transaction currency differs from base currency.
+message MoneyWithRate {
+  Money amount = 1; // Amount in transaction currency
+  Money base_amount = 2; // Amount in base currency (usually INR)
+  string exchange_rate = 3; // Rate as decimal string: "83.25"
+  google.protobuf.Timestamp rate_date = 4; // Date of exchange rate
+}
+
+// MoneyRange for amount-based filtering (min/max queries).
+message MoneyRange {
+  Money min = 1; // Minimum amount (inclusive)
+  Money max = 2; // Maximum amount (inclusive)
+}
+
+// MoneyAllocation for splitting amounts across cost centers/dimensions.
+message MoneyAllocation {
+  Money amount = 1; // Allocated amount
+  string allocation_key = 2; // Cost center, department, project ID
+  string allocation_type = 3; // "cost_center", "department", "project"
+  string percentage = 4; // Percentage as decimal string: "25.50"
+}

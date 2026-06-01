@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+package packages.api.v1.pagination;
+
+option go_package = "p9e.in/samavaya/packages/api/v1/pagination;pagination";
+
+import "google/protobuf/field_mask.proto";
+
+message Pagination {
+     // Number of items to skip for pagination
+     int32 page_offset = 1;
+     // Maximum number of items to return in response
+     int32 page_size = 2;
+     // Fields to sort by, default is id
+     repeated string sort = 3;
+     // Specific fields to include in the response
+     google.protobuf.FieldMask fields = 4;
+     // Complex filter criteria
+}
+
+// PaginationRequest wraps the client-side pagination input plus sort
+// controls. Services that want a single request field covering
+// offset/limit/sort use this; simpler services embed `Pagination`
+// directly on their request types. Matches the hand-written Go struct
+// that predated this message — wire tags 1-4 are stable.
+message PaginationRequest {
+    // Number of items to skip (0-based offset).
+    int32 page_offset = 1;
+    // Maximum items to return on this page.
+    int32 page_size = 2;
+    // Field to sort by (service-specific column name). Empty = default.
+    string sort_by = 3;
+    // Sort direction: "asc" or "desc". Empty = service default.
+    string sort_order = 4;
+}
+
+// PaginationResponse wraps list responses with the server-side view of
+// pagination state. Services fill this when returning a page of results
+// so clients can render "1–20 of 200" and decide whether to request the
+// next page without issuing a separate count call.
+//
+// Hand-written Go accessors (pagination_response.go) predate this
+// message — they will be retired once all callers use the generated
+// type. Wire format is stable; the hand-written struct was already
+// laid out field-compatible with proto3 tags 1-4 so existing serialised
+// payloads round-trip cleanly.
+message PaginationResponse {
+    // Total number of items matching the query (across all pages).
+    int32 total_count = 1;
+    // Offset of the first item in this page (0-based).
+    int32 page_offset = 2;
+    // Number of items in this page (may be less than requested on the
+    // last page).
+    int32 page_size = 3;
+    // True when a subsequent page exists. Equivalent to
+    // page_offset + page_size < total_count but set by the server so
+    // clients don't need to recompute it.
+    bool has_next = 4;
+}

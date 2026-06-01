@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package packages.api.v1.options;
+option go_package = "p9e.in/samavaya/packages/api/v1/options;options";
+
+import "google/protobuf/descriptor.proto";
+
+// FieldMetadata provides UI-related metadata for form generation
+message FieldMetadata {
+  string label = 1; // Human-readable label for the field
+  string widget = 2; // Widget type: text, email, number, date, select, textarea, checkbox, password, phone, url, radio
+  string placeholder = 3; // Placeholder text for input fields
+  string hint = 4; // Help text or tooltip for the field
+  string group = 5; // Group name for organizing fields in forms
+  int32 order = 6; // Display order within a group
+  bool hidden = 7; // Whether to hide the field in UI
+  bool readonly = 8; // Whether the field is read-only in UI
+  string icon = 9; // Icon identifier for the field
+  string format = 10; // Display format (e.g., "currency", "percentage", "date-short")
+}
+
+extend google.protobuf.FieldOptions {
+  // Field metadata for UI generation
+  FieldMetadata metadata = 50001;
+}

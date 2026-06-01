@@ -1,0 +1,258 @@
+syntax = "proto3";
+
+package packages.api.v1.config;
+
+option go_package = "p9e.in/samavaya/packages/api/v1/config;config";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/wrappers.proto";
+
+message Bootstrap {
+  Server server = 1;
+  optional Data data = 2;
+  optional Observability observability = 3;
+  optional Email email = 4;
+}
+
+message Server {
+  message HTTP {
+    string network = 1;
+    string addr = 2;
+    int32 port = 3;
+    google.protobuf.Duration timeout = 4;
+    CORS cors = 5;
+  }
+  message CORS {
+    // Allowed origins (e.g., "http://localhost:3000", "*" for all)
+    repeated string allowed_origins = 1;
+    // Allowed HTTP methods
+    repeated string allowed_methods = 2;
+    // Allowed headers
+    repeated string allowed_headers = 3;
+    // Exposed headers
+    repeated string exposed_headers = 4;
+    // Allow credentials
+    optional google.protobuf.BoolValue allow_credentials = 5;
+    // Max age for preflight cache (in seconds)
+    optional google.protobuf.Int32Value max_age = 6;
+    // Debug mode - should be false in production
+    optional google.protobuf.BoolValue debug = 7;
+  }
+  message GRPC {
+    string network = 1;
+    string addr = 2;
+    int32 port = 3;
+    google.protobuf.Duration timeout = 4;
+    google.protobuf.Duration MaxConnectionIdle = 5;
+    google.protobuf.Duration MaxConnectionAge = 6;
+    google.protobuf.Duration MaxConnectionAgeGrace = 7;
+    google.protobuf.Duration Time = 8;
+    google.protobuf.Duration MinTime=9;
+		bool PermitWithoutStream =10;
+  }
+  ServiceName service_name = 1;
+  HTTP http = 2;
+  GRPC grpc = 3;
+  Email email = 4;
+}
+
+message ServiceName {
+  string service_name = 1;
+}
+
+message Data {
+  message Database {
+    string driver = 1;
+    string source = 2;
+    bool debug = 3;
+    optional google.protobuf.StringValue table_prefix = 4;
+  }
+
+  message Postgres {
+    string host = 1;
+    int32 port = 2;
+    string user = 3;
+    string password = 4;
+    string dbname = 5;
+    bool sslmode = 6;
+  }
+
+  message Redis {
+    optional google.protobuf.StringValue network = 1;
+    string addr = 2;
+    google.protobuf.Duration read_timeout = 3;
+    google.protobuf.Duration write_timeout = 4;
+    optional google.protobuf.StringValue username = 5;
+    optional google.protobuf.StringValue password = 6;
+    optional google.protobuf.Int32Value db = 7;
+    optional google.protobuf.Int32Value max_retries = 8;
+    google.protobuf.Duration min_retry_backoff = 9;
+    google.protobuf.Duration max_retry_backoff = 10;
+    google.protobuf.Duration dial_timeout = 11;
+  }
+  message ContextConfig {
+  google.protobuf.Duration default_timeout = 1;
+  google.protobuf.Duration long_query_timeout = 2;
+}
+  message Cache {
+    // Enable/disable caching globally
+    optional google.protobuf.BoolValue enabled = 1;
+
+    // Maximum number of entries in the cache
+    optional google.protobuf.Int32Value max_entries = 2;
+
+    // Default Time-to-Live for cache entries (in seconds)
+    optional google.protobuf.Duration default_ttl = 3;
+
+    // Flag to enable automatic expiry
+    optional google.protobuf.BoolValue enable_expiry = 4;
+
+    // Interval for checking and removing expired entries (in seconds)
+    optional google.protobuf.Duration expiry_check_interval = 5;
+  }
+  Database database = 1;
+  Postgres postgres = 2;
+  Redis redis = 3;
+  optional Security security = 4;
+  Event event = 5;
+  ContextConfig context_config = 6;
+  Cache cache = 7;
+  string repository_type =8;
+}
+
+message Security {
+  message Jwt {
+    google.protobuf.Duration expire_in = 1;
+    string secret = 2;
+    google.protobuf.Duration refresh_token_expire_in = 3;
+    string issuer = 4;
+  }
+  message CookieKey {
+    string hash_key = 1;
+    optional google.protobuf.StringValue block_key = 2;
+  }
+  Jwt jwt = 1;
+  CookieKey security_cookie = 2;
+
+  Cookie session_cookie = 3;
+  Cookie remember_cookie = 4;
+}
+
+message Event {
+  string broker = 1;
+  string group = 2;
+  repeated string topic = 3;
+  int64 partition = 4;
+  int64 offset = 5;
+  string kafka_version = 6;
+  string assignor = 7;
+  bool offset_oldest = 8;
+  int32 retry_max = 9;
+  int32 retry_interval = 10;
+  google.protobuf.Duration consumption_timeout = 11;
+}
+
+message Cookie {
+  optional google.protobuf.StringValue name = 10;
+
+  optional google.protobuf.Duration max_age = 11;
+  optional google.protobuf.StringValue domain = 12;
+  optional google.protobuf.StringValue path = 13;
+  optional google.protobuf.BoolValue http_only = 14;
+  optional google.protobuf.BoolValue secure = 15;
+}
+
+message Email {
+  string provider = 1;
+  string from = 2;
+
+  message SMTP {
+    string host = 1;
+    int32 port = 2;
+    string username = 3;
+    string password = 4;
+    enum Encryption {
+      NONE = 0;
+      SSL = 1;
+      STARTTLS = 2;
+    }
+    Encryption encryption = 5;
+    bool keep_alive = 6;
+    optional google.protobuf.Int32Value connect_timeout = 7;
+    optional google.protobuf.Int32Value send_timeout = 8;
+    bool tls_skip_verify = 9;
+  }
+  SMTP smtp = 100;
+}
+
+message Observability {
+message Tracing {
+  // Tracing provider configuration
+  enum TracingProvider {
+    JAEGER = 0;
+    ZIPKIN = 1;
+    OTLP = 2;
+  }
+
+  // Tracing provider type
+  TracingProvider provider = 1;
+
+  // Endpoint for the tracing backend
+  string endpoint = 2;
+  
+
+  // Sampling rate (0.0 to 1.0)
+  float sampling_rate = 3;
+
+  // Enable/disable tracing globally
+  bool enabled = 4;
+
+  // Tracing verbosity level
+  enum VerbosityLevel {
+    DEBUG = 0;
+    INFO = 1;
+    WARN = 2;
+    ERROR = 3;
+  }
+  VerbosityLevel verbosity = 5;
+}
+
+message Metrics {
+  // Metrics provider configuration
+  enum MetricsProvider {
+    PROMETHEUS = 0;
+    OPENTELEMETRY = 1;
+    DATADOG = 2;
+  }
+
+  // Metrics provider type
+  MetricsProvider provider = 1;
+
+  // Endpoint for metrics backend
+  string endpoint = 2;
+
+  // Metrics collection port
+  int32 port = 3;
+
+  // Enable/disable metrics globally
+  bool enabled = 4;
+
+  // Metrics collection interval
+  google.protobuf.Duration collection_interval = 5;
+
+  // Metrics export interval
+  google.protobuf.Duration export_interval = 6;
+
+  // Metrics verbosity level
+  enum VerbosityLevel {
+    DEBUG = 0;
+    INFO = 1;
+    WARN = 2;
+    ERROR = 3;
+  }
+  VerbosityLevel verbosity = 7;
+}
+Metrics metrics = 1;
+Tracing tracing = 2;
+ServiceName service_name = 3;
+}

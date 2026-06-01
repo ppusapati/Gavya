@@ -1,0 +1,113 @@
+syntax = "proto3";
+
+package packages.api.v1.validation;
+
+option go_package = "p9e.in/samavaya/packages/api/v1/validation;validation";
+
+// =============================================================================
+// VALIDATION RESULT
+// =============================================================================
+// Standard validation result structure for consistent API responses.
+
+message ValidationResult {
+  bool is_valid = 1;
+  repeated ValidationError errors = 2; // Blocking errors
+  repeated ValidationWarning warnings = 3; // Non-blocking warnings
+  repeated ValidationInfo info = 4; // Informational messages
+  ValidationSummary summary = 5; // Aggregated counts
+}
+
+message ValidationSummary {
+  int32 error_count = 1;
+  int32 warning_count = 2;
+  int32 info_count = 3;
+  int32 fields_validated = 4; // Total fields checked
+}
+
+// =============================================================================
+// VALIDATION MESSAGES
+// =============================================================================
+
+message ValidationError {
+  string code = 1; // Error code: LEDGER_001, REQUIRED_FIELD
+  string field = 2; // Field path: "line_items[0].amount"
+  string message = 3; // Human-readable message
+  ValidationSeverity severity = 4; // ERROR by default
+  ValidationErrorType error_type = 5; // Categorization
+  map<string, string> context = 6; // Additional context: {"min": "0", "max": "100"}
+}
+
+message ValidationWarning {
+  string code = 1;
+  string field = 2;
+  string message = 3;
+  map<string, string> context = 4;
+}
+
+message ValidationInfo {
+  string code = 1;
+  string field = 2;
+  string message = 3;
+}
+
+// =============================================================================
+// FIELD VALIDATION RULES
+// =============================================================================
+// Reusable validation rule definitions.
+
+message FieldValidation {
+  string field = 1; // Field path
+  repeated ValidationRule rules = 2; // Rules to apply
+}
+
+message ValidationRule {
+  ValidationRuleType rule_type = 1;
+  map<string, string> params = 2; // Rule parameters
+  string custom_message = 3; // Override default message
+}
+
+// =============================================================================
+// ENUMS
+// =============================================================================
+
+enum ValidationSeverity {
+  VALIDATION_SEVERITY_UNSPECIFIED = 0;
+  VALIDATION_SEVERITY_ERROR = 1; // Blocking - must fix
+  VALIDATION_SEVERITY_WARNING = 2; // Non-blocking - should fix
+  VALIDATION_SEVERITY_INFO = 3; // Informational only
+}
+
+enum ValidationErrorType {
+  VALIDATION_ERROR_TYPE_UNSPECIFIED = 0;
+  VALIDATION_ERROR_TYPE_REQUIRED = 1; // Required field missing
+  VALIDATION_ERROR_TYPE_FORMAT = 2; // Invalid format (email, phone, etc.)
+  VALIDATION_ERROR_TYPE_RANGE = 3; // Value out of range
+  VALIDATION_ERROR_TYPE_LENGTH = 4; // String length violation
+  VALIDATION_ERROR_TYPE_PATTERN = 5; // Regex pattern mismatch
+  VALIDATION_ERROR_TYPE_UNIQUE = 6; // Uniqueness constraint violated
+  VALIDATION_ERROR_TYPE_REFERENCE = 7; // Foreign key / reference not found
+  VALIDATION_ERROR_TYPE_BUSINESS = 8; // Business rule violation
+  VALIDATION_ERROR_TYPE_DEPENDENCY = 9; // Dependent field validation
+  VALIDATION_ERROR_TYPE_IMMUTABLE = 10; // Attempted to modify immutable field
+  VALIDATION_ERROR_TYPE_TYPE_MISMATCH = 11; // Wrong data type
+}
+
+enum ValidationRuleType {
+  VALIDATION_RULE_TYPE_UNSPECIFIED = 0;
+  VALIDATION_RULE_TYPE_REQUIRED = 1; // Field is required
+  VALIDATION_RULE_TYPE_MIN = 2; // Minimum value (params: value)
+  VALIDATION_RULE_TYPE_MAX = 3; // Maximum value (params: value)
+  VALIDATION_RULE_TYPE_RANGE = 4; // Value range (params: min, max)
+  VALIDATION_RULE_TYPE_MIN_LENGTH = 5; // Minimum string length
+  VALIDATION_RULE_TYPE_MAX_LENGTH = 6; // Maximum string length
+  VALIDATION_RULE_TYPE_LENGTH = 7; // Exact length
+  VALIDATION_RULE_TYPE_PATTERN = 8; // Regex pattern (params: pattern)
+  VALIDATION_RULE_TYPE_EMAIL = 9; // Valid email format
+  VALIDATION_RULE_TYPE_URL = 10; // Valid URL format
+  VALIDATION_RULE_TYPE_UUID = 11; // Valid UUID format
+  VALIDATION_RULE_TYPE_DATE = 12; // Valid date
+  VALIDATION_RULE_TYPE_ENUM = 13; // Value in allowed list (params: values)
+  VALIDATION_RULE_TYPE_UNIQUE = 14; // Unique constraint
+  VALIDATION_RULE_TYPE_EXISTS = 15; // Reference must exist
+  VALIDATION_RULE_TYPE_CUSTOM = 16; // Custom validation (params: validator)
+}

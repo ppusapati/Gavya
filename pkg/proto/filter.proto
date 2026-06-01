@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package packages.api.v1.filter;
+
+option go_package = "p9e.in/samavaya/packages/api/v1/filter;filter";
+
+
+message Filter {
+    string search_term = 1; // Generic search across all fields
+    repeated string tenant_ids = 2;
+    repeated string role_ids = 3;
+    bool active_only = 4;
+  }

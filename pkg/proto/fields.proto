@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package packages.api.v1.fields;
+option go_package = "p9e.in/samavaya/packages/api/v1/fields;fields";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+
+message Fields {
+  int64 id = 1;
+  string uuid = 2;
+  bool is_active = 3;
+  google.protobuf.StringValue created_by = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.StringValue updated_by = 13;
+  google.protobuf.Timestamp updated_at = 14;
+  google.protobuf.StringValue deleted_by = 15;
+  google.protobuf.Timestamp deleted_at = 16;
+
+}
