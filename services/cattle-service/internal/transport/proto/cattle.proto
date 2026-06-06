@@ -1,0 +1,64 @@
+syntax = "proto3";
+package cattle.v1;
+option go_package = "github.com/ppusapati/gavya/services/cattle-service/internal/transport/proto/cattlev1;cattlev1";
+
+service CattleService {
+  rpc CreateCattle(CreateCattleRequest)   returns (CreateCattleResponse);
+  rpc GetCattle(GetCattleRequest)         returns (GetCattleResponse);
+  rpc ListCattle(ListCattleRequest)       returns (ListCattleResponse);
+  rpc UpdateCattle(UpdateCattleRequest)   returns (UpdateCattleResponse);
+  rpc DeleteCattle(DeleteCattleRequest)   returns (DeleteCattleResponse);
+  rpc CreateBreed(CreateBreedRequest)     returns (CreateBreedResponse);
+  rpc ListBreeds(ListBreedsRequest)       returns (ListBreedsResponse);
+  rpc CreateLineage(CreateLineageRequest) returns (CreateLineageResponse);
+  rpc GetLineage(GetLineageRequest)       returns (GetLineageResponse);
+}
+
+message CattleProto {
+  string id          = 1;
+  string tenant_id   = 2;
+  string tag_number  = 3;
+  string name        = 4;
+  string breed_id    = 5;
+  string gender      = 6;
+  string status      = 7;
+  double weight      = 8;
+  string color       = 9;
+  string owner_id    = 10;
+  string farm_id     = 11;
+}
+
+message BreedProto {
+  string id          = 1;
+  string tenant_id   = 2;
+  string name        = 3;
+  string origin      = 4;
+  string description = 5;
+}
+
+message LineageProto {
+  string id        = 1;
+  string tenant_id = 2;
+  string cattle_id = 3;
+  string sire_id   = 4;
+  string dam_id    = 5;
+}
+
+message CreateCattleRequest  { string tenant_id = 1; string tag_number = 2; string name = 3; string breed_id = 4; string gender = 5; double weight = 6; string color = 7; string created_by = 8; }
+message CreateCattleResponse { CattleProto cattle = 1; }
+message GetCattleRequest     { string id = 1; string tenant_id = 2; }
+message GetCattleResponse    { CattleProto cattle = 1; }
+message ListCattleRequest    { string tenant_id = 1; string status = 2; int32 limit = 3; int32 offset = 4; }
+message ListCattleResponse   { repeated CattleProto cattle = 1; int32 total = 2; }
+message UpdateCattleRequest  { string id = 1; string tenant_id = 2; string status = 3; double weight = 4; string updated_by = 5; }
+message UpdateCattleResponse { CattleProto cattle = 1; }
+message DeleteCattleRequest  { string id = 1; string tenant_id = 2; string deleted_by = 3; }
+message DeleteCattleResponse { bool success = 1; }
+message CreateBreedRequest   { string tenant_id = 1; string name = 2; string origin = 3; string description = 4; string created_by = 5; }
+message CreateBreedResponse  { BreedProto breed = 1; }
+message ListBreedsRequest    { string tenant_id = 1; }
+message ListBreedsResponse   { repeated BreedProto breeds = 1; }
+message CreateLineageRequest { string tenant_id = 1; string cattle_id = 2; string sire_id = 3; string dam_id = 4; }
+message CreateLineageResponse{ LineageProto lineage = 1; }
+message GetLineageRequest    { string cattle_id = 1; string tenant_id = 2; }
+message GetLineageResponse   { LineageProto lineage = 1; }

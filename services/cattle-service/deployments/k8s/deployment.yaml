@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cattle-service
+  labels:
+    app: cattle-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: cattle-service
+  template:
+    metadata:
+      labels:
+        app: cattle-service
+    spec:
+      containers:
+      - name: cattle-service
+        image: gavya/cattle-service:latest
+        ports:
+        - containerPort: 8080
+        envFrom:
+        - configMapRef:
+            name: cattle-service-config
+        - secretRef:
+            name: cattle-service-secret
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"

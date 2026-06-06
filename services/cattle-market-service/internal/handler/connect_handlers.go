@@ -1,0 +1,129 @@
+package handler
+
+import (
+	"context"
+	"net/http"
+
+	"connectrpc.com/connect"
+
+	"github.com/ppusapati/gavya/services/cattle-market-service/internal/domain"
+	"github.com/ppusapati/gavya/services/cattle-market-service/internal/service"
+)
+
+// ── Request / Response types (mirror proto messages) ──────────────────────────
+
+type CreateListingRequest  struct { TenantID string `json:"tenant_id"`; CattleID string `json:"cattle_id"`; SellerID string `json:"seller_id"`; Title string `json:"title"`; Description string `json:"description"`; AskingPrice float64 `json:"asking_price"`; Currency string `json:"currency"`; ListingType string `json:"listing_type"`; CreatedBy string `json:"created_by"` }
+type CreateListingResponse struct { Listing *ListingProto `json:"listing"` }
+type GetListingRequest     struct { ID string `json:"id"`; TenantID string `json:"tenant_id"` }
+type GetListingResponse    struct { Listing *ListingProto `json:"listing"` }
+type ListActiveRequest     struct { TenantID string `json:"tenant_id"`; Limit int32 `json:"limit"`; Offset int32 `json:"offset"` }
+type ListActiveResponse    struct { Listings []*ListingProto `json:"listings"` }
+type PlaceBidRequest       struct { TenantID string `json:"tenant_id"`; ListingID string `json:"listing_id"`; BidderID string `json:"bidder_id"`; BidAmount float64 `json:"bid_amount"`; Message string `json:"message"`; CreatedBy string `json:"created_by"` }
+type PlaceBidResponse      struct { Bid *BidProto `json:"bid"` }
+type BidActionRequest      struct { ID string `json:"id"`; TenantID string `json:"tenant_id"`; UpdatedBy string `json:"updated_by"` }
+type BidActionResponse     struct { Bid *BidProto `json:"bid"` }
+type RecordSaleRequest     struct { TenantID string `json:"tenant_id"`; ListingID string `json:"listing_id"`; SellerID string `json:"seller_id"`; BuyerID string `json:"buyer_id"`; CattleID string `json:"cattle_id"`; SalePrice float64 `json:"sale_price"`; CreatedBy string `json:"created_by"` }
+type RecordSaleResponse    struct { Sale *SaleProto `json:"sale"` }
+type OwnershipRequest      struct { TenantID string `json:"tenant_id"`; CattleID string `json:"cattle_id"` }
+type OwnershipResponse     struct { History []*OwnershipProto `json:"history"` }
+
+type ListingProto   struct { ID string `json:"id"`; TenantID string `json:"tenant_id"`; CattleID string `json:"cattle_id"`; Title string `json:"title"`; AskingPrice float64 `json:"asking_price"`; ListingType string `json:"listing_type"`; Status string `json:"status"` }
+type BidProto       struct { ID string `json:"id"`; TenantID string `json:"tenant_id"`; ListingID string `json:"listing_id"`; BidderID string `json:"bidder_id"`; BidAmount float64 `json:"bid_amount"`; Status string `json:"status"` }
+type SaleProto      struct { ID string `json:"id"`; TenantID string `json:"tenant_id"`; ListingID string `json:"listing_id"`; SalePrice float64 `json:"sale_price"`; Status string `json:"status"` }
+type OwnershipProto struct { ID string `json:"id"`; TenantID string `json:"tenant_id"`; CattleID string `json:"cattle_id"`; OwnerID string `json:"owner_id"`; AcquisitionType string `json:"acquisition_type"` }
+
+type Handler struct{ svc *service.Service }
+
+func New(svc *service.Service) *Handler { return &Handler{svc: svc} }
+
+func (h *Handler) Register(mux *http.ServeMux) {
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+}
+
+func (h *Handler) CreateListing(ctx context.Context, req *connect.Request[CreateListingRequest]) (*connect.Response[CreateListingResponse], error) {
+	m := req.Msg
+	l, err := h.svc.CreateListing(ctx, &domain.CattleListing{TenantID: m.TenantID, CattleID: m.CattleID, SellerID: m.SellerID, Title: m.Title, Description: m.Description, AskingPrice: m.AskingPrice, Currency: m.Currency, ListingType: m.ListingType, CreatedBy: m.CreatedBy})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	return connect.NewResponse(&CreateListingResponse{Listing: toListingProto(l)}), nil
+}
+
+func (h *Handler) GetListing(ctx context.Context, req *connect.Request[GetListingRequest]) (*connect.Response[GetListingResponse], error) {
+	l, err := h.svc.GetListing(ctx, req.Msg.ID, req.Msg.TenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeNotFound, err)
+	}
+	return connect.NewResponse(&GetListingResponse{Listing: toListingProto(l)}), nil
+}
+
+func (h *Handler) ListActiveListings(ctx context.Context, req *connect.Request[ListActiveRequest]) (*connect.Response[ListActiveResponse], error) {
+	list, err := h.svc.ListActiveListings(ctx, req.Msg.TenantID, int(req.Msg.Limit), int(req.Msg.Offset))
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	protos := make([]*ListingProto, 0, len(list))
+	for _, l := range list {
+		protos = append(protos, toListingProto(l))
+	}
+	return connect.NewResponse(&ListActiveResponse{Listings: protos}), nil
+}
+
+func (h *Handler) PlaceBid(ctx context.Context, req *connect.Request[PlaceBidRequest]) (*connect.Response[PlaceBidResponse], error) {
+	m := req.Msg
+	b, err := h.svc.PlaceBid(ctx, &domain.CattleBid{TenantID: m.TenantID, ListingID: m.ListingID, BidderID: m.BidderID, BidAmount: m.BidAmount, Message: m.Message, CreatedBy: m.CreatedBy})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	return connect.NewResponse(&PlaceBidResponse{Bid: toBidProto(b)}), nil
+}
+
+func (h *Handler) AcceptBid(ctx context.Context, req *connect.Request[BidActionRequest]) (*connect.Response[BidActionResponse], error) {
+	b, err := h.svc.AcceptBid(ctx, req.Msg.ID, req.Msg.TenantID, req.Msg.UpdatedBy)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(&BidActionResponse{Bid: toBidProto(b)}), nil
+}
+
+func (h *Handler) RejectBid(ctx context.Context, req *connect.Request[BidActionRequest]) (*connect.Response[BidActionResponse], error) {
+	b, err := h.svc.RejectBid(ctx, req.Msg.ID, req.Msg.TenantID, req.Msg.UpdatedBy)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(&BidActionResponse{Bid: toBidProto(b)}), nil
+}
+
+func (h *Handler) RecordSale(ctx context.Context, req *connect.Request[RecordSaleRequest]) (*connect.Response[RecordSaleResponse], error) {
+	m := req.Msg
+	s, err := h.svc.RecordSale(ctx, m.TenantID, m.ListingID, m.SellerID, m.BuyerID, m.CattleID, m.SalePrice, m.CreatedBy)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(&RecordSaleResponse{Sale: toSaleProto(s)}), nil
+}
+
+func (h *Handler) GetOwnershipHistory(ctx context.Context, req *connect.Request[OwnershipRequest]) (*connect.Response[OwnershipResponse], error) {
+	list, err := h.svc.GetOwnershipHistory(ctx, req.Msg.TenantID, req.Msg.CattleID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	protos := make([]*OwnershipProto, 0, len(list))
+	for _, o := range list {
+		protos = append(protos, toOwnershipProto(o))
+	}
+	return connect.NewResponse(&OwnershipResponse{History: protos}), nil
+}
+
+func toListingProto(l *domain.CattleListing) *ListingProto {
+	return &ListingProto{ID: l.ID, TenantID: l.TenantID, CattleID: l.CattleID, Title: l.Title, AskingPrice: l.AskingPrice, ListingType: l.ListingType, Status: l.Status}
+}
+func toBidProto(b *domain.CattleBid) *BidProto {
+	return &BidProto{ID: b.ID, TenantID: b.TenantID, ListingID: b.ListingID, BidderID: b.BidderID, BidAmount: b.BidAmount, Status: b.Status}
+}
+func toSaleProto(s *domain.CattleSale) *SaleProto {
+	return &SaleProto{ID: s.ID, TenantID: s.TenantID, ListingID: s.ListingID, SalePrice: s.SalePrice, Status: s.Status}
+}
+func toOwnershipProto(o *domain.CattleOwnership) *OwnershipProto {
+	return &OwnershipProto{ID: o.ID, TenantID: o.TenantID, CattleID: o.CattleID, OwnerID: o.OwnerID, AcquisitionType: o.AcquisitionType}
+}

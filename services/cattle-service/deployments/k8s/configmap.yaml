@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cattle-service-config
+data:
+  SERVICE_NAME: cattle-service
+  SERVER_ADDR: ":8080"

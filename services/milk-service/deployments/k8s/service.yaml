@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: milk-service
+spec:
+  selector:
+    app: milk-service
+  ports:
+  - port: 80
+    targetPort: 8080
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: milk-service-config
+data:
+  SERVICE_NAME: milk-service
+  SERVER_ADDR: ":8080"
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: milk-service-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: milk-service
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70

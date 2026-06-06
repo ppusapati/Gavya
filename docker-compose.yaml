@@ -1,0 +1,245 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: dairy
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  gateway-service:
+    build: ./services/gateway-service
+    ports:
+      - "8000:8080"
+    environment:
+      SERVICE_NAME: gateway-service
+      SERVER_ADDR: ":8080"
+      TENANT_SERVICE_URL: "http://tenant-service:8080"
+      CATTLE_SERVICE_URL: "http://cattle-service:8080"
+      MILK_SERVICE_URL: "http://milk-service:8080"
+      BREEDING_SERVICE_URL: "http://breeding-service:8080"
+      HEALTH_SERVICE_URL: "http://health-service:8080"
+      FEED_SERVICE_URL: "http://feed-service:8080"
+      FARM_SERVICE_URL: "http://farm-service:8080"
+      MARKET_SERVICE_URL: "http://cattle-market-service:8080"
+      CATALOG_SERVICE_URL: "http://product-catalog-service:8080"
+      INVENTORY_SERVICE_URL: "http://inventory-service:8080"
+      ORDER_SERVICE_URL: "http://order-service:8080"
+      BILLING_SERVICE_URL: "http://billing-service:8080"
+      NOTIFICATION_SERVICE_URL: "http://notification-service:8080"
+      REPORTING_SERVICE_URL: "http://reporting-service:8080"
+      AUDIT_SERVICE_URL: "http://audit-service:8080"
+      FILE_SERVICE_URL: "http://file-service:8080"
+    depends_on:
+      - tenant-service
+      - cattle-service
+
+  tenant-service:
+    build: ./services/tenant-service
+    ports:
+      - "8080:8080"
+    environment:
+      SERVICE_NAME: tenant-service
+      SERVER_ADDR: ":8080"
+      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  cattle-service:
+    build: ./services/cattle-service
+    ports:
+      - "8081:8080"
+    environment:
+      SERVICE_NAME: cattle-service
+      SERVER_ADDR: ":8080"
+      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  milk-service:
+    build: ./services/milk-service
+    ports:
+      - "8082:8080"
+    environment:
+      SERVICE_NAME: milk-service
+      SERVER_ADDR: ":8080"
+      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  breeding-service:
+    build: ./services/breeding-service
+    ports:
+      - "8083:8080"
+    environment:
+      SERVICE_NAME: breeding-service
+      SERVER_ADDR: ":8080"
+      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  health-service:
+    build: ./services/health-service
+    ports:
+      - "8084:8080"
+    environment:
+      SERVICE_NAME: health-service
+      SERVER_ADDR: ":8080"
+      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  feed-service:
+    build: ./services/feed-service
+    ports:
+      - "8085:8080"
+    environment:
+      SERVICE_NAME: feed-service
+      SERVER_ADDR: ":8080"
+      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  farm-service:
+    build: ./services/farm-service
+    ports:
+      - "8086:8080"
+    environment:
+      SERVICE_NAME: farm-service
+      SERVER_ADDR: ":8080"
+      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  cattle-market-service:
+    build: ./services/cattle-market-service
+    ports:
+      - "8087:8080"
+    environment:
+      SERVICE_NAME: cattle-market-service
+      SERVER_ADDR: ":8080"
+      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  product-catalog-service:
+    build: ./services/product-catalog-service
+    ports:
+      - "8088:8080"
+    environment:
+      SERVICE_NAME: product-catalog-service
+      SERVER_ADDR: ":8080"
+      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  inventory-service:
+    build: ./services/inventory-service
+    ports:
+      - "8089:8080"
+    environment:
+      SERVICE_NAME: inventory-service
+      SERVER_ADDR: ":8080"
+      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  order-service:
+    build: ./services/order-service
+    ports:
+      - "8090:8080"
+    environment:
+      SERVICE_NAME: order-service
+      SERVER_ADDR: ":8080"
+      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  billing-service:
+    build: ./services/billing-service
+    ports:
+      - "8091:8080"
+    environment:
+      SERVICE_NAME: billing-service
+      SERVER_ADDR: ":8080"
+      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  notification-service:
+    build: ./services/notification-service
+    ports:
+      - "8092:8080"
+    environment:
+      SERVICE_NAME: notification-service
+      SERVER_ADDR: ":8080"
+      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  reporting-service:
+    build: ./services/reporting-service
+    ports:
+      - "8093:8080"
+    environment:
+      SERVICE_NAME: reporting-service
+      SERVER_ADDR: ":8080"
+      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  audit-service:
+    build: ./services/audit-service
+    ports:
+      - "8094:8080"
+    environment:
+      SERVICE_NAME: audit-service
+      SERVER_ADDR: ":8080"
+      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  file-service:
+    build: ./services/file-service
+    ports:
+      - "8095:8080"
+    environment:
+      SERVICE_NAME: file-service
+      SERVER_ADDR: ":8080"
+      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+      STORAGE_PROVIDER: local
+      STORAGE_BUCKET: /data/uploads
+    volumes:
+      - file_uploads:/data/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  file_uploads:

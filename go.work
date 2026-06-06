@@ -1,0 +1,22 @@
+go 1.26.1
+
+use (
+	./pkg
+	./services/tenant-service
+	./services/cattle-service
+	./services/milk-service
+	./services/breeding-service
+	./services/health-service
+	./services/feed-service
+	./services/farm-service
+	./services/cattle-market-service
+	./services/product-catalog-service
+	./services/inventory-service
+	./services/order-service
+	./services/billing-service
+	./services/notification-service
+	./services/reporting-service
+	./services/audit-service
+	./services/file-service
+	./services/gateway-service
+)

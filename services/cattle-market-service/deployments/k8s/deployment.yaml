@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cattle-market-service
+  labels:
+    app: cattle-market-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: cattle-market-service
+  template:
+    metadata:
+      labels:
+        app: cattle-market-service
+    spec:
+      containers:
+      - name: cattle-market-service
+        image: gavya/cattle-market-service:latest
+        ports:
+        - containerPort: 8080
+        envFrom:
+        - configMapRef:
+            name: cattle-market-service-config
+        - secretRef:
+            name: cattle-market-service-secret
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cattle-market-service
+spec:
+  selector:
+    app: cattle-market-service
+  ports:
+  - port: 80
+    targetPort: 8080
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cattle-market-service-config
+data:
+  SERVICE_NAME: cattle-market-service
+  SERVER_ADDR: ":8080"
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: cattle-market-service-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: cattle-market-service
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70

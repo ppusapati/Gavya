@@ -1,0 +1,34 @@
+syntax = "proto3";
+package cattlemarket.v1;
+option go_package = "github.com/ppusapati/gavya/services/cattle-market-service/internal/transport/proto/cattlemarketv1;cattlemarketv1";
+
+service CattleMarketService {
+  rpc CreateListing(CreateListingRequest)       returns (CreateListingResponse);
+  rpc GetListing(GetListingRequest)             returns (GetListingResponse);
+  rpc ListActiveListings(ListActiveRequest)     returns (ListActiveResponse);
+  rpc PlaceBid(PlaceBidRequest)                 returns (PlaceBidResponse);
+  rpc AcceptBid(BidActionRequest)               returns (BidActionResponse);
+  rpc RejectBid(BidActionRequest)               returns (BidActionResponse);
+  rpc RecordSale(RecordSaleRequest)             returns (RecordSaleResponse);
+  rpc GetOwnershipHistory(OwnershipRequest)     returns (OwnershipResponse);
+}
+
+message ListingProto   { string id = 1; string tenant_id = 2; string cattle_id = 3; string title = 4; double asking_price = 5; string listing_type = 6; string status = 7; }
+message BidProto       { string id = 1; string tenant_id = 2; string listing_id = 3; string bidder_id = 4; double bid_amount = 5; string status = 6; }
+message SaleProto      { string id = 1; string tenant_id = 2; string listing_id = 3; double sale_price = 4; string status = 5; }
+message OwnershipProto { string id = 1; string tenant_id = 2; string cattle_id = 3; string owner_id = 4; string acquisition_type = 5; }
+
+message CreateListingRequest  { string tenant_id = 1; string cattle_id = 2; string seller_id = 3; string title = 4; string description = 5; double asking_price = 6; string currency = 7; string listing_type = 8; string created_by = 9; }
+message CreateListingResponse { ListingProto listing = 1; }
+message GetListingRequest     { string id = 1; string tenant_id = 2; }
+message GetListingResponse    { ListingProto listing = 1; }
+message ListActiveRequest     { string tenant_id = 1; int32 limit = 2; int32 offset = 3; }
+message ListActiveResponse    { repeated ListingProto listings = 1; }
+message PlaceBidRequest       { string tenant_id = 1; string listing_id = 2; string bidder_id = 3; double bid_amount = 4; string message = 5; string created_by = 6; }
+message PlaceBidResponse      { BidProto bid = 1; }
+message BidActionRequest      { string id = 1; string tenant_id = 2; string updated_by = 3; }
+message BidActionResponse     { BidProto bid = 1; }
+message RecordSaleRequest     { string tenant_id = 1; string listing_id = 2; string seller_id = 3; string buyer_id = 4; string cattle_id = 5; double sale_price = 6; string created_by = 7; }
+message RecordSaleResponse    { SaleProto sale = 1; }
+message OwnershipRequest      { string tenant_id = 1; string cattle_id = 2; }
+message OwnershipResponse     { repeated OwnershipProto history = 1; }

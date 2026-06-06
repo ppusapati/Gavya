@@ -1,0 +1,236 @@
+package repository
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/ppusapati/gavya/services/cattle-service/internal/domain"
+)
+
+// Repository defines the data access interface for cattle-service.
+type Repository interface {
+	CreateCattle(ctx context.Context, c *domain.Cattle) (*domain.Cattle, error)
+	GetCattle(ctx context.Context, id, tenantID string) (*domain.Cattle, error)
+	ListCattle(ctx context.Context, tenantID, status string, limit, offset int) ([]*domain.Cattle, error)
+	UpdateCattle(ctx context.Context, c *domain.Cattle) (*domain.Cattle, error)
+	SoftDeleteCattle(ctx context.Context, id, tenantID string) error
+
+	CreateBreed(ctx context.Context, b *domain.Breed) (*domain.Breed, error)
+	GetBreed(ctx context.Context, id, tenantID string) (*domain.Breed, error)
+	ListBreeds(ctx context.Context, tenantID string) ([]*domain.Breed, error)
+
+	CreateCattleLineage(ctx context.Context, l *domain.CattleLineage) (*domain.CattleLineage, error)
+	GetCattleLineage(ctx context.Context, cattleID, tenantID string) (*domain.CattleLineage, error)
+}
+
+type repo struct {
+	db *pgxpool.Pool
+}
+
+// New creates a new Repository backed by the given connection pool.
+func New(db *pgxpool.Pool) Repository {
+	return &repo{db: db}
+}
+
+// ─── Cattle ──────────────────────────────────────────────────────────────────
+
+func (r *repo) CreateCattle(ctx context.Context, c *domain.Cattle) (*domain.Cattle, error) {
+	const q = `
+INSERT INTO cattle
+  (id, tenant_id, tag_number, name, breed_id, date_of_birth, gender, status,
+   weight, color, owner_id, farm_id, created_by, updated_by)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+RETURNING id, tenant_id, tag_number, name, breed_id, date_of_birth, gender, status,
+          weight, color, owner_id, farm_id, created_at, updated_at, created_by, updated_by, deleted_at`
+
+	row := r.db.QueryRow(ctx, q,
+		c.ID, c.TenantID, c.TagNumber, c.Name, nilIfEmpty(c.BreedID),
+		c.DateOfBirth, c.Gender, c.Status, c.Weight, c.Color,
+		nilIfEmpty(c.OwnerID), nilIfEmpty(c.FarmID), c.CreatedBy, c.UpdatedBy,
+	)
+	return scanCattle(row)
+}
+
+func (r *repo) GetCattle(ctx context.Context, id, tenantID string) (*domain.Cattle, error) {
+	const q = `
+SELECT id, tenant_id, tag_number, name, breed_id, date_of_birth, gender, status,
+       weight, color, owner_id, farm_id, created_at, updated_at, created_by, updated_by, deleted_at
+FROM cattle
+WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`
+
+	row := r.db.QueryRow(ctx, q, id, tenantID)
+	return scanCattle(row)
+}
+
+func (r *repo) ListCattle(ctx context.Context, tenantID, status string, limit, offset int) ([]*domain.Cattle, error) {
+	const q = `
+SELECT id, tenant_id, tag_number, name, breed_id, date_of_birth, gender, status,
+       weight, color, owner_id, farm_id, created_at, updated_at, created_by, updated_by, deleted_at
+FROM cattle
+WHERE tenant_id = $1 AND deleted_at IS NULL AND ($2 = '' OR status = $2)
+ORDER BY created_at DESC
+LIMIT $3 OFFSET $4`
+
+	rows, err := r.db.Query(ctx, q, tenantID, status, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("list cattle: %w", err)
+	}
+	defer rows.Close()
+
+	var result []*domain.Cattle
+	for rows.Next() {
+		c, err := scanCattleFromRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, c)
+	}
+	return result, rows.Err()
+}
+
+func (r *repo) UpdateCattle(ctx context.Context, c *domain.Cattle) (*domain.Cattle, error) {
+	const q = `
+UPDATE cattle
+SET status = $3, weight = $4, updated_by = $5, updated_at = NOW()
+WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+RETURNING id, tenant_id, tag_number, name, breed_id, date_of_birth, gender, status,
+          weight, color, owner_id, farm_id, created_at, updated_at, created_by, updated_by, deleted_at`
+
+	row := r.db.QueryRow(ctx, q, c.ID, c.TenantID, c.Status, c.Weight, c.UpdatedBy)
+	return scanCattle(row)
+}
+
+func (r *repo) SoftDeleteCattle(ctx context.Context, id, tenantID string) error {
+	const q = `UPDATE cattle SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`
+	_, err := r.db.Exec(ctx, q, id, tenantID)
+	return err
+}
+
+// ─── Breed ────────────────────────────────────────────────────────────────────
+
+func (r *repo) CreateBreed(ctx context.Context, b *domain.Breed) (*domain.Breed, error) {
+	const q = `
+INSERT INTO breeds (id, tenant_id, name, origin, description, created_by, updated_by)
+VALUES ($1,$2,$3,$4,$5,$6,$7)
+RETURNING id, tenant_id, name, origin, description, created_at, updated_at, created_by, updated_by, deleted_at`
+
+	row := r.db.QueryRow(ctx, q, b.ID, b.TenantID, b.Name, b.Origin, b.Description, b.CreatedBy, b.UpdatedBy)
+	return scanBreed(row)
+}
+
+func (r *repo) GetBreed(ctx context.Context, id, tenantID string) (*domain.Breed, error) {
+	const q = `
+SELECT id, tenant_id, name, origin, description, created_at, updated_at, created_by, updated_by, deleted_at
+FROM breeds
+WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`
+
+	row := r.db.QueryRow(ctx, q, id, tenantID)
+	return scanBreed(row)
+}
+
+func (r *repo) ListBreeds(ctx context.Context, tenantID string) ([]*domain.Breed, error) {
+	const q = `
+SELECT id, tenant_id, name, origin, description, created_at, updated_at, created_by, updated_by, deleted_at
+FROM breeds
+WHERE tenant_id = $1 AND deleted_at IS NULL
+ORDER BY name ASC`
+
+	rows, err := r.db.Query(ctx, q, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("list breeds: %w", err)
+	}
+	defer rows.Close()
+
+	var result []*domain.Breed
+	for rows.Next() {
+		b := &domain.Breed{}
+		if err := rows.Scan(&b.ID, &b.TenantID, &b.Name, &b.Origin, &b.Description,
+			&b.CreatedAt, &b.UpdatedAt, &b.CreatedBy, &b.UpdatedBy, &b.DeletedAt); err != nil {
+			return nil, fmt.Errorf("scan breed: %w", err)
+		}
+		result = append(result, b)
+	}
+	return result, rows.Err()
+}
+
+// ─── CattleLineage ────────────────────────────────────────────────────────────
+
+func (r *repo) CreateCattleLineage(ctx context.Context, l *domain.CattleLineage) (*domain.CattleLineage, error) {
+	const q = `
+INSERT INTO cattle_lineage (id, tenant_id, cattle_id, sire_id, dam_id)
+VALUES ($1,$2,$3,$4,$5)
+RETURNING id, tenant_id, cattle_id, sire_id, dam_id`
+
+	row := r.db.QueryRow(ctx, q, l.ID, l.TenantID, l.CattleID, l.SireID, l.DamID)
+	out := &domain.CattleLineage{}
+	if err := row.Scan(&out.ID, &out.TenantID, &out.CattleID, &out.SireID, &out.DamID); err != nil {
+		return nil, fmt.Errorf("create lineage: %w", err)
+	}
+	return out, nil
+}
+
+func (r *repo) GetCattleLineage(ctx context.Context, cattleID, tenantID string) (*domain.CattleLineage, error) {
+	const q = `
+SELECT id, tenant_id, cattle_id, sire_id, dam_id
+FROM cattle_lineage
+WHERE cattle_id = $1 AND tenant_id = $2`
+
+	row := r.db.QueryRow(ctx, q, cattleID, tenantID)
+	out := &domain.CattleLineage{}
+	if err := row.Scan(&out.ID, &out.TenantID, &out.CattleID, &out.SireID, &out.DamID); err != nil {
+		return nil, fmt.Errorf("get lineage: %w", err)
+	}
+	return out, nil
+}
+
+// ─── Scan helpers ─────────────────────────────────────────────────────────────
+
+type scanner interface {
+	Scan(dest ...any) error
+}
+
+func scanCattle(s scanner) (*domain.Cattle, error) {
+	c := &domain.Cattle{}
+	err := s.Scan(
+		&c.ID, &c.TenantID, &c.TagNumber, &c.Name, &c.BreedID, &c.DateOfBirth,
+		&c.Gender, &c.Status, &c.Weight, &c.Color, &c.OwnerID, &c.FarmID,
+		&c.CreatedAt, &c.UpdatedAt, &c.CreatedBy, &c.UpdatedBy, &c.DeletedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("scan cattle: %w", err)
+	}
+	return c, nil
+}
+
+type rowsScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanCattleFromRows(s rowsScanner) (*domain.Cattle, error) {
+	return scanCattle(s)
+}
+
+func scanBreed(s scanner) (*domain.Breed, error) {
+	b := &domain.Breed{}
+	err := s.Scan(
+		&b.ID, &b.TenantID, &b.Name, &b.Origin, &b.Description,
+		&b.CreatedAt, &b.UpdatedAt, &b.CreatedBy, &b.UpdatedBy, &b.DeletedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("scan breed: %w", err)
+	}
+	return b, nil
+}
+
+func nilIfEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+// ensure time import is used
+var _ = time.Now

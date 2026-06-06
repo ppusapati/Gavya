@@ -1,0 +1,38 @@
+syntax = "proto3";
+package milk.v1;
+option go_package = "github.com/ppusapati/gavya/services/milk-service/internal/transport/proto/milkv1;milkv1";
+
+service MilkService {
+  rpc CreateSession(CreateSessionRequest)       returns (CreateSessionResponse);
+  rpc GetSession(GetSessionRequest)             returns (GetSessionResponse);
+  rpc ListSessions(ListSessionsRequest)         returns (ListSessionsResponse);
+  rpc UpdateSessionStatus(UpdateSessionRequest) returns (UpdateSessionResponse);
+  rpc RecordMilk(RecordMilkRequest)             returns (RecordMilkResponse);
+  rpc GetRecord(GetRecordRequest)               returns (GetRecordResponse);
+  rpc ListSessionRecords(ListRecordsRequest)    returns (ListRecordsResponse);
+  rpc GetDailyYield(DailyYieldRequest)          returns (DailyYieldResponse);
+  rpc RecordQuality(RecordQualityRequest)       returns (RecordQualityResponse);
+}
+
+message SessionProto { string id = 1; string tenant_id = 2; string cattle_id = 3; string shift_type = 4; string status = 5; }
+message RecordProto  { string id = 1; string tenant_id = 2; string session_id = 3; string cattle_id = 4; double quantity_liters = 5; }
+message QualityProto { string id = 1; string tenant_id = 2; string record_id = 3; double fat_percent = 4; double snf_percent = 5; double lactose = 6; }
+
+message CreateSessionRequest  { string tenant_id = 1; string cattle_id = 2; string shift_type = 3; string created_by = 4; }
+message CreateSessionResponse { SessionProto session = 1; }
+message GetSessionRequest     { string id = 1; string tenant_id = 2; }
+message GetSessionResponse    { SessionProto session = 1; }
+message ListSessionsRequest   { string tenant_id = 1; int32 limit = 2; int32 offset = 3; }
+message ListSessionsResponse  { repeated SessionProto sessions = 1; }
+message UpdateSessionRequest  { string id = 1; string tenant_id = 2; string status = 3; string updated_by = 4; }
+message UpdateSessionResponse { SessionProto session = 1; }
+message RecordMilkRequest     { string tenant_id = 1; string session_id = 2; string cattle_id = 3; double quantity_liters = 4; string created_by = 5; }
+message RecordMilkResponse    { RecordProto record = 1; }
+message GetRecordRequest      { string id = 1; string tenant_id = 2; }
+message GetRecordResponse     { RecordProto record = 1; }
+message ListRecordsRequest    { string session_id = 1; string tenant_id = 2; }
+message ListRecordsResponse   { repeated RecordProto records = 1; }
+message DailyYieldRequest     { string tenant_id = 1; string cattle_id = 2; string date = 3; }
+message DailyYieldResponse    { double total_liters = 1; }
+message RecordQualityRequest  { string tenant_id = 1; string record_id = 2; double fat_percent = 3; double snf_percent = 4; double lactose = 5; string created_by = 6; }
+message RecordQualityResponse { QualityProto quality = 1; }
