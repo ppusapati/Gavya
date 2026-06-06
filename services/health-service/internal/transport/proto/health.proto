@@ -1,0 +1,125 @@
+syntax = "proto3";
+
+package health.v1;
+
+option go_package = "github.com/ppusapati/gavya/services/health-service/internal/transport/proto;healthv1";
+
+import "google/protobuf/timestamp.proto";
+
+message Vaccination {
+  string id = 1;
+  string tenant_id = 2;
+  string cattle_id = 3;
+  string vaccine_name = 4;
+  string batch_number = 5;
+  google.protobuf.Timestamp administered_at = 6;
+  google.protobuf.Timestamp next_due_date = 7;
+  string veterinarian_id = 8;
+  string dosage = 9;
+  google.protobuf.Timestamp created_at = 10;
+  google.protobuf.Timestamp updated_at = 11;
+  string created_by = 12;
+  string updated_by = 13;
+}
+
+message Treatment {
+  string id = 1;
+  string tenant_id = 2;
+  string cattle_id = 3;
+  string diagnosis_code = 4;
+  string diagnosis = 5;
+  string medicine_name = 6;
+  string dosage = 7;
+  google.protobuf.Timestamp treated_at = 8;
+  string treated_by = 9;
+  google.protobuf.Timestamp follow_up_date = 10;
+  string status = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp updated_at = 13;
+  string created_by = 14;
+  string updated_by = 15;
+}
+
+message VetVisit {
+  string id = 1;
+  string tenant_id = 2;
+  string cattle_id = 3;
+  string veterinarian_id = 4;
+  google.protobuf.Timestamp visit_date = 5;
+  string purpose = 6;
+  string notes = 7;
+  double cost = 8;
+  google.protobuf.Timestamp created_at = 9;
+  google.protobuf.Timestamp updated_at = 10;
+  string created_by = 11;
+  string updated_by = 12;
+}
+
+message RecordVaccinationRequest {
+  string tenant_id = 1;
+  string cattle_id = 2;
+  string vaccine_name = 3;
+  string batch_number = 4;
+  google.protobuf.Timestamp administered_at = 5;
+  google.protobuf.Timestamp next_due_date = 6;
+  string veterinarian_id = 7;
+  string dosage = 8;
+  string created_by = 9;
+}
+
+message RecordVaccinationResponse { Vaccination vaccination = 1; }
+
+message GetVaccinationHistoryRequest {
+  string tenant_id = 1;
+  string cattle_id = 2;
+}
+
+message GetVaccinationHistoryResponse { repeated Vaccination vaccinations = 1; }
+
+message RecordTreatmentRequest {
+  string tenant_id = 1;
+  string cattle_id = 2;
+  string diagnosis_code = 3;
+  string diagnosis = 4;
+  string medicine_name = 5;
+  string dosage = 6;
+  google.protobuf.Timestamp treated_at = 7;
+  string treated_by = 8;
+  google.protobuf.Timestamp follow_up_date = 9;
+  string status = 10;
+  string created_by = 11;
+}
+
+message RecordTreatmentResponse { Treatment treatment = 1; }
+
+message GetTreatmentHistoryRequest {
+  string tenant_id = 1;
+  string cattle_id = 2;
+}
+
+message GetTreatmentHistoryResponse { repeated Treatment treatments = 1; }
+
+message ScheduleVetVisitRequest {
+  string tenant_id = 1;
+  string cattle_id = 2;
+  string veterinarian_id = 3;
+  google.protobuf.Timestamp visit_date = 4;
+  string purpose = 5;
+  string notes = 6;
+  double cost = 7;
+  string created_by = 8;
+}
+
+message ScheduleVetVisitResponse { VetVisit vet_visit = 1; }
+
+message ListUpcomingVaccinationsRequest { string tenant_id = 1; }
+message ListUpcomingVaccinationsResponse { repeated Vaccination vaccinations = 1; }
+
+service HealthService {
+  rpc RecordVaccination(RecordVaccinationRequest) returns (RecordVaccinationResponse);
+  rpc GetVaccinationHistory(GetVaccinationHistoryRequest) returns (GetVaccinationHistoryResponse);
+  rpc RecordTreatment(RecordTreatmentRequest) returns (RecordTreatmentResponse);
+  rpc GetTreatmentHistory(GetTreatmentHistoryRequest) returns (GetTreatmentHistoryResponse);
+  rpc ScheduleVetVisit(ScheduleVetVisitRequest) returns (ScheduleVetVisitResponse);
+  rpc ListUpcomingVaccinations(ListUpcomingVaccinationsRequest) returns (ListUpcomingVaccinationsResponse);
+}

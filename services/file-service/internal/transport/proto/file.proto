@@ -1,0 +1,80 @@
+syntax = "proto3";
+
+package file.v1;
+
+option go_package = "github.com/ppusapati/gavya/services/file-service/internal/transport/proto;filev1";
+
+import "google/protobuf/timestamp.proto";
+
+service FileService {
+  rpc CreateFileRecord(CreateFileRecordRequest) returns (FileRecordResponse);
+  rpc GetFileRecord(GetFileRecordRequest) returns (FileRecordResponse);
+  rpc ListEntityFiles(ListEntityFilesRequest) returns (ListEntityFilesResponse);
+  rpc DeleteFile(DeleteFileRequest) returns (DeleteFileResponse);
+  rpc GetDownloadURL(GetDownloadURLRequest) returns (GetDownloadURLResponse);
+}
+
+message CreateFileRecordRequest {
+  string tenant_id = 1;
+  string original_name = 2;
+  string stored_name = 3;
+  string content_type = 4;
+  int64 size_bytes = 5;
+  string storage_path = 6;
+  string entity_type = 7;
+  string entity_id = 8;
+  string uploaded_by = 9;
+  bool is_public = 10;
+  string created_by = 11;
+}
+
+message GetFileRecordRequest {
+  string id = 1;
+  string tenant_id = 2;
+}
+
+message ListEntityFilesRequest {
+  string tenant_id = 1;
+  string entity_type = 2;
+  string entity_id = 3;
+}
+
+message DeleteFileRequest {
+  string id = 1;
+  string tenant_id = 2;
+  string updated_by = 3;
+}
+
+message DeleteFileResponse {}
+
+message GetDownloadURLRequest {
+  string id = 1;
+  string tenant_id = 2;
+}
+
+message GetDownloadURLResponse {
+  string url = 1;
+}
+
+message FileRecordResponse {
+  string id = 1;
+  string tenant_id = 2;
+  string original_name = 3;
+  string stored_name = 4;
+  string content_type = 5;
+  int64 size_bytes = 6;
+  string storage_path = 7;
+  string storage_provider = 8;
+  string entity_type = 9;
+  string entity_id = 10;
+  string uploaded_by = 11;
+  bool is_public = 12;
+  google.protobuf.Timestamp created_at = 13;
+  google.protobuf.Timestamp updated_at = 14;
+  string created_by = 15;
+  string updated_by = 16;
+}
+
+message ListEntityFilesResponse {
+  repeated FileRecordResponse files = 1;
+}

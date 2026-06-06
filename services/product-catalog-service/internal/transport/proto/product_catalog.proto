@@ -1,0 +1,173 @@
+syntax = "proto3";
+
+package catalog.v1;
+
+option go_package = "github.com/ppusapati/gavya/services/product-catalog-service/internal/transport/proto;catalogv1";
+
+import "google/protobuf/timestamp.proto";
+
+message Category {
+  string id = 1;
+  string tenant_id = 2;
+  string name = 3;
+  string slug = 4;
+  string parent_id = 5;
+  string description = 6;
+  int32 sort_order = 7;
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp updated_at = 9;
+  string created_by = 10;
+  string updated_by = 11;
+}
+
+message Brand {
+  string id = 1;
+  string tenant_id = 2;
+  string name = 3;
+  string slug = 4;
+  string logo_url = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp updated_at = 7;
+  string created_by = 8;
+  string updated_by = 9;
+}
+
+message Product {
+  string id = 1;
+  string tenant_id = 2;
+  string category_id = 3;
+  string brand_id = 4;
+  string name = 5;
+  string slug = 6;
+  string description = 7;
+  string product_type = 8;
+  string status = 9;
+  google.protobuf.Timestamp created_at = 10;
+  google.protobuf.Timestamp updated_at = 11;
+  string created_by = 12;
+  string updated_by = 13;
+}
+
+message SKU {
+  string id = 1;
+  string tenant_id = 2;
+  string product_id = 3;
+  string code = 4;
+  string name = 5;
+  double price = 6;
+  string currency = 7;
+  string unit = 8;
+  double unit_size = 9;
+  string status = 10;
+  google.protobuf.Timestamp created_at = 11;
+  google.protobuf.Timestamp updated_at = 12;
+  string created_by = 13;
+  string updated_by = 14;
+}
+
+message CreateCategoryRequest {
+  string tenant_id = 1;
+  string name = 2;
+  string slug = 3;
+  string parent_id = 4;
+  string description = 5;
+  int32 sort_order = 6;
+  string created_by = 7;
+}
+
+message CreateCategoryResponse { Category category = 1; }
+message ListCategoriesRequest { string tenant_id = 1; }
+message ListCategoriesResponse { repeated Category categories = 1; }
+
+message CreateBrandRequest {
+  string tenant_id = 1;
+  string name = 2;
+  string slug = 3;
+  string logo_url = 4;
+  string created_by = 5;
+}
+
+message CreateBrandResponse { Brand brand = 1; }
+message ListBrandsRequest { string tenant_id = 1; }
+message ListBrandsResponse { repeated Brand brands = 1; }
+
+message CreateProductRequest {
+  string tenant_id = 1;
+  string category_id = 2;
+  string brand_id = 3;
+  string name = 4;
+  string slug = 5;
+  string description = 6;
+  string product_type = 7;
+  string status = 8;
+  string created_by = 9;
+}
+
+message CreateProductResponse { Product product = 1; }
+
+message GetProductRequest {
+  string id = 1;
+  string tenant_id = 2;
+}
+
+message GetProductResponse { Product product = 1; }
+
+message ListProductsRequest {
+  string tenant_id = 1;
+  string product_type = 2;
+  string status = 3;
+}
+
+message ListProductsResponse { repeated Product products = 1; }
+
+message CreateSKURequest {
+  string tenant_id = 1;
+  string product_id = 2;
+  string code = 3;
+  string name = 4;
+  double price = 5;
+  string currency = 6;
+  string unit = 7;
+  double unit_size = 8;
+  string status = 9;
+  string created_by = 10;
+}
+
+message CreateSKUResponse { SKU sku = 1; }
+
+message GetSKURequest {
+  string id = 1;
+  string tenant_id = 2;
+}
+
+message GetSKUResponse { SKU sku = 1; }
+
+message ListProductSKUsRequest {
+  string product_id = 1;
+  string tenant_id = 2;
+}
+
+message ListProductSKUsResponse { repeated SKU skus = 1; }
+
+message UpdateSKUPriceRequest {
+  string id = 1;
+  string tenant_id = 2;
+  double price = 3;
+  string updated_by = 4;
+}
+
+message UpdateSKUPriceResponse { SKU sku = 1; }
+
+service ProductCatalogService {
+  rpc CreateCategory(CreateCategoryRequest) returns (CreateCategoryResponse);
+  rpc ListCategories(ListCategoriesRequest) returns (ListCategoriesResponse);
+  rpc CreateBrand(CreateBrandRequest) returns (CreateBrandResponse);
+  rpc ListBrands(ListBrandsRequest) returns (ListBrandsResponse);
+  rpc CreateProduct(CreateProductRequest) returns (CreateProductResponse);
+  rpc GetProduct(GetProductRequest) returns (GetProductResponse);
+  rpc ListProducts(ListProductsRequest) returns (ListProductsResponse);
+  rpc CreateSKU(CreateSKURequest) returns (CreateSKUResponse);
+  rpc GetSKU(GetSKURequest) returns (GetSKUResponse);
+  rpc ListProductSKUs(ListProductSKUsRequest) returns (ListProductSKUsResponse);
+  rpc UpdateSKUPrice(UpdateSKUPriceRequest) returns (UpdateSKUPriceResponse);
+}

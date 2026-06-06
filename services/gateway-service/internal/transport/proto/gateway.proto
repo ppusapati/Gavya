@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package gateway.v1;
+
+option go_package = "github.com/ppusapati/gavya/services/gateway-service/internal/transport/proto;gatewayv1";
+
+// GatewayService acts as a reverse proxy, routing requests to downstream services.
+// All RPC methods forward to the appropriate backend service.
+service GatewayService {
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  string status = 1;
+}

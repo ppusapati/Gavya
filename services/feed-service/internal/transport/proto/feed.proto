@@ -1,0 +1,119 @@
+syntax = "proto3";
+
+package feed.v1;
+
+option go_package = "github.com/ppusapati/gavya/services/feed-service/internal/transport/proto;feedv1";
+
+import "google/protobuf/timestamp.proto";
+
+message FeedType {
+  string id = 1;
+  string tenant_id = 2;
+  string name = 3;
+  string category = 4;
+  string unit = 5;
+  string nutritional_info = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+  string created_by = 9;
+  string updated_by = 10;
+}
+
+message NutritionPlan {
+  string id = 1;
+  string tenant_id = 2;
+  string cattle_id = 3;
+  string feed_type_id = 4;
+  double daily_quantity_kg = 5;
+  google.protobuf.Timestamp start_date = 6;
+  google.protobuf.Timestamp end_date = 7;
+  string notes = 8;
+  google.protobuf.Timestamp created_at = 9;
+  google.protobuf.Timestamp updated_at = 10;
+  string created_by = 11;
+  string updated_by = 12;
+}
+
+message FeedConsumption {
+  string id = 1;
+  string tenant_id = 2;
+  string cattle_id = 3;
+  string feed_type_id = 4;
+  double quantity_kg = 5;
+  google.protobuf.Timestamp fed_at = 6;
+  string fed_by = 7;
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp updated_at = 9;
+  string created_by = 10;
+  string updated_by = 11;
+}
+
+message FeedConsumptionReport {
+  string cattle_id = 1;
+  string feed_type_id = 2;
+  double total_kg = 3;
+}
+
+message CreateFeedTypeRequest {
+  string tenant_id = 1;
+  string name = 2;
+  string category = 3;
+  string unit = 4;
+  string nutritional_info = 5;
+  string created_by = 6;
+}
+
+message CreateFeedTypeResponse { FeedType feed_type = 1; }
+
+message ListFeedTypesRequest { string tenant_id = 1; }
+message ListFeedTypesResponse { repeated FeedType feed_types = 1; }
+
+message CreateNutritionPlanRequest {
+  string tenant_id = 1;
+  string cattle_id = 2;
+  string feed_type_id = 3;
+  double daily_quantity_kg = 4;
+  google.protobuf.Timestamp start_date = 5;
+  google.protobuf.Timestamp end_date = 6;
+  string notes = 7;
+  string created_by = 8;
+}
+
+message CreateNutritionPlanResponse { NutritionPlan plan = 1; }
+
+message GetNutritionPlanRequest {
+  string id = 1;
+  string tenant_id = 2;
+}
+
+message GetNutritionPlanResponse { NutritionPlan plan = 1; }
+
+message RecordFeedConsumptionRequest {
+  string tenant_id = 1;
+  string cattle_id = 2;
+  string feed_type_id = 3;
+  double quantity_kg = 4;
+  google.protobuf.Timestamp fed_at = 5;
+  string fed_by = 6;
+  string created_by = 7;
+}
+
+message RecordFeedConsumptionResponse { FeedConsumption consumption = 1; }
+
+message GetFeedConsumptionReportRequest {
+  string tenant_id = 1;
+  string cattle_id = 2;
+  google.protobuf.Timestamp from = 3;
+  google.protobuf.Timestamp to = 4;
+}
+
+message GetFeedConsumptionReportResponse { repeated FeedConsumptionReport report = 1; }
+
+service FeedService {
+  rpc CreateFeedType(CreateFeedTypeRequest) returns (CreateFeedTypeResponse);
+  rpc ListFeedTypes(ListFeedTypesRequest) returns (ListFeedTypesResponse);
+  rpc CreateNutritionPlan(CreateNutritionPlanRequest) returns (CreateNutritionPlanResponse);
+  rpc GetNutritionPlan(GetNutritionPlanRequest) returns (GetNutritionPlanResponse);
+  rpc RecordFeedConsumption(RecordFeedConsumptionRequest) returns (RecordFeedConsumptionResponse);
+  rpc GetFeedConsumptionReport(GetFeedConsumptionReportRequest) returns (GetFeedConsumptionReportResponse);
+}

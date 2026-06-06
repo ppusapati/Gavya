@@ -1,0 +1,111 @@
+syntax = "proto3";
+
+package notification.v1;
+
+option go_package = "github.com/ppusapati/gavya/services/notification-service/internal/transport/proto;notificationv1";
+
+import "google/protobuf/timestamp.proto";
+
+message Notification {
+  string id = 1;
+  string tenant_id = 2;
+  string recipient_id = 3;
+  string recipient_type = 4;
+  string channel = 5;
+  string title = 6;
+  string body = 7;
+  string status = 8;
+  string priority = 9;
+  string reference_id = 10;
+  string reference_type = 11;
+  google.protobuf.Timestamp sent_at = 12;
+  google.protobuf.Timestamp read_at = 13;
+}
+
+message NotificationTemplate {
+  string id = 1;
+  string tenant_id = 2;
+  string event_type = 3;
+  string channel = 4;
+  string title = 5;
+  string body_template = 6;
+  bool is_active = 7;
+}
+
+message SendNotificationRequest {
+  string tenant_id = 1;
+  string recipient_id = 2;
+  string recipient_type = 3;
+  string channel = 4;
+  string title = 5;
+  string body = 6;
+  string priority = 7;
+  string reference_id = 8;
+  string reference_type = 9;
+  string created_by = 10;
+}
+
+message SendNotificationResponse { Notification notification = 1; }
+
+message GetNotificationRequest {
+  string id = 1;
+  string tenant_id = 2;
+}
+
+message GetNotificationResponse { Notification notification = 1; }
+
+message ListNotificationsRequest {
+  string tenant_id = 1;
+  string channel = 2;
+  string status = 3;
+}
+
+message ListNotificationsResponse { repeated Notification notifications = 1; }
+
+message MarkAsReadRequest {
+  string id = 1;
+  string tenant_id = 2;
+  string updated_by = 3;
+}
+
+message MarkAsReadResponse { Notification notification = 1; }
+
+message MarkAllReadRequest {
+  string recipient_id = 1;
+  string tenant_id = 2;
+  string updated_by = 3;
+}
+
+message MarkAllReadResponse { bool success = 1; }
+
+message CreateTemplateRequest {
+  string tenant_id = 1;
+  string event_type = 2;
+  string channel = 3;
+  string title = 4;
+  string body_template = 5;
+  string created_by = 6;
+}
+
+message CreateTemplateResponse { NotificationTemplate template = 1; }
+
+message ListTemplatesRequest { string tenant_id = 1; }
+message ListTemplatesResponse { repeated NotificationTemplate templates = 1; }
+
+message GetUnreadCountRequest {
+  string tenant_id = 1;
+  string recipient_id = 2;
+}
+
+message GetUnreadCountResponse { int64 count = 1; }
+
+service NotificationService {
+  rpc SendNotification(SendNotificationRequest) returns (SendNotificationResponse);
+  rpc GetNotification(GetNotificationRequest) returns (GetNotificationResponse);
+  rpc ListNotifications(ListNotificationsRequest) returns (ListNotificationsResponse);
+  rpc MarkAsRead(MarkAsReadRequest) returns (MarkAsReadResponse);
+  rpc MarkAllRead(MarkAllReadRequest) returns (MarkAllReadResponse);
+  rpc CreateTemplate(CreateTemplateRequest) returns (CreateTemplateResponse);
+  rpc ListTemplates(ListTemplatesRequest) returns (ListTemplatesResponse);
+  rpc GetUnreadCount(GetUnreadCountRequest) returns (GetUnreadCountResponse);
+}

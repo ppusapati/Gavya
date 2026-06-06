@@ -1,0 +1,105 @@
+syntax = "proto3";
+
+package tenant.v1;
+
+option go_package = "github.com/ppusapati/gavya/services/tenant-service/internal/transport/proto;tenantv1";
+
+import "google/protobuf/timestamp.proto";
+
+message Tenant {
+  string id = 1;
+  string name = 2;
+  string slug = 3;
+  string plan = 4;
+  string status = 5;
+  string contact_email = 6;
+  string contact_phone = 7;
+  string address = 8;
+  string country = 9;
+  string timezone = 10;
+  string currency = 11;
+  int32 max_users = 12;
+  int32 max_cattle = 13;
+  google.protobuf.Timestamp created_at = 14;
+  google.protobuf.Timestamp updated_at = 15;
+  string created_by = 16;
+  string updated_by = 17;
+}
+
+message TenantSetting {
+  string id = 1;
+  string tenant_id = 2;
+  string key = 3;
+  string value = 4;
+  string data_type = 5;
+}
+
+message CreateTenantRequest {
+  string name = 1;
+  string slug = 2;
+  string plan = 3;
+  string contact_email = 4;
+  string contact_phone = 5;
+  string address = 6;
+  string country = 7;
+  string timezone = 8;
+  string currency = 9;
+  int32 max_users = 10;
+  int32 max_cattle = 11;
+  string created_by = 12;
+}
+
+message CreateTenantResponse { Tenant tenant = 1; }
+
+message GetTenantRequest { string id = 1; }
+message GetTenantResponse { Tenant tenant = 1; }
+
+message ListTenantsRequest {}
+message ListTenantsResponse { repeated Tenant tenants = 1; }
+
+message UpdateTenantRequest {
+  string id = 1;
+  string name = 2;
+  string contact_email = 3;
+  string contact_phone = 4;
+  string address = 5;
+  string country = 6;
+  string timezone = 7;
+  string currency = 8;
+  int32 max_users = 9;
+  int32 max_cattle = 10;
+  string updated_by = 11;
+}
+
+message UpdateTenantResponse { Tenant tenant = 1; }
+
+message TenantActionRequest {
+  string id = 1;
+  string updated_by = 2;
+}
+
+message TenantActionResponse { Tenant tenant = 1; }
+
+message UpsertTenantSettingRequest {
+  string tenant_id = 1;
+  string key = 2;
+  string value = 3;
+  string data_type = 4;
+  string created_by = 5;
+}
+
+message UpsertTenantSettingResponse { TenantSetting setting = 1; }
+
+message ListTenantSettingsRequest { string tenant_id = 1; }
+message ListTenantSettingsResponse { repeated TenantSetting settings = 1; }
+
+service TenantService {
+  rpc CreateTenant(CreateTenantRequest) returns (CreateTenantResponse);
+  rpc GetTenant(GetTenantRequest) returns (GetTenantResponse);
+  rpc ListTenants(ListTenantsRequest) returns (ListTenantsResponse);
+  rpc UpdateTenant(UpdateTenantRequest) returns (UpdateTenantResponse);
+  rpc SuspendTenant(TenantActionRequest) returns (TenantActionResponse);
+  rpc ActivateTenant(TenantActionRequest) returns (TenantActionResponse);
+  rpc UpsertTenantSetting(UpsertTenantSettingRequest) returns (UpsertTenantSettingResponse);
+  rpc ListTenantSettings(ListTenantSettingsRequest) returns (ListTenantSettingsResponse);
+}

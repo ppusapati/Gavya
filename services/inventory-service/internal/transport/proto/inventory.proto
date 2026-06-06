@@ -1,0 +1,141 @@
+syntax = "proto3";
+
+package inventory.v1;
+
+option go_package = "github.com/ppusapati/gavya/services/inventory-service/internal/transport/proto;inventoryv1";
+
+import "google/protobuf/timestamp.proto";
+
+message Warehouse {
+  string id = 1;
+  string tenant_id = 2;
+  string name = 3;
+  string code = 4;
+  string address = 5;
+  string manager_id = 6;
+  string status = 7;
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp updated_at = 9;
+  string created_by = 10;
+  string updated_by = 11;
+}
+
+message InventoryItem {
+  string id = 1;
+  string tenant_id = 2;
+  string warehouse_id = 3;
+  string sku_id = 4;
+  double quantity_on_hand = 5;
+  double quantity_reserved = 6;
+  double reorder_point = 7;
+  double max_stock = 8;
+  google.protobuf.Timestamp last_updated_at = 9;
+}
+
+message StockMovement {
+  string id = 1;
+  string tenant_id = 2;
+  string warehouse_id = 3;
+  string sku_id = 4;
+  string movement_type = 5;
+  double quantity = 6;
+  string reference_id = 7;
+  string reference_type = 8;
+  string notes = 9;
+  google.protobuf.Timestamp moved_at = 10;
+  string moved_by = 11;
+}
+
+message Batch {
+  string id = 1;
+  string tenant_id = 2;
+  string warehouse_id = 3;
+  string sku_id = 4;
+  string batch_number = 5;
+  double quantity = 6;
+  google.protobuf.Timestamp manufactured_at = 7;
+  google.protobuf.Timestamp expires_at = 8;
+  string status = 9;
+}
+
+message CreateWarehouseRequest {
+  string tenant_id = 1;
+  string name = 2;
+  string code = 3;
+  string address = 4;
+  string manager_id = 5;
+  string status = 6;
+  string created_by = 7;
+}
+
+message CreateWarehouseResponse { Warehouse warehouse = 1; }
+
+message GetWarehouseRequest {
+  string id = 1;
+  string tenant_id = 2;
+}
+
+message GetWarehouseResponse { Warehouse warehouse = 1; }
+
+message ListWarehousesRequest { string tenant_id = 1; }
+message ListWarehousesResponse { repeated Warehouse warehouses = 1; }
+
+message AdjustStockRequest {
+  string tenant_id = 1;
+  string warehouse_id = 2;
+  string sku_id = 3;
+  string movement_type = 4;
+  double quantity = 5;
+  string reference_id = 6;
+  string reference_type = 7;
+  string notes = 8;
+  google.protobuf.Timestamp moved_at = 9;
+  string moved_by = 10;
+  string created_by = 11;
+}
+
+message AdjustStockResponse { StockMovement movement = 1; }
+
+message ListStockMovementsRequest {
+  string tenant_id = 1;
+  string warehouse_id = 2;
+  int32 limit = 3;
+  int32 offset = 4;
+}
+
+message ListStockMovementsResponse { repeated StockMovement movements = 1; }
+
+message CreateBatchRequest {
+  string tenant_id = 1;
+  string warehouse_id = 2;
+  string sku_id = 3;
+  string batch_number = 4;
+  double quantity = 5;
+  google.protobuf.Timestamp manufactured_at = 6;
+  google.protobuf.Timestamp expires_at = 7;
+  string status = 8;
+  string created_by = 9;
+}
+
+message CreateBatchResponse { Batch batch = 1; }
+
+message GetBatchRequest {
+  string id = 1;
+  string tenant_id = 2;
+}
+
+message GetBatchResponse { Batch batch = 1; }
+
+message ListExpiringBatchesRequest { string tenant_id = 1; }
+message ListExpiringBatchesResponse { repeated Batch batches = 1; }
+
+service InventoryService {
+  rpc CreateWarehouse(CreateWarehouseRequest) returns (CreateWarehouseResponse);
+  rpc GetWarehouse(GetWarehouseRequest) returns (GetWarehouseResponse);
+  rpc ListWarehouses(ListWarehousesRequest) returns (ListWarehousesResponse);
+  rpc AdjustStock(AdjustStockRequest) returns (AdjustStockResponse);
+  rpc ListStockMovements(ListStockMovementsRequest) returns (ListStockMovementsResponse);
+  rpc CreateBatch(CreateBatchRequest) returns (CreateBatchResponse);
+  rpc GetBatch(GetBatchRequest) returns (GetBatchResponse);
+  rpc ListExpiringBatches(ListExpiringBatchesRequest) returns (ListExpiringBatchesResponse);
+}

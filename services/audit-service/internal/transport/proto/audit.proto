@@ -1,0 +1,73 @@
+syntax = "proto3";
+
+package audit.v1;
+
+option go_package = "github.com/ppusapati/gavya/services/audit-service/internal/transport/proto;auditv1";
+
+import "google/protobuf/timestamp.proto";
+
+service AuditService {
+  rpc CreateAuditLog(CreateAuditLogRequest) returns (AuditLogResponse);
+  rpc GetAuditLog(GetAuditLogRequest) returns (AuditLogResponse);
+  rpc ListAuditLogs(ListAuditLogsRequest) returns (ListAuditLogsResponse);
+  rpc ListAuditLogsByResource(ListAuditLogsByResourceRequest) returns (ListAuditLogsResponse);
+  rpc ListAuditLogsByActor(ListAuditLogsByActorRequest) returns (ListAuditLogsResponse);
+}
+
+message CreateAuditLogRequest {
+  string tenant_id = 1;
+  string actor_id = 2;
+  string actor_type = 3;
+  string action = 4;
+  string resource_type = 5;
+  string resource_id = 6;
+  string old_value = 7;
+  string new_value = 8;
+  string ip_address = 9;
+  string user_agent = 10;
+  string service_name = 11;
+  string trace_id = 12;
+  string created_by = 13;
+}
+
+message GetAuditLogRequest {
+  string id = 1;
+  string tenant_id = 2;
+}
+
+message ListAuditLogsRequest {
+  string tenant_id = 1;
+}
+
+message ListAuditLogsByResourceRequest {
+  string tenant_id = 1;
+  string resource_type = 2;
+  string resource_id = 3;
+}
+
+message ListAuditLogsByActorRequest {
+  string tenant_id = 1;
+  string actor_id = 2;
+}
+
+message AuditLogResponse {
+  string id = 1;
+  string tenant_id = 2;
+  string actor_id = 3;
+  string actor_type = 4;
+  string action = 5;
+  string resource_type = 6;
+  string resource_id = 7;
+  string old_value = 8;
+  string new_value = 9;
+  string ip_address = 10;
+  string user_agent = 11;
+  string service_name = 12;
+  string trace_id = 13;
+  google.protobuf.Timestamp created_at = 14;
+  string created_by = 15;
+}
+
+message ListAuditLogsResponse {
+  repeated AuditLogResponse audit_logs = 1;
+}

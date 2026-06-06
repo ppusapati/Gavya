@@ -1,0 +1,107 @@
+syntax = "proto3";
+
+package billing.v1;
+
+option go_package = "github.com/ppusapati/gavya/services/billing-service/internal/transport/proto;billingv1";
+
+import "google/protobuf/timestamp.proto";
+
+message Invoice {
+  string id = 1;
+  string tenant_id = 2;
+  string customer_id = 3;
+  string invoice_number = 4;
+  string reference_id = 5;
+  string reference_type = 6;
+  string status = 7;
+  double sub_total = 8;
+  double tax_amount = 9;
+  double total_amount = 10;
+  string currency = 11;
+  google.protobuf.Timestamp issued_at = 12;
+  google.protobuf.Timestamp due_at = 13;
+  google.protobuf.Timestamp paid_at = 14;
+  string notes = 15;
+}
+
+message InvoiceItem {
+  string id = 1;
+  string tenant_id = 2;
+  string invoice_id = 3;
+  string description = 4;
+  double quantity = 5;
+  double unit_price = 6;
+  double total_price = 7;
+  double tax_rate = 8;
+}
+
+message Payment {
+  string id = 1;
+  string tenant_id = 2;
+  string invoice_id = 3;
+  double amount = 4;
+  string currency = 5;
+  string payment_method = 6;
+  string reference_no = 7;
+  google.protobuf.Timestamp paid_at = 8;
+  string notes = 9;
+}
+
+message CreateInvoiceRequest {
+  string tenant_id = 1;
+  string customer_id = 2;
+  string reference_id = 3;
+  string reference_type = 4;
+  string currency = 5;
+  google.protobuf.Timestamp issued_at = 6;
+  string notes = 7;
+  string created_by = 8;
+}
+
+message CreateInvoiceResponse { Invoice invoice = 1; }
+
+message AddInvoiceItemRequest {
+  string tenant_id = 1;
+  string invoice_id = 2;
+  string description = 3;
+  double quantity = 4;
+  double unit_price = 5;
+  double tax_rate = 6;
+  string created_by = 7;
+}
+
+message AddInvoiceItemResponse { InvoiceItem item = 1; }
+
+message InvoiceActionRequest {
+  string id = 1;
+  string tenant_id = 2;
+  string updated_by = 3;
+}
+
+message InvoiceActionResponse { Invoice invoice = 1; }
+
+message RecordPaymentRequest {
+  string tenant_id = 1;
+  string invoice_id = 2;
+  double amount = 3;
+  string currency = 4;
+  string payment_method = 5;
+  string reference_no = 6;
+  google.protobuf.Timestamp paid_at = 7;
+  string notes = 8;
+  string created_by = 9;
+}
+
+message RecordPaymentResponse { Payment payment = 1; }
+
+message GetOutstandingInvoicesRequest { string tenant_id = 1; }
+message GetOutstandingInvoicesResponse { repeated Invoice invoices = 1; }
+
+service BillingService {
+  rpc CreateInvoice(CreateInvoiceRequest) returns (CreateInvoiceResponse);
+  rpc AddInvoiceItem(AddInvoiceItemRequest) returns (AddInvoiceItemResponse);
+  rpc SendInvoice(InvoiceActionRequest) returns (InvoiceActionResponse);
+  rpc RecordPayment(RecordPaymentRequest) returns (RecordPaymentResponse);
+  rpc VoidInvoice(InvoiceActionRequest) returns (InvoiceActionResponse);
+  rpc GetOutstandingInvoices(GetOutstandingInvoicesRequest) returns (GetOutstandingInvoicesResponse);
+}

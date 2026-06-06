@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway-service
+  labels:
+    app: gateway-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: gateway-service
+  template:
+    metadata:
+      labels:
+        app: gateway-service
+    spec:
+      containers:
+        - name: gateway-service
+          image: gateway-service:latest
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: gateway-service-config
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway-service
+spec:
+  type: LoadBalancer
+  selector:
+    app: gateway-service
+  ports:
+    - port: 8000
+      targetPort: 8000
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-service-config
+data:
+  SERVICE_NAME: gateway-service
+  SERVER_ADDR: ":8000"
+  FARM_SERVICE_URL: http://farm-service:8081
+  BREEDING_SERVICE_URL: http://breeding-service:8082
+  HEALTH_SERVICE_URL: http://health-service:8083
+  FEED_SERVICE_URL: http://feed-service:8084
+  PRODUCT_CATALOG_SERVICE_URL: http://product-catalog-service:8085
+  INVENTORY_SERVICE_URL: http://inventory-service:8086
+  ORDER_SERVICE_URL: http://order-service:8087
+  BILLING_SERVICE_URL: http://billing-service:8088
+  TENANT_SERVICE_URL: http://tenant-service:8089
+  NOTIFICATION_SERVICE_URL: http://notification-service:8090
+  REPORTING_SERVICE_URL: http://reporting-service:8096
+  AUDIT_SERVICE_URL: http://audit-service:8097
+  FILE_SERVICE_URL: http://file-service:8095
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: gateway-service
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: gateway-service
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reporting-service
+  labels:
+    app: reporting-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: reporting-service
+  template:
+    metadata:
+      labels:
+        app: reporting-service
+    spec:
+      containers:
+        - name: reporting-service
+          image: reporting-service:latest
+          ports:
+            - containerPort: 8096
+          envFrom:
+            - configMapRef:
+                name: reporting-service-config
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reporting-service
+spec:
+  selector:
+    app: reporting-service
+  ports:
+    - port: 8096
+      targetPort: 8096
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: reporting-service-config
+data:
+  SERVICE_NAME: reporting-service
+  SERVER_ADDR: ":8096"
+  DATABASE_URL: postgres://postgres:secret@postgres:5432/dairy?sslmode=disable
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: reporting-service
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: reporting-service
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

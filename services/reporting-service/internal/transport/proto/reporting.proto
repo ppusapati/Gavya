@@ -1,0 +1,114 @@
+syntax = "proto3";
+
+package reporting.v1;
+
+option go_package = "github.com/ppusapati/gavya/services/reporting-service/internal/transport/proto;reportingv1";
+
+import "google/protobuf/timestamp.proto";
+
+service ReportingService {
+  rpc RequestReport(RequestReportRequest) returns (ReportResponse);
+  rpc GetReport(GetReportRequest) returns (ReportResponse);
+  rpc ListReports(ListReportsRequest) returns (ListReportsResponse);
+  rpc GetReportDownloadURL(GetReportDownloadURLRequest) returns (GetReportDownloadURLResponse);
+  rpc CreateSchedule(CreateScheduleRequest) returns (ScheduleResponse);
+  rpc ListSchedules(ListSchedulesRequest) returns (ListSchedulesResponse);
+  rpc UpdateSchedule(UpdateScheduleRequest) returns (ScheduleResponse);
+  rpc DeleteSchedule(DeleteScheduleRequest) returns (DeleteScheduleResponse);
+}
+
+message RequestReportRequest {
+  string tenant_id = 1;
+  string name = 2;
+  string report_type = 3;
+  string parameters = 4;
+  string file_format = 5;
+  string requested_by = 6;
+  string created_by = 7;
+}
+
+message GetReportRequest {
+  string id = 1;
+  string tenant_id = 2;
+}
+
+message ListReportsRequest {
+  string tenant_id = 1;
+}
+
+message GetReportDownloadURLRequest {
+  string id = 1;
+  string tenant_id = 2;
+}
+
+message GetReportDownloadURLResponse {
+  string url = 1;
+}
+
+message CreateScheduleRequest {
+  string tenant_id = 1;
+  string report_type = 2;
+  string schedule = 3;
+  string parameters = 4;
+  string created_by = 5;
+}
+
+message ListSchedulesRequest {
+  string tenant_id = 1;
+}
+
+message UpdateScheduleRequest {
+  string id = 1;
+  string tenant_id = 2;
+  bool is_active = 3;
+  string updated_by = 4;
+}
+
+message DeleteScheduleRequest {
+  string id = 1;
+  string tenant_id = 2;
+  string updated_by = 3;
+}
+
+message DeleteScheduleResponse {}
+
+message ReportResponse {
+  string id = 1;
+  string tenant_id = 2;
+  string name = 3;
+  string report_type = 4;
+  string parameters = 5;
+  string status = 6;
+  string file_path = 7;
+  string file_format = 8;
+  string requested_by = 9;
+  google.protobuf.Timestamp started_at = 10;
+  google.protobuf.Timestamp completed_at = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp updated_at = 13;
+  string created_by = 14;
+  string updated_by = 15;
+}
+
+message ListReportsResponse {
+  repeated ReportResponse reports = 1;
+}
+
+message ScheduleResponse {
+  string id = 1;
+  string tenant_id = 2;
+  string report_type = 3;
+  string schedule = 4;
+  string parameters = 5;
+  bool is_active = 6;
+  google.protobuf.Timestamp last_run_at = 7;
+  google.protobuf.Timestamp next_run_at = 8;
+  google.protobuf.Timestamp created_at = 9;
+  google.protobuf.Timestamp updated_at = 10;
+  string created_by = 11;
+  string updated_by = 12;
+}
+
+message ListSchedulesResponse {
+  repeated ScheduleResponse schedules = 1;
+}

@@ -1,0 +1,149 @@
+syntax = "proto3";
+
+package breeding.v1;
+
+option go_package = "github.com/ppusapati/gavya/services/breeding-service/internal/transport/proto;breedingv1";
+
+import "google/protobuf/timestamp.proto";
+
+message BreedingCycle {
+  string id = 1;
+  string tenant_id = 2;
+  string cattle_id = 3;
+  google.protobuf.Timestamp heat_date = 4;
+  string status = 5;
+  string notes = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+  string created_by = 9;
+  string updated_by = 10;
+}
+
+message Insemination {
+  string id = 1;
+  string tenant_id = 2;
+  string cycle_id = 3;
+  string cattle_id = 4;
+  string bull_id = 5;
+  string semen_batch_id = 6;
+  google.protobuf.Timestamp inseminated_at = 7;
+  string method = 8;
+  google.protobuf.Timestamp created_at = 9;
+  google.protobuf.Timestamp updated_at = 10;
+  string created_by = 11;
+  string updated_by = 12;
+}
+
+message Pregnancy {
+  string id = 1;
+  string tenant_id = 2;
+  string cattle_id = 3;
+  string insemination_id = 4;
+  google.protobuf.Timestamp confirmed_at = 5;
+  google.protobuf.Timestamp expected_calving_date = 6;
+  string status = 7;
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp updated_at = 9;
+  string created_by = 10;
+  string updated_by = 11;
+}
+
+message CalvingRecord {
+  string id = 1;
+  string tenant_id = 2;
+  string pregnancy_id = 3;
+  string cattle_id = 4;
+  string calf_id = 5;
+  google.protobuf.Timestamp calving_date = 6;
+  string calf_gender = 7;
+  double calf_weight = 8;
+  string complications = 9;
+  string status = 10;
+  google.protobuf.Timestamp created_at = 11;
+  google.protobuf.Timestamp updated_at = 12;
+  string created_by = 13;
+  string updated_by = 14;
+}
+
+message CreateBreedingCycleRequest {
+  string tenant_id = 1;
+  string cattle_id = 2;
+  google.protobuf.Timestamp heat_date = 3;
+  string status = 4;
+  string notes = 5;
+  string created_by = 6;
+}
+
+message CreateBreedingCycleResponse {
+  BreedingCycle cycle = 1;
+}
+
+message RecordInseminationRequest {
+  string tenant_id = 1;
+  string cycle_id = 2;
+  string cattle_id = 3;
+  string bull_id = 4;
+  string semen_batch_id = 5;
+  google.protobuf.Timestamp inseminated_at = 6;
+  string method = 7;
+  string created_by = 8;
+}
+
+message RecordInseminationResponse {
+  Insemination insemination = 1;
+}
+
+message ConfirmPregnancyRequest {
+  string tenant_id = 1;
+  string cattle_id = 2;
+  string insemination_id = 3;
+  google.protobuf.Timestamp confirmed_at = 4;
+  google.protobuf.Timestamp expected_calving_date = 5;
+  string created_by = 6;
+}
+
+message ConfirmPregnancyResponse {
+  Pregnancy pregnancy = 1;
+}
+
+message RecordCalvingRequest {
+  string tenant_id = 1;
+  string pregnancy_id = 2;
+  string cattle_id = 3;
+  string calf_id = 4;
+  string calf_gender = 5;
+  double calf_weight = 6;
+  string complications = 7;
+  string status = 8;
+  string created_by = 9;
+}
+
+message RecordCalvingResponse {
+  CalvingRecord record = 1;
+}
+
+message GetBreedingHistoryRequest {
+  string tenant_id = 1;
+  string cattle_id = 2;
+}
+
+message GetBreedingHistoryResponse {
+  repeated BreedingCycle cycles = 1;
+}
+
+message ListActivePregnanciesRequest {
+  string tenant_id = 1;
+}
+
+message ListActivePregnanciesResponse {
+  repeated Pregnancy pregnancies = 1;
+}
+
+service BreedingService {
+  rpc CreateBreedingCycle(CreateBreedingCycleRequest) returns (CreateBreedingCycleResponse);
+  rpc RecordInsemination(RecordInseminationRequest) returns (RecordInseminationResponse);
+  rpc ConfirmPregnancy(ConfirmPregnancyRequest) returns (ConfirmPregnancyResponse);
+  rpc RecordCalving(RecordCalvingRequest) returns (RecordCalvingResponse);
+  rpc GetBreedingHistory(GetBreedingHistoryRequest) returns (GetBreedingHistoryResponse);
+  rpc ListActivePregnancies(ListActivePregnanciesRequest) returns (ListActivePregnanciesResponse);
+}
