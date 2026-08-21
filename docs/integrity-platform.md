@@ -239,3 +239,29 @@ The database tests are where the guarantees are actually proven: that eight
 concurrent deliveries of one record produce exactly one admission, that an
 identifier can be reused over time but never overlap, that a conflicted slot cannot
 name a holder, that money survives a round trip without losing a minor unit.
+
+## Deploying
+
+`docker-compose.yaml` at the repository root brings up PostgreSQL, the ERP
+services, the five integrity services and the four Rust ML services. Every Go
+service builds from the repository root, because each Dockerfile copies `pkg/`
+and `libs/`, which only resolve from there.
+
+The ML tier shares one parameterised Dockerfile:
+
+```sh
+docker build -f ml/Dockerfile --build-arg SERVICE=anomaly-service -t gavya/anomaly-service ml/
+```
+
+Kubernetes manifests live beside each service under `deployments/k8s/`, with the
+whole ML tier in `ml/deployments/k8s/ml-tier.yaml`. The ML pods hold no state and
+reach no database, so they scale on request load alone, run as nonroot with a
+read-only root filesystem, and can be restarted or removed without affecting the
+authoritative path.
+
+Each Go service that calls the ML tier takes its endpoint from an environment
+variable — `ANOMALY_ML_URL`, `UNCERTAINTY_ML_URL`, `DIVERGENCE_ML_URL`. Leaving one
+empty disables that call: the service still starts, still answers, and simply
+stops offering the advisory signal. There is also an optional
+`*_MODEL_VERSION` pin, which makes the service refuse any model version but the
+one named, so a replayed adjudication cannot silently pick up a retrained model.
