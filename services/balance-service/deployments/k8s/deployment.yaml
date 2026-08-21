@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: balance-service
+  labels:
+    app: balance-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: balance-service
+  template:
+    metadata:
+      labels:
+        app: balance-service
+    spec:
+      containers:
+      - name: balance-service
+        image: gavya/balance-service:latest
+        ports:
+        - containerPort: 8095
+        envFrom:
+        - configMapRef:
+            name: balance-service-config
+        - secretRef:
+            name: balance-service-secret
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8095
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8095
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "1000m"
+            memory: "512Mi"

@@ -72,6 +72,7 @@ data:
   CANONICAL_SERVICE_URL: http://canonical-service
   OBSERVATION_SERVICE_URL: http://observation-service
   POOLING_SERVICE_URL: http://pooling-service
+  BALANCE_SERVICE_URL: http://balance-service
   SHADOW_SETTLEMENT_SERVICE_URL: http://shadow-settlement-service
 ---
 apiVersion: autoscaling/v2

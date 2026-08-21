@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: balance-service
+spec:
+  selector:
+    app: balance-service
+  ports:
+  - port: 80
+    targetPort: 8095
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: balance-service-config
+data:
+  SERVICE_NAME: balance-service
+  SERVER_ADDR: ":8095"
+  # Left unset by default. Without a reconciler a window is still validated and
+  # its imbalance still recorded; the run simply carries no adjustments.
+  RECONCILIATION_ML_URL: ""
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: balance-service-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: balance-service
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70

@@ -46,6 +46,7 @@ services:
       CANONICAL_SERVICE_URL: "http://canonical-service:8093"
       OBSERVATION_SERVICE_URL: "http://observation-service:8092"
       POOLING_SERVICE_URL: "http://pooling-service:8094"
+      BALANCE_SERVICE_URL: "http://balance-service:8095"
       SHADOW_SETTLEMENT_SERVICE_URL: "http://shadow-settlement-service:8090"
     depends_on:
       - tenant-service
@@ -335,6 +336,22 @@ services:
       SERVICE_NAME: pooling-service
       SERVER_ADDR: ":8094"
       DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  balance-service:
+    build:
+      context: .
+      dockerfile: services/balance-service/Dockerfile
+    ports:
+      - "8095:8095"
+    environment:
+      SERVICE_NAME: balance-service
+      SERVER_ADDR: ":8095"
+      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+      RECONCILIATION_ML_URL: "http://reconciliation-service:9103"
+      RECONCILIATION_ML_TIMEOUT: "5"
     depends_on:
       postgres:
         condition: service_healthy

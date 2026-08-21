@@ -33,6 +33,7 @@ type Config struct {
 	CanonicalServiceURL        string
 	ObservationServiceURL      string
 	PoolingServiceURL          string
+	BalanceServiceURL          string
 	ShadowSettlementServiceURL string
 }
 
@@ -61,12 +62,13 @@ func Load() *Config {
 		NotificationServiceURL: getEnv("NOTIFICATION_SERVICE_URL", "http://localhost:8098"),
 		ReportingServiceURL:    getEnv("REPORTING_SERVICE_URL", "http://localhost:8096"),
 		AuditServiceURL:        getEnv("AUDIT_SERVICE_URL", "http://localhost:8097"),
-		FileServiceURL:         getEnv("FILE_SERVICE_URL", "http://localhost:8095"),
+		FileServiceURL:         getEnv("FILE_SERVICE_URL", "http://localhost:8099"),
 
 		IngestionServiceURL:        getEnv("INGESTION_SERVICE_URL", "http://localhost:8091"),
 		CanonicalServiceURL:        getEnv("CANONICAL_SERVICE_URL", "http://localhost:8093"),
 		ObservationServiceURL:      getEnv("OBSERVATION_SERVICE_URL", "http://localhost:8092"),
 		PoolingServiceURL:          getEnv("POOLING_SERVICE_URL", "http://localhost:8094"),
+		BalanceServiceURL:          getEnv("BALANCE_SERVICE_URL", "http://localhost:8095"),
 		ShadowSettlementServiceURL: getEnv("SHADOW_SETTLEMENT_SERVICE_URL", "http://localhost:8090"),
 	}
 }

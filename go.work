@@ -5,6 +5,7 @@ use (
 	./libs/integrity
 	./e2e
 	./services/canonical-service
+	./services/balance-service
 	./services/ingestion-service
 	./services/pooling-service
 	./services/shadow-settlement-service
