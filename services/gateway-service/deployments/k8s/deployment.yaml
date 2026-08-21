@@ -49,19 +49,30 @@ metadata:
 data:
   SERVICE_NAME: gateway-service
   SERVER_ADDR: ":8000"
-  FARM_SERVICE_URL: http://farm-service:8081
-  BREEDING_SERVICE_URL: http://breeding-service:8082
-  HEALTH_SERVICE_URL: http://health-service:8083
-  FEED_SERVICE_URL: http://feed-service:8084
-  PRODUCT_CATALOG_SERVICE_URL: http://product-catalog-service:8085
-  INVENTORY_SERVICE_URL: http://inventory-service:8086
-  ORDER_SERVICE_URL: http://order-service:8087
-  BILLING_SERVICE_URL: http://billing-service:8088
-  TENANT_SERVICE_URL: http://tenant-service:8089
-  NOTIFICATION_SERVICE_URL: http://notification-service:8090
-  REPORTING_SERVICE_URL: http://reporting-service:8096
-  AUDIT_SERVICE_URL: http://audit-service:8097
-  FILE_SERVICE_URL: http://file-service:8095
+  # Every service's Kubernetes Service exposes port 80, so the port is implicit.
+  # The previous values pointed at each container's internal port, which is not
+  # what the cluster DNS name resolves to.
+  CATTLE_SERVICE_URL: http://cattle-service
+  MILK_SERVICE_URL: http://milk-service
+  BREEDING_SERVICE_URL: http://breeding-service
+  HEALTH_SERVICE_URL: http://health-service
+  FEED_SERVICE_URL: http://feed-service
+  FARM_SERVICE_URL: http://farm-service
+  CATTLE_MARKET_SERVICE_URL: http://cattle-market-service
+  PRODUCT_CATALOG_SERVICE_URL: http://product-catalog-service
+  INVENTORY_SERVICE_URL: http://inventory-service
+  ORDER_SERVICE_URL: http://order-service
+  BILLING_SERVICE_URL: http://billing-service
+  TENANT_SERVICE_URL: http://tenant-service
+  NOTIFICATION_SERVICE_URL: http://notification-service
+  REPORTING_SERVICE_URL: http://reporting-service
+  AUDIT_SERVICE_URL: http://audit-service
+  FILE_SERVICE_URL: http://file-service
+  INGESTION_SERVICE_URL: http://ingestion-service
+  CANONICAL_SERVICE_URL: http://canonical-service
+  OBSERVATION_SERVICE_URL: http://observation-service
+  POOLING_SERVICE_URL: http://pooling-service
+  SHADOW_SETTLEMENT_SERVICE_URL: http://shadow-settlement-service
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler

@@ -26,22 +26,27 @@ services:
     environment:
       SERVICE_NAME: gateway-service
       SERVER_ADDR: ":8080"
-      TENANT_SERVICE_URL: "http://tenant-service:8080"
       CATTLE_SERVICE_URL: "http://cattle-service:8080"
       MILK_SERVICE_URL: "http://milk-service:8080"
       BREEDING_SERVICE_URL: "http://breeding-service:8080"
       HEALTH_SERVICE_URL: "http://health-service:8080"
       FEED_SERVICE_URL: "http://feed-service:8080"
       FARM_SERVICE_URL: "http://farm-service:8080"
-      MARKET_SERVICE_URL: "http://cattle-market-service:8080"
-      CATALOG_SERVICE_URL: "http://product-catalog-service:8080"
+      CATTLE_MARKET_SERVICE_URL: "http://cattle-market-service:8080"
+      PRODUCT_CATALOG_SERVICE_URL: "http://product-catalog-service:8080"
       INVENTORY_SERVICE_URL: "http://inventory-service:8080"
       ORDER_SERVICE_URL: "http://order-service:8080"
       BILLING_SERVICE_URL: "http://billing-service:8080"
+      TENANT_SERVICE_URL: "http://tenant-service:8080"
       NOTIFICATION_SERVICE_URL: "http://notification-service:8080"
       REPORTING_SERVICE_URL: "http://reporting-service:8080"
       AUDIT_SERVICE_URL: "http://audit-service:8080"
       FILE_SERVICE_URL: "http://file-service:8080"
+      INGESTION_SERVICE_URL: "http://ingestion-service:8091"
+      CANONICAL_SERVICE_URL: "http://canonical-service:8093"
+      OBSERVATION_SERVICE_URL: "http://observation-service:8092"
+      POOLING_SERVICE_URL: "http://pooling-service:8094"
+      SHADOW_SETTLEMENT_SERVICE_URL: "http://shadow-settlement-service:8090"
     depends_on:
       - tenant-service
       - cattle-service
