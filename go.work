@@ -3,6 +3,7 @@ go 1.26.1
 use (
 	./pkg
 	./libs/integrity
+	./services/ingestion-service
 	./services/shadow-settlement-service
 	./services/tenant-service
 	./services/cattle-service

@@ -61,7 +61,7 @@ func New(db *pgxpool.Pool) Repository { return &repo{db: db} }
 const assertionCols = `id,tenant_id,source_system_id,external_settlement_id,producer_ref,period_start,period_end,
 	currency,amount_scale,total_minor_units,components,asserted_at,
 	origin_kind,import_batch_id,source_record_id,source_payload_hash,
-	valid_from,valid_to,recorded_at,superseded_at,superseded_by,created_at,created_by`
+	valid_from,valid_to,recorded_at,superseded_at,COALESCE(superseded_by,''),created_at,created_by`
 
 func (r *repo) CreateAssertion(ctx context.Context, a *domain.ExternalSettlementAssertion) (*domain.ExternalSettlementAssertion, error) {
 	comps, err := json.Marshal(a.Components)

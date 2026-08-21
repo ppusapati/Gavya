@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ingestion-service
+spec:
+  selector:
+    app: ingestion-service
+  ports:
+  - port: 80
+    targetPort: 8091
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ingestion-service-config
+data:
+  SERVICE_NAME: ingestion-service
+  SERVER_ADDR: ":8091"
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ingestion-service-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ingestion-service
+  # Field devices sync in bursts when they regain connectivity, so this scales
+  # further and faster than the query-serving services.
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 65
