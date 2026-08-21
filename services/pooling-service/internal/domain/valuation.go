@@ -22,9 +22,9 @@ const poolRounding = money.RoundHalfUp
 const weightScale = 3
 
 var (
-	ErrEmptyPool       = errors.New("pool has no producer milk")
-	ErrNoUtilisation   = errors.New("pool has no classified utilisation")
-	ErrZeroQuantity    = errors.New("pool has no pooled quantity to share against")
+	ErrEmptyPool        = errors.New("pool has no producer milk")
+	ErrNoUtilisation    = errors.New("pool has no classified utilisation")
+	ErrZeroQuantity     = errors.New("pool has no pooled quantity to share against")
 	ErrCurrencyMismatch = errors.New("prices are quoted in more than one currency")
 )
 

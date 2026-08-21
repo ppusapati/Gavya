@@ -120,13 +120,13 @@ func (f *fixture) computation(t *testing.T, total string, comps ...domain.Compon
 		t.Fatalf("origin: %v", err)
 	}
 	return &domain.ShadowSettlementComputation{
-		ID:          newID("shd"),
-		TenantID:    f.tenantID,
-		ProducerRef: "producer:01",
-		PeriodStart: time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC),
-		PeriodEnd:   time.Date(2026, 2, 28, 0, 0, 0, 0, time.UTC),
-		Total:       inr(t, total),
-		Components:  comps,
+		ID:            newID("shd"),
+		TenantID:      f.tenantID,
+		ProducerRef:   "producer:01",
+		PeriodStart:   time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC),
+		PeriodEnd:     time.Date(2026, 2, 28, 0, 0, 0, 0, time.UTC),
+		Total:         inr(t, total),
+		Components:    comps,
 		PolicyVersion: "policy-2026.02",
 		RateCardID:    newID("rct"),
 		RoundingTrail: []money.RoundingStep{{

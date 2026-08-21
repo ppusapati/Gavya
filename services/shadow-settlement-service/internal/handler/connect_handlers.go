@@ -16,7 +16,7 @@ import (
 )
 
 type ComponentProto struct {
-	Kind string `json:"kind"`
+	Kind  string `json:"kind"`
 	Label string `json:"label,omitempty"`
 	// Amount is a decimal literal such as "1234.56"; the scale is taken from
 	// the enclosing settlement so every line agrees on precision.

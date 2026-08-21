@@ -88,7 +88,9 @@ func waitReady(t *testing.T, baseURL, name string) {
 	t.Fatalf("%s did not become ready", name)
 }
 
-func opts() CallOptions { return CallOptions{TenantID: "01HTENANT0000000000000000", RequestID: "req-1"} }
+func opts() CallOptions {
+	return CallOptions{TenantID: "01HTENANT0000000000000000", RequestID: "req-1"}
+}
 
 func TestAnomalyContract(t *testing.T) {
 	client := NewAnomalyClient(Config{BaseURL: startService(t, "anomaly-service"), Timeout: 5 * time.Second})
@@ -105,10 +107,10 @@ func TestAnomalyContract(t *testing.T) {
 	}
 
 	resp, err := client.ScoreSeries(ctx, &ScoreCollectionSeriesRequest{
-		TenantID:    opts().TenantID,
-		SubjectRef:  "cattle:01HCATTLE000000000000000",
-		Quantity:    "VOLUME_LITRES",
-		Points:      points,
+		TenantID:   opts().TenantID,
+		SubjectRef: "cattle:01HCATTLE000000000000000",
+		Quantity:   "VOLUME_LITRES",
+		Points:     points,
 	}, opts())
 	if err != nil {
 		t.Fatalf("ScoreSeries: %v", err)

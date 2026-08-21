@@ -32,8 +32,8 @@ type EstimateUncertaintyRequest struct {
 	TenantID string `json:"tenant_id"`
 	// UncertaintyModelID selects the registered model to evaluate. Observations
 	// store this id so an estimate can be recomputed identically later.
-	UncertaintyModelID string `json:"uncertainty_model_id"`
-	Quantity           string `json:"quantity_kind"`
+	UncertaintyModelID string  `json:"uncertainty_model_id"`
+	Quantity           string  `json:"quantity_kind"`
 	MeasuredValue      float64 `json:"measured_value"`
 	Unit               string  `json:"unit"`
 	// Inputs are model-specific covariates: ambient temperature, instrument
@@ -62,10 +62,10 @@ type EstimateUncertaintyResponse struct {
 }
 
 type FitUncertaintyModelRequest struct {
-	TenantID    string        `json:"tenant_id"`
-	Quantity    string        `json:"quantity_kind"`
-	InstrumentID string       `json:"instrument_id"`
-	Replicates  []SeriesPoint `json:"replicates"`
+	TenantID     string        `json:"tenant_id"`
+	Quantity     string        `json:"quantity_kind"`
+	InstrumentID string        `json:"instrument_id"`
+	Replicates   []SeriesPoint `json:"replicates"`
 }
 
 type FitUncertaintyModelResponse struct {

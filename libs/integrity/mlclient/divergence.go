@@ -11,9 +11,9 @@ const ProcExplainDivergence = "gavya.ml.v1.DivergenceService/ExplainDivergence"
 // run and returned UNEXPLAINED. The authoritative classification stays in Go;
 // the ML answer is stored as a hypothesis alongside it and never overwrites it.
 type ExplainDivergenceRequest struct {
-	TenantID    string `json:"tenant_id"`
+	TenantID     string `json:"tenant_id"`
 	DivergenceID string `json:"divergence_id"`
-	Currency    string `json:"currency"`
+	Currency     string `json:"currency"`
 	// DeltaMinorUnits is external minus shadow, in currency minor units.
 	DeltaMinorUnits int64 `json:"delta_minor_units"`
 	// Features are the deterministic differences already computed by the Go

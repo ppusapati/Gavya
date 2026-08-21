@@ -57,16 +57,16 @@ type Component struct {
 // for replay detection, and never edits it. A correction from the source
 // arrives as a new version rather than an update.
 type ExternalSettlementAssertion struct {
-	ID                   string      `json:"id"`
-	TenantID             string      `json:"tenant_id"`
-	SourceSystemID       string      `json:"source_system_id"`
-	ExternalSettlementID string      `json:"external_settlement_id"`
-	ProducerRef          string      `json:"producer_ref"`
-	PeriodStart          time.Time   `json:"period_start"`
-	PeriodEnd            time.Time   `json:"period_end"`
-	Total                money.Money `json:"total"`
-	Components           []Component `json:"components"`
-	AssertedAt           time.Time   `json:"asserted_at"`
+	ID                   string        `json:"id"`
+	TenantID             string        `json:"tenant_id"`
+	SourceSystemID       string        `json:"source_system_id"`
+	ExternalSettlementID string        `json:"external_settlement_id"`
+	ProducerRef          string        `json:"producer_ref"`
+	PeriodStart          time.Time     `json:"period_start"`
+	PeriodEnd            time.Time     `json:"period_end"`
+	Total                money.Money   `json:"total"`
+	Components           []Component   `json:"components"`
+	AssertedAt           time.Time     `json:"asserted_at"`
 	Origin               origin.Origin `json:"origin"`
 
 	ValidFrom    time.Time  `json:"valid_from"`
@@ -96,8 +96,8 @@ type ShadowSettlementComputation struct {
 	Total       money.Money `json:"total"`
 	Components  []Component `json:"components"`
 
-	PolicyVersion string              `json:"policy_version"`
-	RateCardID    string              `json:"rate_card_id"`
+	PolicyVersion string               `json:"policy_version"`
+	RateCardID    string               `json:"rate_card_id"`
 	RoundingTrail []money.RoundingStep `json:"rounding_trail"`
 	// InputDigest fixes exactly which observations fed the computation, so a
 	// replay that produces a different total can be told from one that simply

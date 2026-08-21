@@ -40,11 +40,11 @@ type ClaimDecision struct {
 }
 
 var (
-	ErrNoDimensions   = errors.New("policy declares no identity dimensions")
-	ErrMissingValue   = errors.New("claim is missing a dimension the policy requires")
-	ErrUnknownDim     = errors.New("policy declares an unrecognised dimension")
-	ErrDuplicateDim   = errors.New("policy declares a dimension twice")
-	ErrUnknownMode    = errors.New("policy declares an unrecognised resolution mode")
+	ErrNoDimensions    = errors.New("policy declares no identity dimensions")
+	ErrMissingValue    = errors.New("claim is missing a dimension the policy requires")
+	ErrUnknownDim      = errors.New("policy declares an unrecognised dimension")
+	ErrDuplicateDim    = errors.New("policy declares a dimension twice")
+	ErrUnknownMode     = errors.New("policy declares an unrecognised resolution mode")
 	ErrNoOriginOnClaim = errors.New("claim carries no record origin")
 )
 

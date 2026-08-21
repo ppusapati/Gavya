@@ -77,7 +77,7 @@ func (g *DeviceGeneration) IsOpen() bool { return g.ClosedAt == nil }
 type SessionStatus string
 
 const (
-	SessionOpen SessionStatus = "OPEN"
+	SessionOpen   SessionStatus = "OPEN"
 	SessionClosed SessionStatus = "CLOSED"
 	// SessionAbandoned is a session that was never closed and has aged out. Its
 	// records stay valid; only new records are refused.
