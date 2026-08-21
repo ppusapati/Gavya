@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: observation-service
+  labels:
+    app: observation-service
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: observation-service
+  template:
+    metadata:
+      labels:
+        app: observation-service
+    spec:
+      containers:
+      - name: observation-service
+        image: gavya/observation-service:latest
+        ports:
+        - containerPort: 8092
+        envFrom:
+        - configMapRef:
+            name: observation-service-config
+        - secretRef:
+            name: observation-service-secret
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8092
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8092
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "1000m"
+            memory: "512Mi"

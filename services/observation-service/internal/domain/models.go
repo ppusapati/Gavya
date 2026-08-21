@@ -111,12 +111,12 @@ func (q QuantityKind) Unit() string {
 type InstrumentKind string
 
 const (
-	InstrumentWeighbridge  InstrumentKind = "WEIGHBRIDGE"
-	InstrumentMilkAnalyser InstrumentKind = "MILK_ANALYSER"
+	InstrumentWeighbridge   InstrumentKind = "WEIGHBRIDGE"
+	InstrumentMilkAnalyser  InstrumentKind = "MILK_ANALYSER"
 	InstrumentPlatformScale InstrumentKind = "PLATFORM_SCALE"
-	InstrumentFlowMeter    InstrumentKind = "FLOW_METER"
-	InstrumentThermometer  InstrumentKind = "THERMOMETER"
-	InstrumentManual       InstrumentKind = "MANUAL_ENTRY"
+	InstrumentFlowMeter     InstrumentKind = "FLOW_METER"
+	InstrumentThermometer   InstrumentKind = "THERMOMETER"
+	InstrumentManual        InstrumentKind = "MANUAL_ENTRY"
 )
 
 func (k InstrumentKind) Valid() bool {
@@ -236,9 +236,9 @@ type Observation struct {
 	// chain reads in both directions.
 	Supersedes string `json:"supersedes,omitempty"`
 
-	EligibilityVerdict      EligibilityVerdict `json:"eligibility_verdict"`
-	EligibilityReason       string             `json:"eligibility_reason"`
-	EligibilityCertificateID string            `json:"eligibility_certificate_id,omitempty"`
+	EligibilityVerdict       EligibilityVerdict `json:"eligibility_verdict"`
+	EligibilityReason        string             `json:"eligibility_reason"`
+	EligibilityCertificateID string             `json:"eligibility_certificate_id,omitempty"`
 
 	UncertaintyModelID string `json:"uncertainty_model_id,omitempty"`
 	// Uncertainty is nil when the estimate could not be obtained. The

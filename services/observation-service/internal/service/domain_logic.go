@@ -72,6 +72,11 @@ func (s *Service) RecordObservation(ctx context.Context, in RecordObservationInp
 	if err != nil {
 		return nil, err
 	}
+	// A half-open interval of zero length is true of no instant, so nothing
+	// could ever select it.
+	if !interval.To.After(interval.From) {
+		return nil, errors.New("valid_to must follow valid_from")
+	}
 
 	eligibility, err := s.assessEligibility(ctx, in.TenantID, in.InstrumentID, interval.From, in.Quantity)
 	if err != nil {
@@ -308,7 +313,7 @@ func (s *Service) ListFlaggedObservations(ctx context.Context, tenantID string, 
 	return s.repo.ListFlaggedObservations(ctx, tenantID, clampLimit(limit), clampOffset(offset))
 }
 
-func (s *Service) RegisterInstrument(ctx context.Context, tenantID, serial string, kind domain.InstrumentKind, label, make_, model, actor string) (*domain.Instrument, error) {
+func (s *Service) RegisterInstrument(ctx context.Context, tenantID, serial string, kind domain.InstrumentKind, label, manufacturer, model, actor string) (*domain.Instrument, error) {
 	switch {
 	case tenantID == "":
 		return nil, errors.New("tenant_id is required")
@@ -326,7 +331,7 @@ func (s *Service) RegisterInstrument(ctx context.Context, tenantID, serial strin
 		Serial:    serial,
 		Kind:      kind,
 		Label:     label,
-		Make:      make_,
+		Make:      manufacturer,
 		Model:     model,
 		CreatedBy: actor,
 	})

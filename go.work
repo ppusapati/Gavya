@@ -5,7 +5,9 @@ use (
 	./libs/integrity
 	./services/canonical-service
 	./services/ingestion-service
+	./services/pooling-service
 	./services/shadow-settlement-service
+	./services/observation-service
 	./services/tenant-service
 	./services/cattle-service
 	./services/milk-service
