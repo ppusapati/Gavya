@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: shadow-settlement-service
+spec:
+  selector:
+    app: shadow-settlement-service
+  ports:
+  - port: 80
+    targetPort: 8090
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shadow-settlement-service-config
+data:
+  SERVICE_NAME: shadow-settlement-service
+  SERVER_ADDR: ":8090"
+  # Points at the Rust divergence service. Clearing this disables the advisory
+  # call; deterministic classification is unaffected.
+  DIVERGENCE_ML_URL: "http://divergence-service"
+  DIVERGENCE_ML_TIMEOUT: "3"
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: shadow-settlement-service-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: shadow-settlement-service
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70

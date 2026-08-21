@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shadow-settlement-service
+  labels:
+    app: shadow-settlement-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: shadow-settlement-service
+  template:
+    metadata:
+      labels:
+        app: shadow-settlement-service
+    spec:
+      containers:
+      - name: shadow-settlement-service
+        image: gavya/shadow-settlement-service:latest
+        ports:
+        - containerPort: 8090
+        envFrom:
+        - configMapRef:
+            name: shadow-settlement-service-config
+        - secretRef:
+            name: shadow-settlement-service-secret
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8090
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8090
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
