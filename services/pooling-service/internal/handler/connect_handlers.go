@@ -8,6 +8,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	"github.com/ppusapati/gavya/libs/integrity/connectjson"
 	"github.com/ppusapati/gavya/libs/integrity/money"
 	"github.com/ppusapati/gavya/libs/integrity/origin"
 	"github.com/ppusapati/gavya/services/pooling-service/internal/domain"
@@ -322,8 +323,32 @@ type Handler struct{ svc *service.Service }
 
 func New(svc *service.Service) *Handler { return &Handler{svc: svc} }
 
+// ServiceName is the fully qualified Connect service these procedures are
+// addressed under.
+const ServiceName = "pooling.v1.PoolingService"
+
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	route := func(method string, handler http.HandlerFunc) {
+		mux.HandleFunc(connectjson.Procedure(ServiceName, method), handler)
+	}
+
+	route("CreatePool", connectjson.Unary(h.CreatePool))
+	route("GetPool", connectjson.Unary(h.GetPool))
+	route("ListPools", connectjson.Unary(h.ListPools))
+	route("AddProducerMilk", connectjson.Unary(h.AddProducerMilk))
+	route("ListProducerMilk", connectjson.Unary(h.ListProducerMilk))
+	route("RecordUtilisation", connectjson.Unary(h.RecordUtilisation))
+	route("ListUtilisations", connectjson.Unary(h.ListUtilisations))
+	route("ValuePool", connectjson.Unary(h.ValuePool))
+	route("GetValuation", connectjson.Unary(h.GetValuation))
+	route("ListAllocations", connectjson.Unary(h.ListAllocations))
+	route("SettlePool", connectjson.Unary(h.SettlePool))
+	route("ListEconomicEvents", connectjson.Unary(h.ListEconomicEvents))
+	route("DeclareRetroactivityPolicy", connectjson.Unary(h.DeclareRetroactivityPolicy))
+	route("GetEffectiveRetroactivityPolicy", connectjson.Unary(h.GetEffectiveRetroactivityPolicy))
+	route("ApplyCorrection", connectjson.Unary(h.ApplyCorrection))
 }
 
 func (h *Handler) CreatePool(ctx context.Context, req *connect.Request[CreatePoolRequest]) (*connect.Response[CreatePoolResponse], error) {

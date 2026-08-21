@@ -10,6 +10,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	"github.com/ppusapati/gavya/libs/integrity/connectjson"
 	"github.com/ppusapati/gavya/services/ingestion-service/internal/domain"
 	"github.com/ppusapati/gavya/services/ingestion-service/internal/repository"
 	"github.com/ppusapati/gavya/services/ingestion-service/internal/service"
@@ -215,8 +216,30 @@ type Handler struct{ svc *service.Service }
 
 func New(svc *service.Service) *Handler { return &Handler{svc: svc} }
 
+// ServiceName is the fully qualified Connect service these procedures are
+// addressed under.
+const ServiceName = "ingestion.v1.IngestionService"
+
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	route := func(method string, handler http.HandlerFunc) {
+		mux.HandleFunc(connectjson.Procedure(ServiceName, method), handler)
+	}
+
+	route("DeliverRecord", connectjson.Unary(h.DeliverRecord))
+	route("DeliverBatch", connectjson.Unary(h.DeliverBatch))
+	route("RegisterDevice", connectjson.Unary(h.RegisterDevice))
+	route("GetDevice", connectjson.Unary(h.GetDevice))
+	route("ListDevices", connectjson.Unary(h.ListDevices))
+	route("RollGeneration", connectjson.Unary(h.RollGeneration))
+	route("ListGenerations", connectjson.Unary(h.ListGenerations))
+	route("OpenSession", connectjson.Unary(h.OpenSession))
+	route("CloseSession", connectjson.Unary(h.CloseSession))
+	route("ListSessions", connectjson.Unary(h.ListSessions))
+	route("ListQuarantined", connectjson.Unary(h.ListQuarantined))
+	route("GetQuarantined", connectjson.Unary(h.GetQuarantined))
+	route("ResolveQuarantine", connectjson.Unary(h.ResolveQuarantine))
 }
 
 func (h *Handler) DeliverRecord(ctx context.Context, req *connect.Request[DeliverRecordRequest]) (*connect.Response[DeliverRecordResponse], error) {

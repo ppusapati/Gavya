@@ -8,6 +8,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	"github.com/ppusapati/gavya/libs/integrity/connectjson"
 	"github.com/ppusapati/gavya/libs/integrity/origin"
 
 	"github.com/ppusapati/gavya/services/observation-service/internal/domain"
@@ -236,8 +237,25 @@ type Handler struct{ svc *service.Service }
 
 func New(svc *service.Service) *Handler { return &Handler{svc: svc} }
 
+// ServiceName is the fully qualified Connect service these procedures are
+// addressed under.
+const ServiceName = "observation.v1.ObservationService"
+
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	route := func(method string, handler http.HandlerFunc) {
+		mux.HandleFunc(connectjson.Procedure(ServiceName, method), handler)
+	}
+
+	route("RecordObservation", connectjson.Unary(h.RecordObservation))
+	route("GetObservation", connectjson.Unary(h.GetObservation))
+	route("ListObservationsForSubject", connectjson.Unary(h.ListObservationsForSubject))
+	route("ListFlaggedObservations", connectjson.Unary(h.ListFlaggedObservations))
+	route("RegisterInstrument", connectjson.Unary(h.RegisterInstrument))
+	route("GetInstrument", connectjson.Unary(h.GetInstrument))
+	route("RecordCertificate", connectjson.Unary(h.RecordCertificate))
+	route("GetActiveCertificate", connectjson.Unary(h.GetActiveCertificate))
 }
 
 func (h *Handler) RecordObservation(ctx context.Context, req *connect.Request[RecordObservationRequest]) (*connect.Response[RecordObservationResponse], error) {

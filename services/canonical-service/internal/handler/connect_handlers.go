@@ -8,6 +8,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	"github.com/ppusapati/gavya/libs/integrity/connectjson"
 	"github.com/ppusapati/gavya/libs/integrity/origin"
 	"github.com/ppusapati/gavya/services/canonical-service/internal/domain"
 	"github.com/ppusapati/gavya/services/canonical-service/internal/repository"
@@ -206,8 +207,29 @@ type Handler struct{ svc *service.Service }
 
 func New(svc *service.Service) *Handler { return &Handler{svc: svc} }
 
+// ServiceName is the fully qualified Connect service these procedures are
+// addressed under.
+const ServiceName = "canonical.v1.CanonicalService"
+
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	route := func(method string, handler http.HandlerFunc) {
+		mux.HandleFunc(connectjson.Procedure(ServiceName, method), handler)
+	}
+
+	route("MapIdentity", connectjson.Unary(h.MapIdentity))
+	route("ResolveIdentity", connectjson.Unary(h.ResolveIdentity))
+	route("ReverseResolve", connectjson.Unary(h.ReverseResolve))
+	route("ListIdentities", connectjson.Unary(h.ListIdentities))
+	route("RetireIdentity", connectjson.Unary(h.RetireIdentity))
+	route("DeclarePolicy", connectjson.Unary(h.DeclarePolicy))
+	route("GetEffectivePolicy", connectjson.Unary(h.GetEffectivePolicy))
+	route("ListPolicies", connectjson.Unary(h.ListPolicies))
+	route("ClaimSlot", connectjson.Unary(h.ClaimSlot))
+	route("GetSlot", connectjson.Unary(h.GetSlot))
+	route("ListConflicts", connectjson.Unary(h.ListConflicts))
+	route("ResolveConflict", connectjson.Unary(h.ResolveConflict))
 }
 
 func (h *Handler) MapIdentity(ctx context.Context, req *connect.Request[MapIdentityRequest]) (*connect.Response[MapIdentityResponse], error) {

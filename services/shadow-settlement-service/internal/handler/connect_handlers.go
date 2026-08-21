@@ -9,6 +9,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	"github.com/ppusapati/gavya/libs/integrity/connectjson"
 	"github.com/ppusapati/gavya/libs/integrity/money"
 	"github.com/ppusapati/gavya/services/shadow-settlement-service/internal/domain"
 	"github.com/ppusapati/gavya/services/shadow-settlement-service/internal/repository"
@@ -223,8 +224,24 @@ type Handler struct{ svc *service.Service }
 
 func New(svc *service.Service) *Handler { return &Handler{svc: svc} }
 
+// ServiceName is the fully qualified Connect service these procedures are
+// addressed under.
+const ServiceName = "shadowsettlement.v1.ShadowSettlementService"
+
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	route := func(method string, handler http.HandlerFunc) {
+		mux.HandleFunc(connectjson.Procedure(ServiceName, method), handler)
+	}
+
+	route("IngestAssertion", connectjson.Unary(h.IngestAssertion))
+	route("RecordComputation", connectjson.Unary(h.RecordComputation))
+	route("Adjudicate", connectjson.Unary(h.Adjudicate))
+	route("GetDivergence", connectjson.Unary(h.GetDivergence))
+	route("ListDivergences", connectjson.Unary(h.ListDivergences))
+	route("ResolveDivergence", connectjson.Unary(h.ResolveDivergence))
+	route("Summarise", connectjson.Unary(h.Summarise))
 }
 
 func (h *Handler) IngestAssertion(ctx context.Context, req *connect.Request[IngestAssertionRequest]) (*connect.Response[IngestAssertionResponse], error) {
