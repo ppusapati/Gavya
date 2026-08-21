@@ -53,6 +53,29 @@ system          (identity mapping,                                    │
         anomaly · uncertainty · reconciliation · divergence
 ```
 
+### How services talk to each other
+
+Every service serves its procedures over **Connect unary JSON**: a `POST` to
+`/<fully.qualified.Service>/<Method>` with a JSON body and a JSON reply. Both
+directions of traffic — Go to Go, and Go to the Rust ML tier — look identical on
+the wire.
+
+The request and response types are plain Go structs rather than generated
+protobuf messages, so Connect's built-in codecs (which require `proto.Message`)
+cannot be used. `libs/integrity/connectjson` adapts a handler method to an HTTP
+endpoint; `libs/integrity/svcclient` is the calling side.
+
+`svcclient` is deliberately not `mlclient`. A failed ML call is advisory and the
+caller degrades to its deterministic path; a failed call to another Go service is
+a real failure. So `svcclient` surfaces the callee's own Connect code rather than
+flattening everything to "unavailable", and it retries only transient codes —
+retrying a procedure that already had an effect risks doing it twice, so the
+default is no retry at all.
+
+The code-to-status mapping is explicit in both, because clients retry 5xx and give
+up on 4xx: a validation failure returned as 500 would be retried several times
+before failing, and an overloaded service returning 400 would never be retried.
+
 ### The Go/Rust boundary
 
 All ML and AI runs in Rust, in separate processes, reached only over the network.
@@ -239,6 +262,21 @@ The database tests are where the guarantees are actually proven: that eight
 concurrent deliveries of one record produce exactly one admission, that an
 identifier can be reused over time but never overlap, that a conflicted slot cannot
 name a holder, that money survives a round trip without losing a minor unit.
+
+The end-to-end tests build the real service binaries, run them against a real
+PostgreSQL, and drive them over HTTP as another service would — the only way to
+show the platform is a pipeline rather than a pile of components:
+
+```sh
+TEST_DATABASE_DSN="postgres://user@host:port/%s?sslmode=disable" \
+  go test -tags e2e ./e2e/...
+```
+
+The DSN carries a single `%s` where the per-service database name goes; each
+service in the harness gets its own database, as it would in production. The
+harness deliberately runs with **no ML tier configured**, and the verdicts are
+complete anyway — that is the point of the deterministic classifier, and it is
+asserted rather than assumed.
 
 ## Deploying
 
