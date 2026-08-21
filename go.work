@@ -3,6 +3,7 @@ go 1.26.1
 use (
 	./pkg
 	./libs/integrity
+	./e2e
 	./services/canonical-service
 	./services/ingestion-service
 	./services/pooling-service
