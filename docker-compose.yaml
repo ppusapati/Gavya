@@ -18,7 +18,9 @@ services:
       retries: 5
 
   gateway-service:
-    build: ./services/gateway-service
+    build:
+      context: .
+      dockerfile: services/gateway-service/Dockerfile
     ports:
       - "8000:8080"
     environment:
@@ -45,7 +47,9 @@ services:
       - cattle-service
 
   tenant-service:
-    build: ./services/tenant-service
+    build:
+      context: .
+      dockerfile: services/tenant-service/Dockerfile
     ports:
       - "8080:8080"
     environment:
@@ -57,7 +61,9 @@ services:
         condition: service_healthy
 
   cattle-service:
-    build: ./services/cattle-service
+    build:
+      context: .
+      dockerfile: services/cattle-service/Dockerfile
     ports:
       - "8081:8080"
     environment:
@@ -69,7 +75,9 @@ services:
         condition: service_healthy
 
   milk-service:
-    build: ./services/milk-service
+    build:
+      context: .
+      dockerfile: services/milk-service/Dockerfile
     ports:
       - "8082:8080"
     environment:
@@ -81,7 +89,9 @@ services:
         condition: service_healthy
 
   breeding-service:
-    build: ./services/breeding-service
+    build:
+      context: .
+      dockerfile: services/breeding-service/Dockerfile
     ports:
       - "8083:8080"
     environment:
@@ -93,7 +103,9 @@ services:
         condition: service_healthy
 
   health-service:
-    build: ./services/health-service
+    build:
+      context: .
+      dockerfile: services/health-service/Dockerfile
     ports:
       - "8084:8080"
     environment:
@@ -105,7 +117,9 @@ services:
         condition: service_healthy
 
   feed-service:
-    build: ./services/feed-service
+    build:
+      context: .
+      dockerfile: services/feed-service/Dockerfile
     ports:
       - "8085:8080"
     environment:
@@ -117,7 +131,9 @@ services:
         condition: service_healthy
 
   farm-service:
-    build: ./services/farm-service
+    build:
+      context: .
+      dockerfile: services/farm-service/Dockerfile
     ports:
       - "8086:8080"
     environment:
@@ -129,7 +145,9 @@ services:
         condition: service_healthy
 
   cattle-market-service:
-    build: ./services/cattle-market-service
+    build:
+      context: .
+      dockerfile: services/cattle-market-service/Dockerfile
     ports:
       - "8087:8080"
     environment:
@@ -141,7 +159,9 @@ services:
         condition: service_healthy
 
   product-catalog-service:
-    build: ./services/product-catalog-service
+    build:
+      context: .
+      dockerfile: services/product-catalog-service/Dockerfile
     ports:
       - "8088:8080"
     environment:
@@ -153,7 +173,9 @@ services:
         condition: service_healthy
 
   inventory-service:
-    build: ./services/inventory-service
+    build:
+      context: .
+      dockerfile: services/inventory-service/Dockerfile
     ports:
       - "8089:8080"
     environment:
@@ -165,7 +187,9 @@ services:
         condition: service_healthy
 
   order-service:
-    build: ./services/order-service
+    build:
+      context: .
+      dockerfile: services/order-service/Dockerfile
     ports:
       - "8090:8080"
     environment:
@@ -177,7 +201,9 @@ services:
         condition: service_healthy
 
   billing-service:
-    build: ./services/billing-service
+    build:
+      context: .
+      dockerfile: services/billing-service/Dockerfile
     ports:
       - "8091:8080"
     environment:
@@ -189,7 +215,9 @@ services:
         condition: service_healthy
 
   notification-service:
-    build: ./services/notification-service
+    build:
+      context: .
+      dockerfile: services/notification-service/Dockerfile
     ports:
       - "8092:8080"
     environment:
@@ -201,7 +229,9 @@ services:
         condition: service_healthy
 
   reporting-service:
-    build: ./services/reporting-service
+    build:
+      context: .
+      dockerfile: services/reporting-service/Dockerfile
     ports:
       - "8093:8080"
     environment:
@@ -213,7 +243,9 @@ services:
         condition: service_healthy
 
   audit-service:
-    build: ./services/audit-service
+    build:
+      context: .
+      dockerfile: services/audit-service/Dockerfile
     ports:
       - "8094:8080"
     environment:
@@ -225,7 +257,9 @@ services:
         condition: service_healthy
 
   file-service:
-    build: ./services/file-service
+    build:
+      context: .
+      dockerfile: services/file-service/Dockerfile
     ports:
       - "8095:8080"
     environment:
@@ -239,6 +273,136 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+
+  # --- Integrity layer -------------------------------------------------------
+
+  ingestion-service:
+    build:
+      context: .
+      dockerfile: services/ingestion-service/Dockerfile
+    ports:
+      - "8091:8091"
+    environment:
+      SERVICE_NAME: ingestion-service
+      SERVER_ADDR: ":8091"
+      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  observation-service:
+    build:
+      context: .
+      dockerfile: services/observation-service/Dockerfile
+    ports:
+      - "8092:8092"
+    environment:
+      SERVICE_NAME: observation-service
+      SERVER_ADDR: ":8092"
+      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+      UNCERTAINTY_ML_URL: "http://uncertainty-service:9102"
+      ANOMALY_ML_URL: "http://anomaly-service:9101"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  canonical-service:
+    build:
+      context: .
+      dockerfile: services/canonical-service/Dockerfile
+    ports:
+      - "8093:8093"
+    environment:
+      SERVICE_NAME: canonical-service
+      SERVER_ADDR: ":8093"
+      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  pooling-service:
+    build:
+      context: .
+      dockerfile: services/pooling-service/Dockerfile
+    ports:
+      - "8094:8094"
+    environment:
+      SERVICE_NAME: pooling-service
+      SERVER_ADDR: ":8094"
+      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  shadow-settlement-service:
+    build:
+      context: .
+      dockerfile: services/shadow-settlement-service/Dockerfile
+    ports:
+      - "8090:8090"
+    environment:
+      SERVICE_NAME: shadow-settlement-service
+      SERVER_ADDR: ":8090"
+      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+      # Clearing this disables the advisory call; deterministic classification
+      # is unaffected and every divergence is still classified.
+      DIVERGENCE_ML_URL: "http://divergence-service:9104"
+      DIVERGENCE_ML_TIMEOUT: "3"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # --- Rust ML tier ----------------------------------------------------------
+  # Reached only over the network. No database of their own: they hold no state
+  # and are safe to restart or scale independently of the Go services.
+
+  anomaly-service:
+    build:
+      context: ./ml
+      dockerfile: Dockerfile
+      args:
+        SERVICE: anomaly-service
+    ports:
+      - "9101:9101"
+    environment:
+      LISTEN_ADDR: "0.0.0.0:9101"
+      LOG_LEVEL: info
+
+  uncertainty-service:
+    build:
+      context: ./ml
+      dockerfile: Dockerfile
+      args:
+        SERVICE: uncertainty-service
+    ports:
+      - "9102:9102"
+    environment:
+      LISTEN_ADDR: "0.0.0.0:9102"
+      LOG_LEVEL: info
+
+  reconciliation-service:
+    build:
+      context: ./ml
+      dockerfile: Dockerfile
+      args:
+        SERVICE: reconciliation-service
+    ports:
+      - "9103:9103"
+    environment:
+      LISTEN_ADDR: "0.0.0.0:9103"
+      LOG_LEVEL: info
+
+  divergence-service:
+    build:
+      context: ./ml
+      dockerfile: Dockerfile
+      args:
+        SERVICE: divergence-service
+    ports:
+      - "9104:9104"
+    environment:
+      LISTEN_ADDR: "0.0.0.0:9104"
+      LOG_LEVEL: info
 
 volumes:
   postgres_data:

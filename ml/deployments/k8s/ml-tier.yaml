@@ -1,0 +1,363 @@
+# Rust ML tier.
+#
+# These hold no state and reach no database, so they scale purely on request
+# load and a restart costs nothing. Every caller treats them as advisory: if a
+# pod is unavailable the Go services still produce a complete answer, which is
+# why these carry no PodDisruptionBudget and no minimum beyond ordinary
+# availability.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anomaly-service
+  labels:
+    app: anomaly-service
+    tier: ml
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: anomaly-service
+  template:
+    metadata:
+      labels:
+        app: anomaly-service
+        tier: ml
+    spec:
+      containers:
+      - name: anomaly-service
+        image: gavya/anomaly-service:latest
+        ports:
+        - containerPort: 9101
+        env:
+        - name: LISTEN_ADDR
+          value: "0.0.0.0:9101"
+        - name: LOG_LEVEL
+          value: "info"
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 9101
+          initialDelaySeconds: 2
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 9101
+          initialDelaySeconds: 5
+          periodSeconds: 20
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "64Mi"
+          limits:
+            cpu: "1000m"
+            memory: "256Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65532
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: anomaly-service
+  labels:
+    tier: ml
+  annotations:
+    # Scores collection measurements against their own history.
+    gavya.in/model-version: "anomaly-robust-z-1.0.0"
+spec:
+  selector:
+    app: anomaly-service
+  ports:
+  - port: 9101
+    targetPort: 9101
+  type: ClusterIP
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: anomaly-service-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: anomaly-service
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: uncertainty-service
+  labels:
+    app: uncertainty-service
+    tier: ml
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: uncertainty-service
+  template:
+    metadata:
+      labels:
+        app: uncertainty-service
+        tier: ml
+    spec:
+      containers:
+      - name: uncertainty-service
+        image: gavya/uncertainty-service:latest
+        ports:
+        - containerPort: 9102
+        env:
+        - name: LISTEN_ADDR
+          value: "0.0.0.0:9102"
+        - name: LOG_LEVEL
+          value: "info"
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 9102
+          initialDelaySeconds: 2
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 9102
+          initialDelaySeconds: 5
+          periodSeconds: 20
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "64Mi"
+          limits:
+            cpu: "1000m"
+            memory: "256Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65532
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: uncertainty-service
+  labels:
+    tier: ml
+  annotations:
+    # Evaluates GUM measurement uncertainty budgets.
+    gavya.in/model-version: "uncertainty-gum-1.0.0"
+spec:
+  selector:
+    app: uncertainty-service
+  ports:
+  - port: 9102
+    targetPort: 9102
+  type: ClusterIP
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: uncertainty-service-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: uncertainty-service
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reconciliation-service
+  labels:
+    app: reconciliation-service
+    tier: ml
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: reconciliation-service
+  template:
+    metadata:
+      labels:
+        app: reconciliation-service
+        tier: ml
+    spec:
+      containers:
+      - name: reconciliation-service
+        image: gavya/reconciliation-service:latest
+        ports:
+        - containerPort: 9103
+        env:
+        - name: LISTEN_ADDR
+          value: "0.0.0.0:9103"
+        - name: LOG_LEVEL
+          value: "info"
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 9103
+          initialDelaySeconds: 2
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 9103
+          initialDelaySeconds: 5
+          periodSeconds: 20
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "64Mi"
+          limits:
+            cpu: "1000m"
+            memory: "256Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65532
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reconciliation-service
+  labels:
+    tier: ml
+  annotations:
+    # Closes mass balances and nominates gross errors.
+    gavya.in/model-version: "reconciliation-wls-1.0.0"
+spec:
+  selector:
+    app: reconciliation-service
+  ports:
+  - port: 9103
+    targetPort: 9103
+  type: ClusterIP
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: reconciliation-service-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: reconciliation-service
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: divergence-service
+  labels:
+    app: divergence-service
+    tier: ml
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: divergence-service
+  template:
+    metadata:
+      labels:
+        app: divergence-service
+        tier: ml
+    spec:
+      containers:
+      - name: divergence-service
+        image: gavya/divergence-service:latest
+        ports:
+        - containerPort: 9104
+        env:
+        - name: LISTEN_ADDR
+          value: "0.0.0.0:9104"
+        - name: LOG_LEVEL
+          value: "info"
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 9104
+          initialDelaySeconds: 2
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 9104
+          initialDelaySeconds: 5
+          periodSeconds: 20
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "64Mi"
+          limits:
+            cpu: "1000m"
+            memory: "256Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65532
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: divergence-service
+  labels:
+    tier: ml
+  annotations:
+    # Proposes causes for divergences the deterministic classifier could not attribute.
+    gavya.in/model-version: "divergence-knn-evidence-1.0.0"
+spec:
+  selector:
+    app: divergence-service
+  ports:
+  - port: 9104
+    targetPort: 9104
+  type: ClusterIP
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: divergence-service-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: divergence-service
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
