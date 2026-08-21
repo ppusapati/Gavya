@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: canonical-service
+  labels:
+    app: canonical-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: canonical-service
+  template:
+    metadata:
+      labels:
+        app: canonical-service
+    spec:
+      containers:
+      - name: canonical-service
+        image: gavya/canonical-service:latest
+        ports:
+        - containerPort: 8093
+        envFrom:
+        - configMapRef:
+            name: canonical-service-config
+        - secretRef:
+            name: canonical-service-secret
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8093
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8093
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "1000m"
+            memory: "512Mi"
