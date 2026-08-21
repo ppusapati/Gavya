@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: pooling-service
+spec:
+  selector:
+    app: pooling-service
+  ports:
+  - port: 80
+    targetPort: 8094
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pooling-service-config
+data:
+  SERVICE_NAME: pooling-service
+  SERVER_ADDR: ":8094"
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: pooling-service-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: pooling-service
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70

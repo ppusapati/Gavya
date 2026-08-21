@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pooling-service
+  labels:
+    app: pooling-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: pooling-service
+  template:
+    metadata:
+      labels:
+        app: pooling-service
+    spec:
+      containers:
+      - name: pooling-service
+        image: gavya/pooling-service:latest
+        ports:
+        - containerPort: 8094
+        envFrom:
+        - configMapRef:
+            name: pooling-service-config
+        - secretRef:
+            name: pooling-service-secret
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8094
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8094
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "1000m"
+            memory: "512Mi"
