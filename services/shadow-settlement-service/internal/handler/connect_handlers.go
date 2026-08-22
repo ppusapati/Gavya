@@ -211,10 +211,13 @@ type SummariseRequest struct {
 	To       string `json:"to"`
 }
 type ClassSummaryProto struct {
-	Classification     string `json:"classification"`
-	Currency           string `json:"currency"`
-	Count              int64  `json:"count"`
-	TotalAbsMinorUnits int64  `json:"total_abs_minor_units"`
+	Classification string `json:"classification"`
+	Currency       string `json:"currency"`
+	// AmountScale identifies the unit of TotalAbsMinorUnits. Rows are grouped by
+	// it because minor units at different scales cannot be added.
+	AmountScale        int32 `json:"amount_scale"`
+	Count              int64 `json:"count"`
+	TotalAbsMinorUnits int64 `json:"total_abs_minor_units"`
 }
 type SummariseResponse struct {
 	Summaries []ClassSummaryProto `json:"summaries"`
@@ -404,6 +407,7 @@ func (h *Handler) Summarise(ctx context.Context, req *connect.Request[SummariseR
 		out = append(out, ClassSummaryProto{
 			Classification:     string(s.Classification),
 			Currency:           s.Currency,
+			AmountScale:        s.AmountScale,
 			Count:              s.Count,
 			TotalAbsMinorUnits: s.TotalAbsMinorUnits,
 		})

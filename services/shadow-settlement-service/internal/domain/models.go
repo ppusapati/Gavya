@@ -212,10 +212,14 @@ type SettlementDivergence struct {
 // integrity workspace reports: how much money the two systems disagree about,
 // and how much of that disagreement is understood.
 type ClassSummary struct {
-	Classification     Classification `json:"classification"`
-	Currency           string         `json:"currency"`
-	Count              int64          `json:"count"`
-	TotalAbsMinorUnits int64          `json:"total_abs_minor_units"`
+	Classification Classification `json:"classification"`
+	Currency       string         `json:"currency"`
+	// AmountScale is part of the grouping, not decoration. Minor units are only
+	// additive at one scale: 100 paise and 100 millirupees are not 200 of
+	// anything, and a total that mixed them would be a number with no unit.
+	AmountScale        int32 `json:"amount_scale"`
+	Count              int64 `json:"count"`
+	TotalAbsMinorUnits int64 `json:"total_abs_minor_units"`
 }
 
 // NeedsHumanReview reports whether a divergence must reach the integrity

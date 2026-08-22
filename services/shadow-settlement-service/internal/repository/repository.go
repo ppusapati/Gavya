@@ -265,10 +265,13 @@ func (r *repo) ResolveDivergence(ctx context.Context, id, tenantID string, statu
 }
 
 func (r *repo) SummariseDivergences(ctx context.Context, tenantID string, from, to time.Time) ([]domain.ClassSummary, error) {
-	const q = `SELECT classification, count(*), COALESCE(sum(abs(delta_minor_units)),0), currency
+	// Grouping by amount_scale as well as currency is not a refinement: summing
+	// minor units across scales would add paise to millirupees and report the
+	// result as money.
+	const q = `SELECT classification, count(*), COALESCE(sum(abs(delta_minor_units)),0), currency, amount_scale
 		FROM settlement_divergences
 		WHERE tenant_id=$1 AND deleted_at IS NULL AND created_at >= $2 AND created_at < $3
-		GROUP BY classification, currency
+		GROUP BY classification, currency, amount_scale
 		ORDER BY 3 DESC`
 	rows, err := r.db.Query(ctx, q, tenantID, from, to)
 	if err != nil {
@@ -280,7 +283,7 @@ func (r *repo) SummariseDivergences(ctx context.Context, tenantID string, from, 
 	for rows.Next() {
 		var s domain.ClassSummary
 		var class string
-		if err := rows.Scan(&class, &s.Count, &s.TotalAbsMinorUnits, &s.Currency); err != nil {
+		if err := rows.Scan(&class, &s.Count, &s.TotalAbsMinorUnits, &s.Currency, &s.AmountScale); err != nil {
 			return nil, err
 		}
 		s.Classification = domain.Classification(class)
