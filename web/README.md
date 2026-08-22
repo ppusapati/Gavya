@@ -14,6 +14,7 @@ Three workspaces, reachable from one shell:
 | `/mapping` | External identities: what an identifier from another system meant, at an instant. |
 | `/mapping/conflicts` | Collection slots where two records both claim to be authoritative and the policy cannot rank them. |
 | `/quarantine` | Records the ingestion service is holding rather than counting, because their transport identity could not be trusted. |
+| `/balance`, `/balance/[id]` | Mass balance windows: what a route took in against what came out, and the reconciliation runs that distribute any imbalance across the flows in proportion to how well each is measured. |
 
 ## What the screens are careful about
 

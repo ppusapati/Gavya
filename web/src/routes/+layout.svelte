@@ -45,6 +45,9 @@
 			<span class="group">Integrity &amp; audit</span>
 			<a href="/integrity" aria-current={current('/integrity')}>Divergence queue</a>
 
+			<span class="group">Mass balance</span>
+			<a href="/balance" aria-current={current('/balance')}>Balance windows</a>
+
 			<span class="group">Data mapping</span>
 			<a href="/mapping" aria-current={current('/mapping')}>External identities</a>
 			<a href="/mapping/conflicts" aria-current={current('/mapping/conflicts')}>Slot conflicts</a>

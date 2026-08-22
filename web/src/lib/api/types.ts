@@ -278,3 +278,120 @@ export interface ResolveQuarantineRequest {
 export interface ResolveQuarantineResponse {
 	record: QuarantinedRecord;
 }
+
+/* ---- mass balance reconciliation ---- */
+
+export type WindowStatus = 'OPEN' | 'RECONCILED' | 'ACCEPTED';
+
+export interface BalanceWindow {
+	id: string;
+	tenant_id: string;
+	route_ref: string;
+	period_start: string;
+	period_end: string;
+	unit: string;
+	status: WindowStatus;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface Flow {
+	id: string;
+	tenant_id: string;
+	window_id: string;
+	flow_id: string;
+	/** The empty string is the system boundary — milk entering or leaving the network. */
+	from_node: string;
+	from_node_kind?: string;
+	to_node: string;
+	to_node_kind?: string;
+	/** A decimal literal, not a number: a JSON float would already have lost the third decimal. */
+	measured: string;
+	standard_uncertainty?: string;
+	unmeasured: boolean;
+	observation_ref?: string;
+	created_at: string;
+}
+
+export interface ReconciledFlow {
+	flow_id: string;
+	measured: string;
+	reconciled: string;
+	adjustment: string;
+	test_statistic: number;
+	gross_error: boolean;
+	unmeasured: boolean;
+}
+
+export interface ReconciliationRun {
+	id: string;
+	tenant_id: string;
+	window_id: string;
+	converged: boolean;
+	residual_before: string;
+	/** Absent when no model answered; the window's imbalance is still in residual_before. */
+	residual_after?: string;
+	model_version?: string;
+	gross_error_threshold?: number;
+	reason?: string;
+	flows: ReconciledFlow[];
+	suspect_flow_ids?: string[];
+	accepted_at?: string;
+	accepted_by?: string;
+	created_at: string;
+}
+
+export interface ListWindowsRequest {
+	tenant_id: string;
+	status?: string;
+	limit?: number;
+	offset?: number;
+}
+export interface ListWindowsResponse {
+	windows: BalanceWindow[];
+}
+
+export interface ListFlowsRequest {
+	tenant_id: string;
+	window_id: string;
+}
+export interface ListFlowsResponse {
+	flows: Flow[];
+}
+
+export interface ListRunsRequest {
+	tenant_id: string;
+	window_id?: string;
+	limit?: number;
+	offset?: number;
+}
+export interface ListRunsResponse {
+	runs: ReconciliationRun[];
+}
+
+export interface GetRunRequest {
+	tenant_id: string;
+	id: string;
+}
+export interface GetRunResponse {
+	run: ReconciliationRun;
+}
+
+export interface ReconcileRequest {
+	tenant_id: string;
+	window_id: string;
+	gross_error_threshold?: number;
+	actor: string;
+}
+export interface ReconcileResponse {
+	run: ReconciliationRun;
+}
+
+export interface AcceptRunRequest {
+	tenant_id: string;
+	run_id: string;
+	actor: string;
+}
+export interface AcceptRunResponse {
+	run: ReconciliationRun;
+}

@@ -113,6 +113,54 @@ export class Gavya {
 		);
 	}
 
+	listWindows(req: Omit<T.ListWindowsRequest, 'tenant_id'>, extra?: Partial<CallOptions>) {
+		return this.#client.call<T.ListWindowsRequest, T.ListWindowsResponse>(
+			`${T.BALANCE}/ListWindows`,
+			{ tenant_id: this.#tenantId, ...req },
+			this.#opts(extra)
+		);
+	}
+
+	listFlows(windowId: string, extra?: Partial<CallOptions>) {
+		return this.#client.call<T.ListFlowsRequest, T.ListFlowsResponse>(
+			`${T.BALANCE}/ListFlows`,
+			{ tenant_id: this.#tenantId, window_id: windowId },
+			this.#opts(extra)
+		);
+	}
+
+	listRuns(req: Omit<T.ListRunsRequest, 'tenant_id'>, extra?: Partial<CallOptions>) {
+		return this.#client.call<T.ListRunsRequest, T.ListRunsResponse>(
+			`${T.BALANCE}/ListRuns`,
+			{ tenant_id: this.#tenantId, ...req },
+			this.#opts(extra)
+		);
+	}
+
+	getRun(id: string, extra?: Partial<CallOptions>) {
+		return this.#client.call<T.GetRunRequest, T.GetRunResponse>(
+			`${T.BALANCE}/GetRun`,
+			{ tenant_id: this.#tenantId, id },
+			this.#opts(extra)
+		);
+	}
+
+	reconcile(req: Omit<T.ReconcileRequest, 'tenant_id'>, extra?: Partial<CallOptions>) {
+		return this.#client.call<T.ReconcileRequest, T.ReconcileResponse>(
+			`${T.BALANCE}/Reconcile`,
+			{ tenant_id: this.#tenantId, ...req },
+			this.#opts(extra)
+		);
+	}
+
+	acceptRun(req: Omit<T.AcceptRunRequest, 'tenant_id'>, extra?: Partial<CallOptions>) {
+		return this.#client.call<T.AcceptRunRequest, T.AcceptRunResponse>(
+			`${T.BALANCE}/AcceptRun`,
+			{ tenant_id: this.#tenantId, ...req },
+			this.#opts(extra)
+		);
+	}
+
 	listQuarantined(req: Omit<T.ListQuarantinedRequest, 'tenant_id'>, extra?: Partial<CallOptions>) {
 		return this.#client.call<T.ListQuarantinedRequest, T.ListQuarantinedResponse>(
 			`${T.INGESTION}/ListQuarantined`,

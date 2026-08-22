@@ -63,6 +63,40 @@ const GATEWAY = {
 			  values: { quantity_litres: '12.5', fat_percent: '4.1' } }
 		]
 	},
+	'/balance.v1.BalanceService/ListWindows': {
+		windows: [
+			{ id: 'WIN01JGAVYA0000000000000001', tenant_id: 't', route_ref: 'RTE-NORTH',
+			  period_start: '2026-08-20T00:00:00Z', period_end: '2026-08-21T00:00:00Z',
+			  unit: 'L', status: 'RECONCILED',
+			  created_at: '2026-08-21T02:00:00Z', updated_at: '2026-08-21T02:00:00Z' }
+		]
+	},
+	'/balance.v1.BalanceService/ListFlows': {
+		flows: [
+			{ id: 'f1', tenant_id: 't', window_id: 'WIN01JGAVYA0000000000000001', flow_id: 'FL-IN',
+			  from_node: '', to_node: 'CENTRE-2', to_node_kind: 'CENTRE',
+			  measured: '4210.500', standard_uncertainty: '12.000', unmeasured: false,
+			  created_at: '2026-08-21T01:00:00Z' },
+			{ id: 'f2', tenant_id: 't', window_id: 'WIN01JGAVYA0000000000000001', flow_id: 'FL-LOSS',
+			  from_node: 'CENTRE-2', to_node: '', measured: '', unmeasured: true,
+			  created_at: '2026-08-21T01:00:00Z' }
+		]
+	},
+	'/balance.v1.BalanceService/ListRuns': {
+		runs: [
+			{ id: 'RUN01JGAVYA0000000000000001', tenant_id: 't', window_id: 'WIN01JGAVYA0000000000000001',
+			  converged: true, residual_before: '18.250', residual_after: '0.000',
+			  model_version: 'reconciler-0.4.0', gross_error_threshold: 3,
+			  suspect_flow_ids: ['FL-LOSS'],
+			  flows: [
+				{ flow_id: 'FL-IN', measured: '4210.500', reconciled: '4204.310',
+				  adjustment: '-6.190', test_statistic: 0.52, gross_error: false, unmeasured: false },
+				{ flow_id: 'FL-LOSS', measured: '', reconciled: '12.060',
+				  adjustment: '12.060', test_statistic: 4.10, gross_error: true, unmeasured: true }
+			  ],
+			  created_at: '2026-08-21T02:00:00Z' }
+		]
+	},
 	'/ingestion.v1.IngestionService/ListQuarantined': {
 		records: [
 			{ id: 'q1', tenant_id: 't', reason: 'SEQUENCE_REGRESSION', detail: 'sequence 4 follows 9',
@@ -137,7 +171,9 @@ const routes = [
 	['/integrity/01JGAVYADIVERGENCE0000001A', 'Divergence'],
 	['/mapping', 'External identities'],
 	['/mapping/conflicts', 'Collection slot conflicts'],
-	['/quarantine', 'Quarantine']
+	['/quarantine', 'Quarantine'],
+	['/balance', 'Mass balance'],
+	['/balance/WIN01JGAVYA0000000000000001', 'Balance window']
 ];
 
 for (const [route, heading] of routes) {
@@ -166,6 +202,14 @@ if (!detail.includes('settled for less')) problems.push('detail page did not sta
 await page.goto('http://localhost:4173/quarantine', { waitUntil: 'networkidle' });
 const q = await page.locator('main').innerText();
 if (!q.includes('Sequence regression')) problems.push('quarantine page did not label the reason');
+
+await page.goto('http://localhost:4173/balance/WIN01JGAVYA0000000000000001', { waitUntil: 'networkidle' });
+const bal = await page.locator('main').innerText();
+for (const must of ['FL-IN', 'outside the network', '18.250', 'gross error', 'reconciler-0.4.0', 'Accept this reconciliation']) {
+	if (!bal.includes(must)) problems.push(`balance window page is missing ${JSON.stringify(must)}`);
+}
+// An unmeasured leg must read as inferred, not as a measurement of nothing.
+if (!bal.includes('inferred')) problems.push('an unmeasured flow was not marked inferred');
 
 await browser.close();
 site.close();
