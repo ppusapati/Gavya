@@ -56,24 +56,24 @@ type RecordInseminationRequest struct {
 }
 
 type ConfirmPregnancyRequest struct {
-	TenantID             string    `json:"tenant_id"`
-	CattleID             string    `json:"cattle_id"`
-	InseminationID       string    `json:"insemination_id"`
-	ConfirmedAt          time.Time `json:"confirmed_at"`
-	ExpectedCalvingDate  time.Time `json:"expected_calving_date"`
-	CreatedBy            string    `json:"created_by"`
+	TenantID            string    `json:"tenant_id"`
+	CattleID            string    `json:"cattle_id"`
+	InseminationID      string    `json:"insemination_id"`
+	ConfirmedAt         time.Time `json:"confirmed_at"`
+	ExpectedCalvingDate time.Time `json:"expected_calving_date"`
+	CreatedBy           string    `json:"created_by"`
 }
 
 type RecordCalvingRequest struct {
-	TenantID      string   `json:"tenant_id"`
-	PregnancyID   string   `json:"pregnancy_id"`
-	CattleID      string   `json:"cattle_id"`
-	CalfID        *string  `json:"calf_id"`
-	CalfGender    string   `json:"calf_gender"`
-	CalfWeight    float64  `json:"calf_weight"`
-	Complications string   `json:"complications"`
-	Status        string   `json:"status"`
-	CreatedBy     string   `json:"created_by"`
+	TenantID      string  `json:"tenant_id"`
+	PregnancyID   string  `json:"pregnancy_id"`
+	CattleID      string  `json:"cattle_id"`
+	CalfID        *string `json:"calf_id"`
+	CalfGender    string  `json:"calf_gender"`
+	CalfWeight    float64 `json:"calf_weight"`
+	Complications string  `json:"complications"`
+	Status        string  `json:"status"`
+	CreatedBy     string  `json:"created_by"`
 }
 
 type GetBreedingHistoryRequest struct {

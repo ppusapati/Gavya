@@ -23,14 +23,15 @@ func mux(t *testing.T) *http.ServeMux {
 
 func TestEveryProcedureIsRouted(t *testing.T) {
 	procedures := []string{
-		"RecordObservation",
-		"GetObservation",
-		"ListObservationsForSubject",
-		"ListFlaggedObservations",
-		"RegisterInstrument",
-		"GetInstrument",
-		"RecordCertificate",
-		"GetActiveCertificate",
+		"CreateSession",
+		"GetSession",
+		"ListSessions",
+		"UpdateSessionStatus",
+		"RecordMilk",
+		"GetRecord",
+		"ListSessionRecords",
+		"GetDailyYield",
+		"RecordQuality",
 	}
 
 	m := mux(t)
@@ -57,7 +58,7 @@ func TestEveryProcedureIsRouted(t *testing.T) {
 
 func TestMalformedJSONIsInvalidArgumentNotInternal(t *testing.T) {
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/"+ServiceName+"/GetObservation",
+	req := httptest.NewRequest(http.MethodPost, "/"+ServiceName+"/GetSession",
 		strings.NewReader(`{not json`))
 	req.Header.Set("Content-Type", "application/json")
 	mux(t).ServeHTTP(rec, req)
@@ -83,7 +84,7 @@ func TestMalformedJSONIsInvalidArgumentNotInternal(t *testing.T) {
 
 func TestGetOnAProcedureIsRejected(t *testing.T) {
 	rec := httptest.NewRecorder()
-	mux(t).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/"+ServiceName+"/GetObservation", nil))
+	mux(t).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/"+ServiceName+"/GetSession", nil))
 
 	if rec.Code != http.StatusNotImplemented {
 		t.Errorf("status = %d, want 501 for a non-POST on a unary procedure", rec.Code)

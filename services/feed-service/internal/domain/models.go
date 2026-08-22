@@ -4,9 +4,9 @@ import "time"
 
 type FeedType struct {
 	ID, TenantID, Name, Category, Unit, NutritionalInfo string
-	CreatedAt, UpdatedAt                                 time.Time
-	CreatedBy, UpdatedBy                                 string
-	DeletedAt                                            *time.Time
+	CreatedAt, UpdatedAt                                time.Time
+	CreatedBy, UpdatedBy                                string
+	DeletedAt                                           *time.Time
 }
 
 type NutritionPlan struct {

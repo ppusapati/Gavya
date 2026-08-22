@@ -7,6 +7,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	"github.com/ppusapati/gavya/libs/integrity/connectjson"
 	"github.com/ppusapati/gavya/services/milk-service/internal/domain"
 	"github.com/ppusapati/gavya/services/milk-service/internal/service"
 )
@@ -17,25 +18,33 @@ type CreateSessionRequest struct {
 	ShiftType string `json:"shift_type"`
 	CreatedBy string `json:"created_by"`
 }
-type CreateSessionResponse struct{ Session *SessionProto `json:"session"` }
+type CreateSessionResponse struct {
+	Session *SessionProto `json:"session"`
+}
 type GetSessionRequest struct {
 	ID       string `json:"id"`
 	TenantID string `json:"tenant_id"`
 }
-type GetSessionResponse struct{ Session *SessionProto `json:"session"` }
+type GetSessionResponse struct {
+	Session *SessionProto `json:"session"`
+}
 type ListSessionsRequest struct {
 	TenantID string `json:"tenant_id"`
 	Limit    int32  `json:"limit"`
 	Offset   int32  `json:"offset"`
 }
-type ListSessionsResponse struct{ Sessions []*SessionProto `json:"sessions"` }
+type ListSessionsResponse struct {
+	Sessions []*SessionProto `json:"sessions"`
+}
 type UpdateSessionRequest struct {
 	ID        string `json:"id"`
 	TenantID  string `json:"tenant_id"`
 	Status    string `json:"status"`
 	UpdatedBy string `json:"updated_by"`
 }
-type UpdateSessionResponse struct{ Session *SessionProto `json:"session"` }
+type UpdateSessionResponse struct {
+	Session *SessionProto `json:"session"`
+}
 type RecordMilkRequest struct {
 	TenantID       string  `json:"tenant_id"`
 	SessionID      string  `json:"session_id"`
@@ -43,23 +52,31 @@ type RecordMilkRequest struct {
 	QuantityLiters float64 `json:"quantity_liters"`
 	CreatedBy      string  `json:"created_by"`
 }
-type RecordMilkResponse struct{ Record *RecordProto `json:"record"` }
+type RecordMilkResponse struct {
+	Record *RecordProto `json:"record"`
+}
 type GetRecordRequest struct {
 	ID       string `json:"id"`
 	TenantID string `json:"tenant_id"`
 }
-type GetRecordResponse struct{ Record *RecordProto `json:"record"` }
+type GetRecordResponse struct {
+	Record *RecordProto `json:"record"`
+}
 type ListRecordsRequest struct {
 	SessionID string `json:"session_id"`
 	TenantID  string `json:"tenant_id"`
 }
-type ListRecordsResponse struct{ Records []*RecordProto `json:"records"` }
+type ListRecordsResponse struct {
+	Records []*RecordProto `json:"records"`
+}
 type DailyYieldRequest struct {
 	TenantID string `json:"tenant_id"`
 	CattleID string `json:"cattle_id"`
 	Date     string `json:"date"`
 }
-type DailyYieldResponse struct{ TotalLiters float64 `json:"total_liters"` }
+type DailyYieldResponse struct {
+	TotalLiters float64 `json:"total_liters"`
+}
 type RecordQualityRequest struct {
 	TenantID   string  `json:"tenant_id"`
 	RecordID   string  `json:"record_id"`
@@ -68,7 +85,9 @@ type RecordQualityRequest struct {
 	Lactose    float64 `json:"lactose"`
 	CreatedBy  string  `json:"created_by"`
 }
-type RecordQualityResponse struct{ Quality *QualityProto `json:"quality"` }
+type RecordQualityResponse struct {
+	Quality *QualityProto `json:"quality"`
+}
 
 type SessionProto struct {
 	ID        string `json:"id"`
@@ -97,8 +116,26 @@ type Handler struct{ svc *service.Service }
 
 func New(svc *service.Service) *Handler { return &Handler{svc: svc} }
 
+// ServiceName is the fully qualified Connect service these procedures are
+// addressed under.
+const ServiceName = "milk.v1.MilkService"
+
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	route := func(method string, handler http.HandlerFunc) {
+		mux.HandleFunc(connectjson.Procedure(ServiceName, method), handler)
+	}
+
+	route("CreateSession", connectjson.Unary(h.CreateSession))
+	route("GetSession", connectjson.Unary(h.GetSession))
+	route("ListSessions", connectjson.Unary(h.ListSessions))
+	route("UpdateSessionStatus", connectjson.Unary(h.UpdateSessionStatus))
+	route("RecordMilk", connectjson.Unary(h.RecordMilk))
+	route("GetRecord", connectjson.Unary(h.GetRecord))
+	route("ListSessionRecords", connectjson.Unary(h.ListSessionRecords))
+	route("GetDailyYield", connectjson.Unary(h.GetDailyYield))
+	route("RecordQuality", connectjson.Unary(h.RecordQuality))
 }
 
 func (h *Handler) CreateSession(ctx context.Context, req *connect.Request[CreateSessionRequest]) (*connect.Response[CreateSessionResponse], error) {

@@ -9,12 +9,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 	"github.com/ppusapati/gavya/services/tenant-service/internal/config"
 	"github.com/ppusapati/gavya/services/tenant-service/internal/handler"
 	"github.com/ppusapati/gavya/services/tenant-service/internal/repository"
 	"github.com/ppusapati/gavya/services/tenant-service/internal/service"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 	"p9e.in/samavaya/packages/p9log"
 )
 

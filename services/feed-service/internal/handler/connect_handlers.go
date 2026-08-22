@@ -44,12 +44,12 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 }
 
 type CreateFeedTypeRequest struct {
-	TenantID       string `json:"tenant_id"`
-	Name           string `json:"name"`
-	Category       string `json:"category"`
-	Unit           string `json:"unit"`
+	TenantID        string `json:"tenant_id"`
+	Name            string `json:"name"`
+	Category        string `json:"category"`
+	Unit            string `json:"unit"`
 	NutritionalInfo string `json:"nutritional_info"`
-	CreatedBy      string `json:"created_by"`
+	CreatedBy       string `json:"created_by"`
 }
 
 type TenantRequest struct {
@@ -96,12 +96,12 @@ func (h *Handler) CreateFeedType(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f := &domain.FeedType{
-		TenantID:       req.TenantID,
-		Name:           req.Name,
-		Category:       req.Category,
-		Unit:           req.Unit,
+		TenantID:        req.TenantID,
+		Name:            req.Name,
+		Category:        req.Category,
+		Unit:            req.Unit,
 		NutritionalInfo: req.NutritionalInfo,
-		CreatedBy:      req.CreatedBy,
+		CreatedBy:       req.CreatedBy,
 	}
 	result, err := h.svc.CreateFeedType(r.Context(), f)
 	if err != nil {

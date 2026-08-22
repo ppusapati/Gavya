@@ -33,7 +33,7 @@ type Pregnancy struct {
 
 type CalvingRecord struct {
 	ID, TenantID, PregnancyID, CattleID string
-	CalfID                               *string
+	CalfID                              *string
 	CalvingDate                         time.Time
 	CalfGender                          string
 	CalfWeight                          float64

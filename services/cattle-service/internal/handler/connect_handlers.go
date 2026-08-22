@@ -6,6 +6,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	"github.com/ppusapati/gavya/libs/integrity/connectjson"
 	"github.com/ppusapati/gavya/services/cattle-service/internal/domain"
 	"github.com/ppusapati/gavya/services/cattle-service/internal/service"
 )
@@ -121,17 +122,27 @@ func New(svc *service.Service) *Handler {
 	return &Handler{svc: svc}
 }
 
+// ServiceName is the fully qualified Connect service these procedures are
+// addressed under.
+const ServiceName = "cattle.v1.CattleService"
+
 // Register mounts all routes on the given mux.
-// After running `buf generate`, replace with the generated registration call:
-//
-//	mux.Handle(cattlev1connect.NewCattleServiceHandler(h))
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	// ConnectRPC route registration placeholder — replace after buf generate:
-	// path, handler := cattlev1connect.NewCattleServiceHandler(h)
-	// mux.Handle(path, handler)
+
+	route := func(method string, handler http.HandlerFunc) {
+		mux.HandleFunc(connectjson.Procedure(ServiceName, method), handler)
+	}
+
+	route("CreateCattle", connectjson.Unary(h.CreateCattle))
+	route("GetCattle", connectjson.Unary(h.GetCattle))
+	route("ListCattle", connectjson.Unary(h.ListCattle))
+	route("UpdateCattle", connectjson.Unary(h.UpdateCattle))
+	route("DeleteCattle", connectjson.Unary(h.DeleteCattle))
+	route("CreateBreed", connectjson.Unary(h.CreateBreed))
+	route("ListBreeds", connectjson.Unary(h.ListBreeds))
 }
 
 // ─── RPC implementations ──────────────────────────────────────────────────────

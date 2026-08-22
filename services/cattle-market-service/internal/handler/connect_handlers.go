@@ -6,38 +6,136 @@ import (
 
 	"connectrpc.com/connect"
 
+	"github.com/ppusapati/gavya/libs/integrity/connectjson"
 	"github.com/ppusapati/gavya/services/cattle-market-service/internal/domain"
 	"github.com/ppusapati/gavya/services/cattle-market-service/internal/service"
 )
 
 // ── Request / Response types (mirror proto messages) ──────────────────────────
 
-type CreateListingRequest  struct { TenantID string `json:"tenant_id"`; CattleID string `json:"cattle_id"`; SellerID string `json:"seller_id"`; Title string `json:"title"`; Description string `json:"description"`; AskingPrice float64 `json:"asking_price"`; Currency string `json:"currency"`; ListingType string `json:"listing_type"`; CreatedBy string `json:"created_by"` }
-type CreateListingResponse struct { Listing *ListingProto `json:"listing"` }
-type GetListingRequest     struct { ID string `json:"id"`; TenantID string `json:"tenant_id"` }
-type GetListingResponse    struct { Listing *ListingProto `json:"listing"` }
-type ListActiveRequest     struct { TenantID string `json:"tenant_id"`; Limit int32 `json:"limit"`; Offset int32 `json:"offset"` }
-type ListActiveResponse    struct { Listings []*ListingProto `json:"listings"` }
-type PlaceBidRequest       struct { TenantID string `json:"tenant_id"`; ListingID string `json:"listing_id"`; BidderID string `json:"bidder_id"`; BidAmount float64 `json:"bid_amount"`; Message string `json:"message"`; CreatedBy string `json:"created_by"` }
-type PlaceBidResponse      struct { Bid *BidProto `json:"bid"` }
-type BidActionRequest      struct { ID string `json:"id"`; TenantID string `json:"tenant_id"`; UpdatedBy string `json:"updated_by"` }
-type BidActionResponse     struct { Bid *BidProto `json:"bid"` }
-type RecordSaleRequest     struct { TenantID string `json:"tenant_id"`; ListingID string `json:"listing_id"`; SellerID string `json:"seller_id"`; BuyerID string `json:"buyer_id"`; CattleID string `json:"cattle_id"`; SalePrice float64 `json:"sale_price"`; CreatedBy string `json:"created_by"` }
-type RecordSaleResponse    struct { Sale *SaleProto `json:"sale"` }
-type OwnershipRequest      struct { TenantID string `json:"tenant_id"`; CattleID string `json:"cattle_id"` }
-type OwnershipResponse     struct { History []*OwnershipProto `json:"history"` }
+type CreateListingRequest struct {
+	TenantID    string  `json:"tenant_id"`
+	CattleID    string  `json:"cattle_id"`
+	SellerID    string  `json:"seller_id"`
+	Title       string  `json:"title"`
+	Description string  `json:"description"`
+	AskingPrice float64 `json:"asking_price"`
+	Currency    string  `json:"currency"`
+	ListingType string  `json:"listing_type"`
+	CreatedBy   string  `json:"created_by"`
+}
+type CreateListingResponse struct {
+	Listing *ListingProto `json:"listing"`
+}
+type GetListingRequest struct {
+	ID       string `json:"id"`
+	TenantID string `json:"tenant_id"`
+}
+type GetListingResponse struct {
+	Listing *ListingProto `json:"listing"`
+}
+type ListActiveRequest struct {
+	TenantID string `json:"tenant_id"`
+	Limit    int32  `json:"limit"`
+	Offset   int32  `json:"offset"`
+}
+type ListActiveResponse struct {
+	Listings []*ListingProto `json:"listings"`
+}
+type PlaceBidRequest struct {
+	TenantID  string  `json:"tenant_id"`
+	ListingID string  `json:"listing_id"`
+	BidderID  string  `json:"bidder_id"`
+	BidAmount float64 `json:"bid_amount"`
+	Message   string  `json:"message"`
+	CreatedBy string  `json:"created_by"`
+}
+type PlaceBidResponse struct {
+	Bid *BidProto `json:"bid"`
+}
+type BidActionRequest struct {
+	ID        string `json:"id"`
+	TenantID  string `json:"tenant_id"`
+	UpdatedBy string `json:"updated_by"`
+}
+type BidActionResponse struct {
+	Bid *BidProto `json:"bid"`
+}
+type RecordSaleRequest struct {
+	TenantID  string  `json:"tenant_id"`
+	ListingID string  `json:"listing_id"`
+	SellerID  string  `json:"seller_id"`
+	BuyerID   string  `json:"buyer_id"`
+	CattleID  string  `json:"cattle_id"`
+	SalePrice float64 `json:"sale_price"`
+	CreatedBy string  `json:"created_by"`
+}
+type RecordSaleResponse struct {
+	Sale *SaleProto `json:"sale"`
+}
+type OwnershipRequest struct {
+	TenantID string `json:"tenant_id"`
+	CattleID string `json:"cattle_id"`
+}
+type OwnershipResponse struct {
+	History []*OwnershipProto `json:"history"`
+}
 
-type ListingProto   struct { ID string `json:"id"`; TenantID string `json:"tenant_id"`; CattleID string `json:"cattle_id"`; Title string `json:"title"`; AskingPrice float64 `json:"asking_price"`; ListingType string `json:"listing_type"`; Status string `json:"status"` }
-type BidProto       struct { ID string `json:"id"`; TenantID string `json:"tenant_id"`; ListingID string `json:"listing_id"`; BidderID string `json:"bidder_id"`; BidAmount float64 `json:"bid_amount"`; Status string `json:"status"` }
-type SaleProto      struct { ID string `json:"id"`; TenantID string `json:"tenant_id"`; ListingID string `json:"listing_id"`; SalePrice float64 `json:"sale_price"`; Status string `json:"status"` }
-type OwnershipProto struct { ID string `json:"id"`; TenantID string `json:"tenant_id"`; CattleID string `json:"cattle_id"`; OwnerID string `json:"owner_id"`; AcquisitionType string `json:"acquisition_type"` }
+type ListingProto struct {
+	ID          string  `json:"id"`
+	TenantID    string  `json:"tenant_id"`
+	CattleID    string  `json:"cattle_id"`
+	Title       string  `json:"title"`
+	AskingPrice float64 `json:"asking_price"`
+	ListingType string  `json:"listing_type"`
+	Status      string  `json:"status"`
+}
+type BidProto struct {
+	ID        string  `json:"id"`
+	TenantID  string  `json:"tenant_id"`
+	ListingID string  `json:"listing_id"`
+	BidderID  string  `json:"bidder_id"`
+	BidAmount float64 `json:"bid_amount"`
+	Status    string  `json:"status"`
+}
+type SaleProto struct {
+	ID        string  `json:"id"`
+	TenantID  string  `json:"tenant_id"`
+	ListingID string  `json:"listing_id"`
+	SalePrice float64 `json:"sale_price"`
+	Status    string  `json:"status"`
+}
+type OwnershipProto struct {
+	ID              string `json:"id"`
+	TenantID        string `json:"tenant_id"`
+	CattleID        string `json:"cattle_id"`
+	OwnerID         string `json:"owner_id"`
+	AcquisitionType string `json:"acquisition_type"`
+}
 
 type Handler struct{ svc *service.Service }
 
 func New(svc *service.Service) *Handler { return &Handler{svc: svc} }
 
+// ServiceName is the fully qualified Connect service these procedures are
+// addressed under.
+const ServiceName = "cattlemarket.v1.CattleMarketService"
+
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	route := func(method string, handler http.HandlerFunc) {
+		mux.HandleFunc(connectjson.Procedure(ServiceName, method), handler)
+	}
+
+	route("CreateListing", connectjson.Unary(h.CreateListing))
+	route("GetListing", connectjson.Unary(h.GetListing))
+	route("ListActiveListings", connectjson.Unary(h.ListActiveListings))
+	route("PlaceBid", connectjson.Unary(h.PlaceBid))
+	route("AcceptBid", connectjson.Unary(h.AcceptBid))
+	route("RejectBid", connectjson.Unary(h.RejectBid))
+	route("RecordSale", connectjson.Unary(h.RecordSale))
+	route("GetOwnershipHistory", connectjson.Unary(h.GetOwnershipHistory))
 }
 
 func (h *Handler) CreateListing(ctx context.Context, req *connect.Request[CreateListingRequest]) (*connect.Response[CreateListingResponse], error) {
@@ -87,7 +185,7 @@ func (h *Handler) AcceptBid(ctx context.Context, req *connect.Request[BidActionR
 }
 
 func (h *Handler) RejectBid(ctx context.Context, req *connect.Request[BidActionRequest]) (*connect.Response[BidActionResponse], error) {
-	b, err := h.svc.RejectBid(ctx, req.Msg.ID, req.Msg.TenantID, req.Msg.UpdatedBy)
+	b, err := h.svc.RejectBid(ctx, req.Msg.ID, req.Msg.UpdatedBy)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -96,11 +194,21 @@ func (h *Handler) RejectBid(ctx context.Context, req *connect.Request[BidActionR
 
 func (h *Handler) RecordSale(ctx context.Context, req *connect.Request[RecordSaleRequest]) (*connect.Response[RecordSaleResponse], error) {
 	m := req.Msg
-	s, err := h.svc.RecordSale(ctx, m.TenantID, m.ListingID, m.SellerID, m.BuyerID, m.CattleID, m.SalePrice, m.CreatedBy)
+	// The buyer becomes the new owner, which is what makes the sale a transfer
+	// rather than only a payment.
+	sale, _, err := h.svc.RecordSale(ctx, &domain.CattleSale{
+		TenantID:  m.TenantID,
+		ListingID: m.ListingID,
+		SellerID:  m.SellerID,
+		BuyerID:   m.BuyerID,
+		CattleID:  m.CattleID,
+		SalePrice: m.SalePrice,
+		CreatedBy: m.CreatedBy,
+	}, m.BuyerID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	return connect.NewResponse(&RecordSaleResponse{Sale: toSaleProto(s)}), nil
+	return connect.NewResponse(&RecordSaleResponse{Sale: toSaleProto(sale)}), nil
 }
 
 func (h *Handler) GetOwnershipHistory(ctx context.Context, req *connect.Request[OwnershipRequest]) (*connect.Response[OwnershipResponse], error) {

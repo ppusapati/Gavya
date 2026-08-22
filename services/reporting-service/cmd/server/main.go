@@ -8,11 +8,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/ppusapati/gavya/services/reporting-service/internal/config"
 	"github.com/ppusapati/gavya/services/reporting-service/internal/handler"
 	"github.com/ppusapati/gavya/services/reporting-service/internal/repository"
 	"github.com/ppusapati/gavya/services/reporting-service/internal/service"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 	"p9e.in/samavaya/packages/p9log"

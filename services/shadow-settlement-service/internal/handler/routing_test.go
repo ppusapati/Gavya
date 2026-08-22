@@ -46,7 +46,9 @@ func TestEveryProcedureIsRouted(t *testing.T) {
 			m.ServeHTTP(rec, req)
 		}()
 
-		if rec.Code == http.StatusNotFound {
+		// A handler is free to answer 404 on its own terms, so routing is
+		// judged by whether the mux matched a pattern rather than by status.
+		if _, pattern := m.Handler(req); pattern == "" {
 			t.Errorf("%s is not routed", path)
 		}
 	}

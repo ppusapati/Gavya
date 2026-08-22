@@ -15,9 +15,9 @@ type Report struct {
 
 type ReportSchedule struct {
 	ID, TenantID, ReportType, Schedule, Parameters string
-	IsActive                                        bool
-	LastRunAt, NextRunAt                            *time.Time
-	CreatedAt, UpdatedAt                            time.Time
-	CreatedBy, UpdatedBy                            string
-	DeletedAt                                       *time.Time
+	IsActive                                       bool
+	LastRunAt, NextRunAt                           *time.Time
+	CreatedAt, UpdatedAt                           time.Time
+	CreatedBy, UpdatedBy                           string
+	DeletedAt                                      *time.Time
 }
