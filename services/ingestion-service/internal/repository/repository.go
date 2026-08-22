@@ -7,12 +7,20 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ppusapati/gavya/services/ingestion-service/internal/domain"
 )
 
 var ErrNotFound = errors.New("not found")
+
+// ErrDuplicateSerial names the one way registering a device fails that the
+// device itself can act on. An app that has been reinstalled has lost its
+// device id but not its serial, and needs to tell "this bench is already
+// provisioned, adopt it and roll a generation" apart from "you sent something
+// invalid" — which it cannot do from an opaque constraint violation.
+var ErrDuplicateSerial = errors.New("a device with that serial is already registered")
 
 // Decider is the pure admission rule, supplied by the service layer and
 // evaluated inside the repository's transaction. Keeping the rule out here and
@@ -266,6 +274,9 @@ func (r *repo) CreateDevice(ctx context.Context, d *domain.Device, generationID 
 		 RETURNING id,tenant_id,serial,kind,label,current_generation,created_at,updated_at,created_by,updated_by,deleted_at`,
 		d.ID, d.TenantID, d.Serial, string(d.Kind), d.Label, d.CreatedBy))
 	if err != nil {
+		if isUniqueViolation(err) {
+			return nil, ErrDuplicateSerial
+		}
 		return nil, fmt.Errorf("insert device: %w", err)
 	}
 
@@ -551,4 +562,9 @@ func scanQuarantine(row scanner) (*domain.QuarantinedRecord, error) {
 	}
 	q.Reason = domain.QuarantineReason(reason)
 	return &q, nil
+}
+
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }

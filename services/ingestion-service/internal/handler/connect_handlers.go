@@ -290,6 +290,11 @@ func (h *Handler) RegisterDevice(ctx context.Context, req *connect.Request[Regis
 	m := req.Msg
 	d, err := h.svc.RegisterDevice(ctx, m.TenantID, m.Serial, domain.DeviceKind(m.Kind), m.Label, m.Actor)
 	if err != nil {
+		// A reinstalled app can act on AlreadyExists — adopt the device it
+		// already has and roll a generation — but not on a generic rejection.
+		if errors.Is(err, repository.ErrDuplicateSerial) {
+			return nil, connect.NewError(connect.CodeAlreadyExists, err)
+		}
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	return connect.NewResponse(&RegisterDeviceResponse{Device: toDeviceProto(d)}), nil
