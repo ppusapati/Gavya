@@ -1,6 +1,9 @@
 package config
 
-import "os"
+import (
+	"os"
+	"strings"
+)
 
 type Config struct {
 	ServiceName string
@@ -35,6 +38,11 @@ type Config struct {
 	PoolingServiceURL          string
 	BalanceServiceURL          string
 	ShadowSettlementServiceURL string
+
+	// CORSAllowedOrigins lists the browser origins the workspaces are served
+	// from. Empty means no cross-origin call is answered, which is the right
+	// default for a deployment that serves the workspace from the gateway.
+	CORSAllowedOrigins []string
 }
 
 // The localhost defaults are for running a service outside compose. Under
@@ -70,7 +78,25 @@ func Load() *Config {
 		PoolingServiceURL:          getEnv("POOLING_SERVICE_URL", "http://localhost:8094"),
 		BalanceServiceURL:          getEnv("BALANCE_SERVICE_URL", "http://localhost:8095"),
 		ShadowSettlementServiceURL: getEnv("SHADOW_SETTLEMENT_SERVICE_URL", "http://localhost:8090"),
+
+		CORSAllowedOrigins: splitList(getEnv("CORS_ALLOWED_ORIGINS", "")),
 	}
+}
+
+// splitList reads a comma-separated environment value, dropping blanks so a
+// trailing comma cannot introduce an empty origin that matches nothing.
+func splitList(v string) []string {
+	if v == "" {
+		return nil
+	}
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func getEnv(k, d string) string {
