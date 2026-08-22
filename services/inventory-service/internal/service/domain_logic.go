@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ppusapati/gavya/services/inventory-service/internal/domain"
+	"github.com/ppusapati/gavya/services/inventory-service/internal/repository"
 	ulidpkg "p9e.in/samavaya/packages/ULID"
 )
 
@@ -60,9 +61,14 @@ func (s *Service) ListWarehouses(ctx context.Context, tenantID string) ([]*domai
 	return s.repo.ListWarehouses(ctx, tenantID)
 }
 
-// AdjustStock creates a StockMovement and updates inventory_item quantity.
-// in = add, out = subtract, adjustment = set absolute value
-func (s *Service) AdjustStock(ctx context.Context, m *domain.StockMovement, updatedBy string) (*domain.StockMovement, error) {
+// AdjustStock records a movement and moves the stock it describes.
+//
+// The whole of it — the movement row, the new quantity, and the refusal to let
+// stock go below zero — happens in one transaction in the repository. The
+// arithmetic is deliberately not done here: a quantity computed in Go and
+// written back is a lost update waiting for a second concurrent movement, and
+// float64 addition against a NUMERIC(12,3) column drifts over an item's life.
+func (s *Service) AdjustStock(ctx context.Context, m *domain.StockMovement, updatedBy string) (*repository.MovementOutcome, error) {
 	if m.TenantID == "" {
 		return nil, invalid("tenant_id is required")
 	}
@@ -72,11 +78,22 @@ func (s *Service) AdjustStock(ctx context.Context, m *domain.StockMovement, upda
 	if m.SKUID == "" {
 		return nil, invalid("sku_id is required")
 	}
-	switch m.MovementType {
-	case "in", "out", "adjustment", "transfer":
-	default:
-		return nil, invalid("invalid movement_type")
+	if !domain.ValidMovementType(m.MovementType) {
+		return nil, invalid("movement_type must be one of in, out, adjustment, transfer")
 	}
+
+	// The quantity is turned into the exact decimal the database will store, and
+	// a value the stock columns cannot hold is refused rather than rounded on
+	// the way in.
+	quantity, err := domain.FormatQuantity(m.Quantity)
+	if err != nil {
+		return nil, invalid(err.Error())
+	}
+	// A movement of nothing only means something as a stocktake that found none.
+	if m.Quantity == 0 && m.MovementType != domain.MovementAdjustment {
+		return nil, invalid("a " + m.MovementType + " movement must carry a quantity")
+	}
+
 	m.ID = ulidpkg.New().String()
 	if m.MovedAt.IsZero() {
 		m.MovedAt = time.Now()
@@ -89,59 +106,7 @@ func (s *Service) AdjustStock(ctx context.Context, m *domain.StockMovement, upda
 	}
 	m.UpdatedBy = m.CreatedBy
 
-	movement, err := s.repo.CreateStockMovement(ctx, m)
-	if err != nil {
-		return nil, err
-	}
-
-	// Get or compute new quantity
-	existing, err := s.repo.GetInventoryItem(ctx, m.WarehouseID, m.SKUID, m.TenantID)
-	var newQty float64
-	if err != nil {
-		// item doesn't exist yet
-		newQty = 0
-	} else {
-		newQty = existing.QuantityOnHand
-	}
-
-	switch m.MovementType {
-	case "in":
-		newQty += m.Quantity
-	case "out":
-		newQty -= m.Quantity
-	case "adjustment":
-		newQty = m.Quantity
-	case "transfer":
-		newQty -= m.Quantity
-	}
-
-	itemID := ulidpkg.New().String()
-	reorderPoint := 0.0
-	maxStock := 0.0
-	if existing != nil {
-		itemID = existing.ID
-		reorderPoint = existing.ReorderPoint
-		maxStock = existing.MaxStock
-	}
-
-	item := &domain.InventoryItem{
-		ID:               itemID,
-		TenantID:         m.TenantID,
-		WarehouseID:      m.WarehouseID,
-		SKUID:            m.SKUID,
-		QuantityOnHand:   newQty,
-		QuantityReserved: 0,
-		ReorderPoint:     reorderPoint,
-		MaxStock:         maxStock,
-		LastUpdatedAt:    time.Now(),
-		CreatedBy:        updatedBy,
-		UpdatedBy:        updatedBy,
-	}
-	if _, err := s.repo.UpsertInventoryItem(ctx, item); err != nil {
-		s.log.Errorf("failed to upsert inventory item: %v", err)
-	}
-
-	return movement, nil
+	return s.repo.ApplyStockMovement(ctx, m, quantity, ulidpkg.New().String())
 }
 
 func (s *Service) ListStockMovements(ctx context.Context, tenantID, warehouseID string, limit, offset int) ([]*domain.StockMovement, error) {

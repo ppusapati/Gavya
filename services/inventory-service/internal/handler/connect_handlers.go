@@ -54,6 +54,13 @@ func classify(err error) error {
 		return connect.NewError(connect.CodeNotFound, err)
 	case errors.Is(err, repository.ErrDuplicateWarehouseCode):
 		return connect.NewError(connect.CodeAlreadyExists, err)
+	case errors.Is(err, repository.ErrInsufficientStock):
+		// The request was well formed and the state refused it, which is what
+		// FailedPrecondition means. Retrying is pointless until stock arrives —
+		// and the code says so, rather than inviting a retry loop.
+		return connect.NewError(connect.CodeFailedPrecondition, err)
+	case errors.Is(err, repository.ErrUnknownWarehouse):
+		return connect.NewError(connect.CodeNotFound, err)
 	case errors.Is(err, service.ErrInvalidArgument):
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	default:
@@ -123,6 +130,11 @@ type ListWarehousesResponse struct {
 
 type StockMovementResponse struct {
 	Movement *domain.StockMovement `json:"movement"`
+	// Item is the stock this movement left behind. It is returned with the
+	// movement because the movement alone does not say what is on the shelf, and
+	// a caller that asked separately could be told a figure a later movement had
+	// already changed.
+	Item *domain.InventoryItem `json:"item,omitempty"`
 }
 
 type ListStockMovementsResponse struct {
@@ -188,7 +200,7 @@ func (h *Handler) AdjustStock(ctx context.Context, req *connect.Request[AdjustSt
 	if err != nil {
 		return nil, classify(err)
 	}
-	return connect.NewResponse(&StockMovementResponse{Movement: out}), nil
+	return connect.NewResponse(&StockMovementResponse{Movement: out.Movement, Item: out.Item}), nil
 }
 
 func (h *Handler) ListStockMovements(ctx context.Context, req *connect.Request[ListStockMovementsRequest]) (*connect.Response[ListStockMovementsResponse], error) {

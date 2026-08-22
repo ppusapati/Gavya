@@ -41,8 +41,9 @@ type Repository interface {
 	GetWarehouse(ctx context.Context, id, tenantID string) (*domain.Warehouse, error)
 	ListWarehouses(ctx context.Context, tenantID string) ([]*domain.Warehouse, error)
 	GetInventoryItem(ctx context.Context, warehouseID, skuID, tenantID string) (*domain.InventoryItem, error)
-	UpsertInventoryItem(ctx context.Context, item *domain.InventoryItem) (*domain.InventoryItem, error)
-	CreateStockMovement(ctx context.Context, m *domain.StockMovement) (*domain.StockMovement, error)
+	// ApplyStockMovement records a movement and moves the stock together, so a
+	// movement can never stand against stock that did not change.
+	ApplyStockMovement(ctx context.Context, m *domain.StockMovement, quantity, itemID string) (*MovementOutcome, error)
 	ListStockMovements(ctx context.Context, tenantID, warehouseID string, limit, offset int) ([]*domain.StockMovement, error)
 	CreateBatch(ctx context.Context, b *domain.Batch) (*domain.Batch, error)
 	GetBatch(ctx context.Context, id, tenantID string) (*domain.Batch, error)
@@ -110,31 +111,7 @@ func (r *repo) GetInventoryItem(ctx context.Context, warehouseID, skuID, tenantI
 	return scanInventoryItem(row)
 }
 
-func (r *repo) UpsertInventoryItem(ctx context.Context, item *domain.InventoryItem) (*domain.InventoryItem, error) {
-	row := r.pool.QueryRow(ctx,
-		`INSERT INTO inventory_items (id,tenant_id,warehouse_id,sku_id,quantity_on_hand,quantity_reserved,reorder_point,max_stock,last_updated_at,created_by,updated_by)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW(),$9,$10)
-		 ON CONFLICT (tenant_id,warehouse_id,sku_id) DO UPDATE SET
-		   quantity_on_hand = EXCLUDED.quantity_on_hand,
-		   last_updated_at = NOW(),
-		   updated_by = EXCLUDED.updated_by,
-		   updated_at = NOW()
-		 RETURNING `+inventoryItemCols,
-		item.ID, item.TenantID, item.WarehouseID, item.SKUID, item.QuantityOnHand,
-		item.QuantityReserved, item.ReorderPoint, item.MaxStock, item.CreatedBy, item.UpdatedBy,
-	)
-	return scanInventoryItem(row)
-}
 
-func (r *repo) CreateStockMovement(ctx context.Context, m *domain.StockMovement) (*domain.StockMovement, error) {
-	row := r.pool.QueryRow(ctx,
-		`INSERT INTO stock_movements (id,tenant_id,warehouse_id,sku_id,movement_type,quantity,reference_id,reference_type,notes,moved_at,moved_by,created_by,updated_by)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING `+stockMovementCols,
-		m.ID, m.TenantID, m.WarehouseID, m.SKUID, m.MovementType, m.Quantity,
-		m.ReferenceID, m.ReferenceType, m.Notes, m.MovedAt, m.MovedBy, m.CreatedBy, m.UpdatedBy,
-	)
-	return scanStockMovement(row)
-}
 
 func (r *repo) ListStockMovements(ctx context.Context, tenantID, warehouseID string, limit, offset int) ([]*domain.StockMovement, error) {
 	rows, err := r.pool.Query(ctx,
