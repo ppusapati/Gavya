@@ -10,6 +10,22 @@ import (
 	ulidpkg "p9e.in/samavaya/packages/ULID"
 )
 
+// ErrInvalidArgument marks a caller mistake. Without it the handler cannot tell
+// "you did not supply an id" from "the query failed", and would have to report
+// both the same way.
+var ErrInvalidArgument = errors.New("invalid argument")
+
+// invalidArgument carries the reason alone. The marker is matched through Is,
+// so errors.Is finds it while the message stays free of a prefix the error code
+// already conveys.
+type invalidArgument struct{ reason string }
+
+func (e *invalidArgument) Error() string { return e.reason }
+
+func (e *invalidArgument) Is(target error) bool { return target == ErrInvalidArgument }
+
+func invalid(msg string) error { return &invalidArgument{reason: msg} }
+
 var nonAlphanumHyphen = regexp.MustCompile(`[^a-z0-9-]`)
 
 func generateSlug(name string) string {
@@ -20,10 +36,10 @@ func generateSlug(name string) string {
 
 func (s *Service) CreateTenant(ctx context.Context, t *domain.Tenant) (*domain.Tenant, error) {
 	if t.ContactEmail == "" {
-		return nil, errors.New("contact_email is required")
+		return nil, invalid("contact_email is required")
 	}
 	if t.Name == "" {
-		return nil, errors.New("name is required")
+		return nil, invalid("name is required")
 	}
 	t.ID = ulidpkg.New().String()
 	if t.Slug == "" {
@@ -56,7 +72,7 @@ func (s *Service) CreateTenant(ctx context.Context, t *domain.Tenant) (*domain.T
 
 func (s *Service) GetTenant(ctx context.Context, id string) (*domain.Tenant, error) {
 	if id == "" {
-		return nil, errors.New("id is required")
+		return nil, invalid("id is required")
 	}
 	return s.repo.GetTenant(ctx, id)
 }
@@ -67,7 +83,7 @@ func (s *Service) ListTenants(ctx context.Context) ([]*domain.Tenant, error) {
 
 func (s *Service) UpdateTenant(ctx context.Context, t *domain.Tenant) (*domain.Tenant, error) {
 	if t.ID == "" {
-		return nil, errors.New("id is required")
+		return nil, invalid("id is required")
 	}
 	if t.UpdatedBy == "" {
 		t.UpdatedBy = "system"
@@ -77,7 +93,7 @@ func (s *Service) UpdateTenant(ctx context.Context, t *domain.Tenant) (*domain.T
 
 func (s *Service) SuspendTenant(ctx context.Context, id, updatedBy string) (*domain.Tenant, error) {
 	if id == "" {
-		return nil, errors.New("id is required")
+		return nil, invalid("id is required")
 	}
 	if updatedBy == "" {
 		updatedBy = "system"
@@ -87,7 +103,7 @@ func (s *Service) SuspendTenant(ctx context.Context, id, updatedBy string) (*dom
 
 func (s *Service) ActivateTenant(ctx context.Context, id, updatedBy string) (*domain.Tenant, error) {
 	if id == "" {
-		return nil, errors.New("id is required")
+		return nil, invalid("id is required")
 	}
 	if updatedBy == "" {
 		updatedBy = "system"
@@ -97,7 +113,7 @@ func (s *Service) ActivateTenant(ctx context.Context, id, updatedBy string) (*do
 
 func (s *Service) UpsertTenantSetting(ctx context.Context, setting *domain.TenantSetting) (*domain.TenantSetting, error) {
 	if setting.TenantID == "" || setting.Key == "" {
-		return nil, errors.New("tenant_id and key are required")
+		return nil, invalid("tenant_id and key are required")
 	}
 	setting.ID = ulidpkg.New().String()
 	if setting.DataType == "" {
@@ -112,7 +128,7 @@ func (s *Service) UpsertTenantSetting(ctx context.Context, setting *domain.Tenan
 
 func (s *Service) ListTenantSettings(ctx context.Context, tenantID string) ([]*domain.TenantSetting, error) {
 	if tenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	return s.repo.ListTenantSettings(ctx, tenantID)
 }

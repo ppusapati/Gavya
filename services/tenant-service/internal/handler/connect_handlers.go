@@ -1,12 +1,21 @@
 package handler
 
 import (
-	"encoding/json"
+	"context"
+	"errors"
 	"net/http"
 
+	"connectrpc.com/connect"
+
+	"github.com/ppusapati/gavya/libs/integrity/connectjson"
 	"github.com/ppusapati/gavya/services/tenant-service/internal/domain"
+	"github.com/ppusapati/gavya/services/tenant-service/internal/repository"
 	"github.com/ppusapati/gavya/services/tenant-service/internal/service"
 )
+
+// ServiceName is the fully qualified Connect service these procedures are
+// addressed under.
+const ServiceName = "tenant.v1.TenantService"
 
 type Handler struct {
 	svc *service.Service
@@ -17,31 +26,38 @@ func New(svc *service.Service) *Handler {
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("/healthz", h.healthz)
-	mux.HandleFunc("/tenant.v1.TenantService/CreateTenant", h.CreateTenant)
-	mux.HandleFunc("/tenant.v1.TenantService/GetTenant", h.GetTenant)
-	mux.HandleFunc("/tenant.v1.TenantService/ListTenants", h.ListTenants)
-	mux.HandleFunc("/tenant.v1.TenantService/UpdateTenant", h.UpdateTenant)
-	mux.HandleFunc("/tenant.v1.TenantService/SuspendTenant", h.SuspendTenant)
-	mux.HandleFunc("/tenant.v1.TenantService/ActivateTenant", h.ActivateTenant)
-	mux.HandleFunc("/tenant.v1.TenantService/UpsertTenantSetting", h.UpsertTenantSetting)
-	mux.HandleFunc("/tenant.v1.TenantService/ListTenantSettings", h.ListTenantSettings)
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	route := func(method string, handler http.HandlerFunc) {
+		mux.HandleFunc(connectjson.Procedure(ServiceName, method), handler)
+	}
+
+	route("CreateTenant", connectjson.Unary(h.CreateTenant))
+	route("GetTenant", connectjson.Unary(h.GetTenant))
+	route("ListTenants", connectjson.Unary(h.ListTenants))
+	route("UpdateTenant", connectjson.Unary(h.UpdateTenant))
+	route("SuspendTenant", connectjson.Unary(h.SuspendTenant))
+	route("ActivateTenant", connectjson.Unary(h.ActivateTenant))
+	route("UpsertTenantSetting", connectjson.Unary(h.UpsertTenantSetting))
+	route("ListTenantSettings", connectjson.Unary(h.ListTenantSettings))
 }
 
-func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
+// classify maps a failure onto the code that describes it.
+//
+// Reporting everything as internal, as this service used to, leaves a caller
+// unable to tell a missing tenant from an unreachable database — and makes an
+// unrecoverable mistake look like something worth retrying.
+func classify(err error) error {
+	switch {
+	case errors.Is(err, repository.ErrNotFound):
+		return connect.NewError(connect.CodeNotFound, err)
+	case errors.Is(err, repository.ErrDuplicateSlug):
+		return connect.NewError(connect.CodeAlreadyExists, err)
+	case errors.Is(err, service.ErrInvalidArgument):
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	default:
+		return connect.NewError(connect.CodeInternal, err)
+	}
 }
 
 type CreateTenantRequest struct {
@@ -57,6 +73,10 @@ type CreateTenantRequest struct {
 	MaxUsers     int    `json:"max_users"`
 	MaxCattle    int    `json:"max_cattle"`
 	CreatedBy    string `json:"created_by"`
+}
+
+type TenantResponse struct {
+	Tenant *domain.Tenant `json:"tenant"`
 }
 
 type IDRequest struct {
@@ -82,6 +102,12 @@ type UpdateTenantRequest struct {
 	UpdatedBy    string `json:"updated_by"`
 }
 
+type ListTenantsRequest struct{}
+
+type ListTenantsResponse struct {
+	Tenants []*domain.Tenant `json:"tenants"`
+}
+
 type UpsertTenantSettingRequest struct {
 	TenantID  string `json:"tenant_id"`
 	Key       string `json:"key"`
@@ -90,147 +116,112 @@ type UpsertTenantSettingRequest struct {
 	CreatedBy string `json:"created_by"`
 }
 
+type TenantSettingResponse struct {
+	Setting *domain.TenantSetting `json:"setting"`
+}
+
 type ListTenantSettingsRequest struct {
 	TenantID string `json:"tenant_id"`
 }
 
-func (h *Handler) CreateTenant(w http.ResponseWriter, r *http.Request) {
-	var req CreateTenantRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	t := &domain.Tenant{
-		Name:         req.Name,
-		Slug:         req.Slug,
-		Plan:         req.Plan,
-		ContactEmail: req.ContactEmail,
-		ContactPhone: req.ContactPhone,
-		Address:      req.Address,
-		Country:      req.Country,
-		Timezone:     req.Timezone,
-		Currency:     req.Currency,
-		MaxUsers:     req.MaxUsers,
-		MaxCattle:    req.MaxCattle,
-		CreatedBy:    req.CreatedBy,
-	}
-	result, err := h.svc.CreateTenant(r.Context(), t)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, result)
+type ListTenantSettingsResponse struct {
+	Settings []*domain.TenantSetting `json:"settings"`
 }
 
-func (h *Handler) GetTenant(w http.ResponseWriter, r *http.Request) {
-	var req IDRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := h.svc.GetTenant(r.Context(), req.ID)
+func (h *Handler) CreateTenant(ctx context.Context, req *connect.Request[CreateTenantRequest]) (*connect.Response[TenantResponse], error) {
+	m := req.Msg
+	out, err := h.svc.CreateTenant(ctx, &domain.Tenant{
+		Name:         m.Name,
+		Slug:         m.Slug,
+		Plan:         m.Plan,
+		ContactEmail: m.ContactEmail,
+		ContactPhone: m.ContactPhone,
+		Address:      m.Address,
+		Country:      m.Country,
+		Timezone:     m.Timezone,
+		Currency:     m.Currency,
+		MaxUsers:     m.MaxUsers,
+		MaxCattle:    m.MaxCattle,
+		CreatedBy:    m.CreatedBy,
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&TenantResponse{Tenant: out}), nil
 }
 
-func (h *Handler) ListTenants(w http.ResponseWriter, r *http.Request) {
-	result, err := h.svc.ListTenants(r.Context())
+func (h *Handler) GetTenant(ctx context.Context, req *connect.Request[IDRequest]) (*connect.Response[TenantResponse], error) {
+	out, err := h.svc.GetTenant(ctx, req.Msg.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&TenantResponse{Tenant: out}), nil
 }
 
-func (h *Handler) UpdateTenant(w http.ResponseWriter, r *http.Request) {
-	var req UpdateTenantRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	t := &domain.Tenant{
-		ID:           req.ID,
-		Name:         req.Name,
-		ContactEmail: req.ContactEmail,
-		ContactPhone: req.ContactPhone,
-		Address:      req.Address,
-		Country:      req.Country,
-		Timezone:     req.Timezone,
-		Currency:     req.Currency,
-		MaxUsers:     req.MaxUsers,
-		MaxCattle:    req.MaxCattle,
-		UpdatedBy:    req.UpdatedBy,
-	}
-	result, err := h.svc.UpdateTenant(r.Context(), t)
+func (h *Handler) ListTenants(ctx context.Context, req *connect.Request[ListTenantsRequest]) (*connect.Response[ListTenantsResponse], error) {
+	out, err := h.svc.ListTenants(ctx)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&ListTenantsResponse{Tenants: out}), nil
 }
 
-func (h *Handler) SuspendTenant(w http.ResponseWriter, r *http.Request) {
-	var req TenantActionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := h.svc.SuspendTenant(r.Context(), req.ID, req.UpdatedBy)
+func (h *Handler) UpdateTenant(ctx context.Context, req *connect.Request[UpdateTenantRequest]) (*connect.Response[TenantResponse], error) {
+	m := req.Msg
+	out, err := h.svc.UpdateTenant(ctx, &domain.Tenant{
+		ID:           m.ID,
+		Name:         m.Name,
+		ContactEmail: m.ContactEmail,
+		ContactPhone: m.ContactPhone,
+		Address:      m.Address,
+		Country:      m.Country,
+		Timezone:     m.Timezone,
+		Currency:     m.Currency,
+		MaxUsers:     m.MaxUsers,
+		MaxCattle:    m.MaxCattle,
+		UpdatedBy:    m.UpdatedBy,
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&TenantResponse{Tenant: out}), nil
 }
 
-func (h *Handler) ActivateTenant(w http.ResponseWriter, r *http.Request) {
-	var req TenantActionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := h.svc.ActivateTenant(r.Context(), req.ID, req.UpdatedBy)
+func (h *Handler) SuspendTenant(ctx context.Context, req *connect.Request[TenantActionRequest]) (*connect.Response[TenantResponse], error) {
+	out, err := h.svc.SuspendTenant(ctx, req.Msg.ID, req.Msg.UpdatedBy)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&TenantResponse{Tenant: out}), nil
 }
 
-func (h *Handler) UpsertTenantSetting(w http.ResponseWriter, r *http.Request) {
-	var req UpsertTenantSettingRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	s := &domain.TenantSetting{
-		TenantID:  req.TenantID,
-		Key:       req.Key,
-		Value:     req.Value,
-		DataType:  req.DataType,
-		CreatedBy: req.CreatedBy,
-	}
-	result, err := h.svc.UpsertTenantSetting(r.Context(), s)
+func (h *Handler) ActivateTenant(ctx context.Context, req *connect.Request[TenantActionRequest]) (*connect.Response[TenantResponse], error) {
+	out, err := h.svc.ActivateTenant(ctx, req.Msg.ID, req.Msg.UpdatedBy)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&TenantResponse{Tenant: out}), nil
 }
 
-func (h *Handler) ListTenantSettings(w http.ResponseWriter, r *http.Request) {
-	var req ListTenantSettingsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := h.svc.ListTenantSettings(r.Context(), req.TenantID)
+func (h *Handler) UpsertTenantSetting(ctx context.Context, req *connect.Request[UpsertTenantSettingRequest]) (*connect.Response[TenantSettingResponse], error) {
+	m := req.Msg
+	out, err := h.svc.UpsertTenantSetting(ctx, &domain.TenantSetting{
+		TenantID:  m.TenantID,
+		Key:       m.Key,
+		Value:     m.Value,
+		DataType:  m.DataType,
+		CreatedBy: m.CreatedBy,
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&TenantSettingResponse{Setting: out}), nil
+}
+
+func (h *Handler) ListTenantSettings(ctx context.Context, req *connect.Request[ListTenantSettingsRequest]) (*connect.Response[ListTenantSettingsResponse], error) {
+	out, err := h.svc.ListTenantSettings(ctx, req.Msg.TenantID)
+	if err != nil {
+		return nil, classify(err)
+	}
+	return connect.NewResponse(&ListTenantSettingsResponse{Settings: out}), nil
 }
