@@ -1,13 +1,22 @@
 package handler
 
 import (
-	"encoding/json"
+	"context"
+	"errors"
 	"net/http"
 	"time"
 
+	"connectrpc.com/connect"
+
+	"github.com/ppusapati/gavya/libs/integrity/connectjson"
 	"github.com/ppusapati/gavya/services/order-service/internal/domain"
+	"github.com/ppusapati/gavya/services/order-service/internal/repository"
 	"github.com/ppusapati/gavya/services/order-service/internal/service"
 )
+
+// ServiceName is the fully qualified Connect service these procedures are
+// addressed under.
+const ServiceName = "order.v1.OrderService"
 
 type Handler struct {
 	svc *service.Service
@@ -18,29 +27,36 @@ func New(svc *service.Service) *Handler {
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("/healthz", h.healthz)
-	mux.HandleFunc("/order.v1.OrderService/CreateOrder", h.CreateOrder)
-	mux.HandleFunc("/order.v1.OrderService/GetOrder", h.GetOrder)
-	mux.HandleFunc("/order.v1.OrderService/AddOrderItem", h.AddOrderItem)
-	mux.HandleFunc("/order.v1.OrderService/ConfirmOrder", h.ConfirmOrder)
-	mux.HandleFunc("/order.v1.OrderService/CancelOrder", h.CancelOrder)
-	mux.HandleFunc("/order.v1.OrderService/GenerateInvoice", h.GenerateInvoice)
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	route := func(method string, handler http.HandlerFunc) {
+		mux.HandleFunc(connectjson.Procedure(ServiceName, method), handler)
+	}
+
+	route("CreateOrder", connectjson.Unary(h.CreateOrder))
+	route("GetOrder", connectjson.Unary(h.GetOrder))
+	route("AddOrderItem", connectjson.Unary(h.AddOrderItem))
+	route("ConfirmOrder", connectjson.Unary(h.ConfirmOrder))
+	route("CancelOrder", connectjson.Unary(h.CancelOrder))
+	route("GenerateInvoice", connectjson.Unary(h.GenerateInvoice))
 }
 
-func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
+// classify maps a failure onto the code that describes it.
+//
+// Reporting everything as internal, as this service used to, leaves a caller
+// unable to tell a missing order from an unreachable database — and makes an
+// unrecoverable mistake look like something worth retrying.
+func classify(err error) error {
+	switch {
+	case errors.Is(err, repository.ErrNotFound):
+		return connect.NewError(connect.CodeNotFound, err)
+	case errors.Is(err, repository.ErrDuplicateOrderNumber):
+		return connect.NewError(connect.CodeAlreadyExists, err)
+	case errors.Is(err, service.ErrInvalidArgument):
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	default:
+		return connect.NewError(connect.CodeInternal, err)
+	}
 }
 
 type CreateOrderRequest struct {
@@ -80,104 +96,83 @@ type GenerateInvoiceRequest struct {
 	CreatedBy string `json:"created_by"`
 }
 
-func (h *Handler) CreateOrder(w http.ResponseWriter, r *http.Request) {
-	var req CreateOrderRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	o := &domain.Order{
-		TenantID:        req.TenantID,
-		CustomerID:      req.CustomerID,
-		Currency:        req.Currency,
-		ShippingAddress: req.ShippingAddress,
-		Notes:           req.Notes,
-		OrderedAt:       req.OrderedAt,
-		CreatedBy:       req.CreatedBy,
-	}
-	result, err := h.svc.CreateOrder(r.Context(), o)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, result)
+type OrderResponse struct {
+	Order *domain.Order `json:"order"`
 }
 
-func (h *Handler) GetOrder(w http.ResponseWriter, r *http.Request) {
-	var req IDTenantRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := h.svc.GetOrder(r.Context(), req.ID, req.TenantID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, result)
+type OrderItemResponse struct {
+	Item *domain.OrderItem `json:"item"`
 }
 
-func (h *Handler) AddOrderItem(w http.ResponseWriter, r *http.Request) {
-	var req AddOrderItemRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	item := &domain.OrderItem{
-		TenantID:  req.TenantID,
-		OrderID:   req.OrderID,
-		SKUID:     req.SKUID,
-		ProductID: req.ProductID,
-		Quantity:  req.Quantity,
-		UnitPrice: req.UnitPrice,
-		CreatedBy: req.CreatedBy,
-	}
-	result, err := h.svc.AddOrderItem(r.Context(), item)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, result)
+type InvoiceResponse struct {
+	Invoice *domain.Invoice `json:"invoice"`
 }
 
-func (h *Handler) ConfirmOrder(w http.ResponseWriter, r *http.Request) {
-	var req OrderActionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := h.svc.ConfirmOrder(r.Context(), req.ID, req.TenantID, req.UpdatedBy)
+func (h *Handler) CreateOrder(ctx context.Context, req *connect.Request[CreateOrderRequest]) (*connect.Response[OrderResponse], error) {
+	m := req.Msg
+	out, err := h.svc.CreateOrder(ctx, &domain.Order{
+		TenantID:        m.TenantID,
+		CustomerID:      m.CustomerID,
+		Currency:        m.Currency,
+		ShippingAddress: m.ShippingAddress,
+		Notes:           m.Notes,
+		OrderedAt:       m.OrderedAt,
+		CreatedBy:       m.CreatedBy,
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&OrderResponse{Order: out}), nil
 }
 
-func (h *Handler) CancelOrder(w http.ResponseWriter, r *http.Request) {
-	var req OrderActionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := h.svc.CancelOrder(r.Context(), req.ID, req.TenantID, req.UpdatedBy)
+func (h *Handler) GetOrder(ctx context.Context, req *connect.Request[IDTenantRequest]) (*connect.Response[OrderResponse], error) {
+	out, err := h.svc.GetOrder(ctx, req.Msg.ID, req.Msg.TenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&OrderResponse{Order: out}), nil
 }
 
-func (h *Handler) GenerateInvoice(w http.ResponseWriter, r *http.Request) {
-	var req GenerateInvoiceRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := h.svc.GenerateInvoice(r.Context(), req.OrderID, req.TenantID, req.CreatedBy)
+func (h *Handler) AddOrderItem(ctx context.Context, req *connect.Request[AddOrderItemRequest]) (*connect.Response[OrderItemResponse], error) {
+	m := req.Msg
+	out, err := h.svc.AddOrderItem(ctx, &domain.OrderItem{
+		TenantID:  m.TenantID,
+		OrderID:   m.OrderID,
+		SKUID:     m.SKUID,
+		ProductID: m.ProductID,
+		Quantity:  m.Quantity,
+		UnitPrice: m.UnitPrice,
+		CreatedBy: m.CreatedBy,
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&OrderItemResponse{Item: out}), nil
+}
+
+func (h *Handler) ConfirmOrder(ctx context.Context, req *connect.Request[OrderActionRequest]) (*connect.Response[OrderResponse], error) {
+	m := req.Msg
+	out, err := h.svc.ConfirmOrder(ctx, m.ID, m.TenantID, m.UpdatedBy)
+	if err != nil {
+		return nil, classify(err)
+	}
+	return connect.NewResponse(&OrderResponse{Order: out}), nil
+}
+
+func (h *Handler) CancelOrder(ctx context.Context, req *connect.Request[OrderActionRequest]) (*connect.Response[OrderResponse], error) {
+	m := req.Msg
+	out, err := h.svc.CancelOrder(ctx, m.ID, m.TenantID, m.UpdatedBy)
+	if err != nil {
+		return nil, classify(err)
+	}
+	return connect.NewResponse(&OrderResponse{Order: out}), nil
+}
+
+func (h *Handler) GenerateInvoice(ctx context.Context, req *connect.Request[GenerateInvoiceRequest]) (*connect.Response[InvoiceResponse], error) {
+	m := req.Msg
+	out, err := h.svc.GenerateInvoice(ctx, m.OrderID, m.TenantID, m.CreatedBy)
+	if err != nil {
+		return nil, classify(err)
+	}
+	return connect.NewResponse(&InvoiceResponse{Invoice: out}), nil
 }

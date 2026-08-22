@@ -9,15 +9,31 @@ import (
 	ulidpkg "p9e.in/samavaya/packages/ULID"
 )
 
+// ErrInvalidArgument marks a caller mistake. Without it the handler cannot tell
+// "you did not supply an id" from "the query failed", and would have to report
+// both the same way.
+var ErrInvalidArgument = errors.New("invalid argument")
+
+// invalidArgument carries the reason alone. The marker is matched through Is,
+// so errors.Is finds it while the message stays free of a prefix the error code
+// already conveys.
+type invalidArgument struct{ reason string }
+
+func (e *invalidArgument) Error() string { return e.reason }
+
+func (e *invalidArgument) Is(target error) bool { return target == ErrInvalidArgument }
+
+func invalid(msg string) error { return &invalidArgument{reason: msg} }
+
 func (s *Service) RecordVaccination(ctx context.Context, v *domain.Vaccination) (*domain.Vaccination, error) {
 	if v.TenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	if v.CattleID == "" {
-		return nil, errors.New("cattle_id is required")
+		return nil, invalid("cattle_id is required")
 	}
 	if v.VaccineName == "" {
-		return nil, errors.New("vaccine_name is required")
+		return nil, invalid("vaccine_name is required")
 	}
 	v.ID = ulidpkg.New().String()
 	if v.AdministeredAt.IsZero() {
@@ -32,23 +48,23 @@ func (s *Service) RecordVaccination(ctx context.Context, v *domain.Vaccination) 
 
 func (s *Service) GetVaccinationHistory(ctx context.Context, tenantID, cattleID string) ([]*domain.Vaccination, error) {
 	if tenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	if cattleID == "" {
-		return nil, errors.New("cattle_id is required")
+		return nil, invalid("cattle_id is required")
 	}
 	return s.repo.ListVaccinationHistory(ctx, tenantID, cattleID)
 }
 
 func (s *Service) RecordTreatment(ctx context.Context, t *domain.Treatment) (*domain.Treatment, error) {
 	if t.TenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	if t.CattleID == "" {
-		return nil, errors.New("cattle_id is required")
+		return nil, invalid("cattle_id is required")
 	}
 	if t.Diagnosis == "" {
-		return nil, errors.New("diagnosis is required")
+		return nil, invalid("diagnosis is required")
 	}
 	t.ID = ulidpkg.New().String()
 	if t.Status == "" {
@@ -66,23 +82,23 @@ func (s *Service) RecordTreatment(ctx context.Context, t *domain.Treatment) (*do
 
 func (s *Service) GetTreatmentHistory(ctx context.Context, tenantID, cattleID string) ([]*domain.Treatment, error) {
 	if tenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	if cattleID == "" {
-		return nil, errors.New("cattle_id is required")
+		return nil, invalid("cattle_id is required")
 	}
 	return s.repo.ListTreatmentHistory(ctx, tenantID, cattleID)
 }
 
 func (s *Service) ScheduleVetVisit(ctx context.Context, v *domain.VetVisit) (*domain.VetVisit, error) {
 	if v.TenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	if v.CattleID == "" {
-		return nil, errors.New("cattle_id is required")
+		return nil, invalid("cattle_id is required")
 	}
 	if v.VeterinarianID == "" {
-		return nil, errors.New("veterinarian_id is required")
+		return nil, invalid("veterinarian_id is required")
 	}
 	v.ID = ulidpkg.New().String()
 	if v.VisitDate.IsZero() {
@@ -97,7 +113,7 @@ func (s *Service) ScheduleVetVisit(ctx context.Context, v *domain.VetVisit) (*do
 
 func (s *Service) ListUpcomingVaccinations(ctx context.Context, tenantID string) ([]*domain.Vaccination, error) {
 	if tenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	return s.repo.ListUpcomingVaccinations(ctx, tenantID)
 }

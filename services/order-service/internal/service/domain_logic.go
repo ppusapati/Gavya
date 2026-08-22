@@ -9,12 +9,29 @@ import (
 	ulidpkg "p9e.in/samavaya/packages/ULID"
 )
 
+// ErrInvalidArgument marks a caller mistake. Without it the handler cannot tell
+// "you did not supply a customer_id" from "the query failed", and would have to
+// report both the same way. A violated business rule — confirming an order that
+// is no longer a draft — is a caller mistake too, not an internal failure.
+var ErrInvalidArgument = errors.New("invalid argument")
+
+// invalidArgument carries the reason alone. The marker is matched through Is,
+// so errors.Is finds it while the message stays free of a prefix the error code
+// already conveys.
+type invalidArgument struct{ reason string }
+
+func (e *invalidArgument) Error() string { return e.reason }
+
+func (e *invalidArgument) Is(target error) bool { return target == ErrInvalidArgument }
+
+func invalid(msg string) error { return &invalidArgument{reason: msg} }
+
 func (s *Service) CreateOrder(ctx context.Context, o *domain.Order) (*domain.Order, error) {
 	if o.TenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	if o.CustomerID == "" {
-		return nil, errors.New("customer_id is required")
+		return nil, invalid("customer_id is required")
 	}
 	o.ID = ulidpkg.New().String()
 	o.OrderNumber = "ORD-" + ulidpkg.New().String()
@@ -37,14 +54,14 @@ func (s *Service) CreateOrder(ctx context.Context, o *domain.Order) (*domain.Ord
 
 func (s *Service) GetOrder(ctx context.Context, id, tenantID string) (*domain.Order, error) {
 	if id == "" || tenantID == "" {
-		return nil, errors.New("id and tenant_id are required")
+		return nil, invalid("id and tenant_id are required")
 	}
 	return s.repo.GetOrder(ctx, id, tenantID)
 }
 
 func (s *Service) AddOrderItem(ctx context.Context, item *domain.OrderItem) (*domain.OrderItem, error) {
 	if item.OrderID == "" || item.TenantID == "" {
-		return nil, errors.New("order_id and tenant_id are required")
+		return nil, invalid("order_id and tenant_id are required")
 	}
 	// Validate order is still in draft
 	order, err := s.repo.GetOrder(ctx, item.OrderID, item.TenantID)
@@ -52,7 +69,7 @@ func (s *Service) AddOrderItem(ctx context.Context, item *domain.OrderItem) (*do
 		return nil, err
 	}
 	if order.Status != "draft" {
-		return nil, errors.New("can only add items to draft orders")
+		return nil, invalid("can only add items to draft orders")
 	}
 	item.ID = ulidpkg.New().String()
 	item.TotalPrice = item.Quantity * item.UnitPrice
@@ -90,7 +107,7 @@ func (s *Service) ConfirmOrder(ctx context.Context, id, tenantID, updatedBy stri
 		return nil, err
 	}
 	if order.Status != "draft" {
-		return nil, errors.New("can only confirm draft orders")
+		return nil, invalid("can only confirm draft orders")
 	}
 	if updatedBy == "" {
 		updatedBy = "system"
@@ -104,7 +121,7 @@ func (s *Service) CancelOrder(ctx context.Context, id, tenantID, updatedBy strin
 		return nil, err
 	}
 	if order.Status != "draft" && order.Status != "confirmed" {
-		return nil, errors.New("can only cancel draft or confirmed orders")
+		return nil, invalid("can only cancel draft or confirmed orders")
 	}
 	if updatedBy == "" {
 		updatedBy = "system"
@@ -118,7 +135,7 @@ func (s *Service) GenerateInvoice(ctx context.Context, orderID, tenantID, create
 		return nil, err
 	}
 	if order.Status != "confirmed" {
-		return nil, errors.New("can only generate invoice for confirmed orders")
+		return nil, invalid("can only generate invoice for confirmed orders")
 	}
 	now := time.Now()
 	inv := &domain.Invoice{

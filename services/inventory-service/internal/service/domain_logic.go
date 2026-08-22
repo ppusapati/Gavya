@@ -9,15 +9,31 @@ import (
 	ulidpkg "p9e.in/samavaya/packages/ULID"
 )
 
+// ErrInvalidArgument marks a caller mistake. Without it the handler cannot tell
+// "you did not supply a tenant_id" from "the query failed", and would have to
+// report both the same way.
+var ErrInvalidArgument = errors.New("invalid argument")
+
+// invalidArgument carries the reason alone. The marker is matched through Is,
+// so errors.Is finds it while the message stays free of a prefix the error code
+// already conveys.
+type invalidArgument struct{ reason string }
+
+func (e *invalidArgument) Error() string { return e.reason }
+
+func (e *invalidArgument) Is(target error) bool { return target == ErrInvalidArgument }
+
+func invalid(msg string) error { return &invalidArgument{reason: msg} }
+
 func (s *Service) CreateWarehouse(ctx context.Context, w *domain.Warehouse) (*domain.Warehouse, error) {
 	if w.TenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	if w.Name == "" {
-		return nil, errors.New("name is required")
+		return nil, invalid("name is required")
 	}
 	if w.Code == "" {
-		return nil, errors.New("code is required")
+		return nil, invalid("code is required")
 	}
 	w.ID = ulidpkg.New().String()
 	if w.Status == "" {
@@ -32,14 +48,14 @@ func (s *Service) CreateWarehouse(ctx context.Context, w *domain.Warehouse) (*do
 
 func (s *Service) GetWarehouse(ctx context.Context, id, tenantID string) (*domain.Warehouse, error) {
 	if id == "" || tenantID == "" {
-		return nil, errors.New("id and tenant_id are required")
+		return nil, invalid("id and tenant_id are required")
 	}
 	return s.repo.GetWarehouse(ctx, id, tenantID)
 }
 
 func (s *Service) ListWarehouses(ctx context.Context, tenantID string) ([]*domain.Warehouse, error) {
 	if tenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	return s.repo.ListWarehouses(ctx, tenantID)
 }
@@ -48,18 +64,18 @@ func (s *Service) ListWarehouses(ctx context.Context, tenantID string) ([]*domai
 // in = add, out = subtract, adjustment = set absolute value
 func (s *Service) AdjustStock(ctx context.Context, m *domain.StockMovement, updatedBy string) (*domain.StockMovement, error) {
 	if m.TenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	if m.WarehouseID == "" {
-		return nil, errors.New("warehouse_id is required")
+		return nil, invalid("warehouse_id is required")
 	}
 	if m.SKUID == "" {
-		return nil, errors.New("sku_id is required")
+		return nil, invalid("sku_id is required")
 	}
 	switch m.MovementType {
 	case "in", "out", "adjustment", "transfer":
 	default:
-		return nil, errors.New("invalid movement_type")
+		return nil, invalid("invalid movement_type")
 	}
 	m.ID = ulidpkg.New().String()
 	if m.MovedAt.IsZero() {
@@ -130,7 +146,7 @@ func (s *Service) AdjustStock(ctx context.Context, m *domain.StockMovement, upda
 
 func (s *Service) ListStockMovements(ctx context.Context, tenantID, warehouseID string, limit, offset int) ([]*domain.StockMovement, error) {
 	if tenantID == "" || warehouseID == "" {
-		return nil, errors.New("tenant_id and warehouse_id are required")
+		return nil, invalid("tenant_id and warehouse_id are required")
 	}
 	if limit <= 0 {
 		limit = 50
@@ -140,13 +156,13 @@ func (s *Service) ListStockMovements(ctx context.Context, tenantID, warehouseID 
 
 func (s *Service) CreateBatch(ctx context.Context, b *domain.Batch) (*domain.Batch, error) {
 	if b.TenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	if b.WarehouseID == "" {
-		return nil, errors.New("warehouse_id is required")
+		return nil, invalid("warehouse_id is required")
 	}
 	if b.BatchNumber == "" {
-		return nil, errors.New("batch_number is required")
+		return nil, invalid("batch_number is required")
 	}
 	b.ID = ulidpkg.New().String()
 	if b.Status == "" {
@@ -161,14 +177,14 @@ func (s *Service) CreateBatch(ctx context.Context, b *domain.Batch) (*domain.Bat
 
 func (s *Service) GetBatch(ctx context.Context, id, tenantID string) (*domain.Batch, error) {
 	if id == "" || tenantID == "" {
-		return nil, errors.New("id and tenant_id are required")
+		return nil, invalid("id and tenant_id are required")
 	}
 	return s.repo.GetBatch(ctx, id, tenantID)
 }
 
 func (s *Service) ListExpiringBatches(ctx context.Context, tenantID string) ([]*domain.Batch, error) {
 	if tenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	return s.repo.ListExpiringBatches(ctx, tenantID)
 }

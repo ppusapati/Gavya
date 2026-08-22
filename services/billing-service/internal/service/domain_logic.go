@@ -9,12 +9,29 @@ import (
 	ulidpkg "p9e.in/samavaya/packages/ULID"
 )
 
+// ErrInvalidArgument marks a caller mistake. Without it the handler cannot tell
+// "you did not supply a customer_id" from "the query failed", and would have to
+// report both the same way. A violated business rule — voiding an invoice that
+// is already paid — is a caller mistake too, not an internal failure.
+var ErrInvalidArgument = errors.New("invalid argument")
+
+// invalidArgument carries the reason alone. The marker is matched through Is,
+// so errors.Is finds it while the message stays free of a prefix the error code
+// already conveys.
+type invalidArgument struct{ reason string }
+
+func (e *invalidArgument) Error() string { return e.reason }
+
+func (e *invalidArgument) Is(target error) bool { return target == ErrInvalidArgument }
+
+func invalid(msg string) error { return &invalidArgument{reason: msg} }
+
 func (s *Service) CreateInvoice(ctx context.Context, inv *domain.Invoice) (*domain.Invoice, error) {
 	if inv.TenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	if inv.CustomerID == "" {
-		return nil, errors.New("customer_id is required")
+		return nil, invalid("customer_id is required")
 	}
 	inv.ID = ulidpkg.New().String()
 	inv.InvoiceNumber = "INV-" + ulidpkg.New().String()
@@ -37,14 +54,14 @@ func (s *Service) CreateInvoice(ctx context.Context, inv *domain.Invoice) (*doma
 
 func (s *Service) AddInvoiceItem(ctx context.Context, item *domain.InvoiceItem) (*domain.InvoiceItem, error) {
 	if item.InvoiceID == "" || item.TenantID == "" {
-		return nil, errors.New("invoice_id and tenant_id are required")
+		return nil, invalid("invoice_id and tenant_id are required")
 	}
 	inv, err := s.repo.GetInvoice(ctx, item.InvoiceID, item.TenantID)
 	if err != nil {
 		return nil, err
 	}
 	if inv.Status != "draft" {
-		return nil, errors.New("can only add items to draft invoices")
+		return nil, invalid("can only add items to draft invoices")
 	}
 	item.ID = ulidpkg.New().String()
 	item.TotalPrice = item.Quantity * item.UnitPrice
@@ -74,7 +91,7 @@ func (s *Service) SendInvoice(ctx context.Context, id, tenantID, updatedBy strin
 		return nil, err
 	}
 	if inv.Status != "draft" {
-		return nil, errors.New("can only send draft invoices")
+		return nil, invalid("can only send draft invoices")
 	}
 	if updatedBy == "" {
 		updatedBy = "system"
@@ -84,7 +101,7 @@ func (s *Service) SendInvoice(ctx context.Context, id, tenantID, updatedBy strin
 
 func (s *Service) RecordPayment(ctx context.Context, p *domain.Payment) (*domain.Payment, error) {
 	if p.InvoiceID == "" || p.TenantID == "" {
-		return nil, errors.New("invoice_id and tenant_id are required")
+		return nil, invalid("invoice_id and tenant_id are required")
 	}
 	p.ID = ulidpkg.New().String()
 	if p.Currency == "" {
@@ -121,7 +138,7 @@ func (s *Service) VoidInvoice(ctx context.Context, id, tenantID, updatedBy strin
 		return nil, err
 	}
 	if inv.Status == "paid" {
-		return nil, errors.New("cannot void a paid invoice")
+		return nil, invalid("cannot void a paid invoice")
 	}
 	if updatedBy == "" {
 		updatedBy = "system"
@@ -131,7 +148,7 @@ func (s *Service) VoidInvoice(ctx context.Context, id, tenantID, updatedBy strin
 
 func (s *Service) GetOutstandingInvoices(ctx context.Context, tenantID string) ([]*domain.Invoice, error) {
 	if tenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	return s.repo.ListOutstandingInvoices(ctx, tenantID)
 }

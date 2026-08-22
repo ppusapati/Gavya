@@ -1,13 +1,22 @@
 package handler
 
 import (
-	"encoding/json"
+	"context"
+	"errors"
 	"net/http"
 	"time"
 
+	"connectrpc.com/connect"
+
+	"github.com/ppusapati/gavya/libs/integrity/connectjson"
 	"github.com/ppusapati/gavya/services/health-service/internal/domain"
+	"github.com/ppusapati/gavya/services/health-service/internal/repository"
 	"github.com/ppusapati/gavya/services/health-service/internal/service"
 )
+
+// ServiceName is the fully qualified Connect service these procedures are
+// addressed under.
+const ServiceName = "health.v1.HealthService"
 
 type Handler struct {
 	svc *service.Service
@@ -18,19 +27,34 @@ func New(svc *service.Service) *Handler {
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("/healthz", h.healthz)
-	mux.HandleFunc("/health.v1.HealthService/RecordVaccination", h.RecordVaccination)
-	mux.HandleFunc("/health.v1.HealthService/GetVaccinationHistory", h.GetVaccinationHistory)
-	mux.HandleFunc("/health.v1.HealthService/RecordTreatment", h.RecordTreatment)
-	mux.HandleFunc("/health.v1.HealthService/GetTreatmentHistory", h.GetTreatmentHistory)
-	mux.HandleFunc("/health.v1.HealthService/ScheduleVetVisit", h.ScheduleVetVisit)
-	mux.HandleFunc("/health.v1.HealthService/ListUpcomingVaccinations", h.ListUpcomingVaccinations)
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	route := func(method string, handler http.HandlerFunc) {
+		mux.HandleFunc(connectjson.Procedure(ServiceName, method), handler)
+	}
+
+	route("RecordVaccination", connectjson.Unary(h.RecordVaccination))
+	route("GetVaccinationHistory", connectjson.Unary(h.GetVaccinationHistory))
+	route("RecordTreatment", connectjson.Unary(h.RecordTreatment))
+	route("GetTreatmentHistory", connectjson.Unary(h.GetTreatmentHistory))
+	route("ScheduleVetVisit", connectjson.Unary(h.ScheduleVetVisit))
+	route("ListUpcomingVaccinations", connectjson.Unary(h.ListUpcomingVaccinations))
 }
 
-func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+// classify maps a failure onto the code that describes it.
+//
+// Reporting everything as internal, as this service used to, leaves a caller
+// unable to tell a missing record from an unreachable database — and makes an
+// unrecoverable mistake look like something worth retrying.
+func classify(err error) error {
+	switch {
+	case errors.Is(err, repository.ErrNotFound):
+		return connect.NewError(connect.CodeNotFound, err)
+	case errors.Is(err, service.ErrInvalidArgument):
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	default:
+		return connect.NewError(connect.CodeInternal, err)
+	}
 }
 
 type RecordVaccinationRequest struct {
@@ -43,6 +67,14 @@ type RecordVaccinationRequest struct {
 	VeterinarianID string     `json:"veterinarian_id"`
 	Dosage         string     `json:"dosage"`
 	CreatedBy      string     `json:"created_by"`
+}
+
+type VaccinationResponse struct {
+	Vaccination *domain.Vaccination `json:"vaccination"`
+}
+
+type ListVaccinationsResponse struct {
+	Vaccinations []*domain.Vaccination `json:"vaccinations"`
 }
 
 type RecordTreatmentRequest struct {
@@ -59,6 +91,14 @@ type RecordTreatmentRequest struct {
 	CreatedBy     string     `json:"created_by"`
 }
 
+type TreatmentResponse struct {
+	Treatment *domain.Treatment `json:"treatment"`
+}
+
+type ListTreatmentsResponse struct {
+	Treatments []*domain.Treatment `json:"treatments"`
+}
+
 type ScheduleVetVisitRequest struct {
 	TenantID       string    `json:"tenant_id"`
 	CattleID       string    `json:"cattle_id"`
@@ -70,6 +110,10 @@ type ScheduleVetVisitRequest struct {
 	CreatedBy      string    `json:"created_by"`
 }
 
+type VetVisitResponse struct {
+	VetVisit *domain.VetVisit `json:"vet_visit"`
+}
+
 type HistoryRequest struct {
 	TenantID string `json:"tenant_id"`
 	CattleID string `json:"cattle_id"`
@@ -79,130 +123,84 @@ type TenantRequest struct {
 	TenantID string `json:"tenant_id"`
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
-}
-
-func (h *Handler) RecordVaccination(w http.ResponseWriter, r *http.Request) {
-	var req RecordVaccinationRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	v := &domain.Vaccination{
-		TenantID:       req.TenantID,
-		CattleID:       req.CattleID,
-		VaccineName:    req.VaccineName,
-		BatchNumber:    req.BatchNumber,
-		AdministeredAt: req.AdministeredAt,
-		NextDueDate:    req.NextDueDate,
-		VeterinarianID: req.VeterinarianID,
-		Dosage:         req.Dosage,
-		CreatedBy:      req.CreatedBy,
-	}
-	result, err := h.svc.RecordVaccination(r.Context(), v)
+func (h *Handler) RecordVaccination(ctx context.Context, req *connect.Request[RecordVaccinationRequest]) (*connect.Response[VaccinationResponse], error) {
+	m := req.Msg
+	out, err := h.svc.RecordVaccination(ctx, &domain.Vaccination{
+		TenantID:       m.TenantID,
+		CattleID:       m.CattleID,
+		VaccineName:    m.VaccineName,
+		BatchNumber:    m.BatchNumber,
+		AdministeredAt: m.AdministeredAt,
+		NextDueDate:    m.NextDueDate,
+		VeterinarianID: m.VeterinarianID,
+		Dosage:         m.Dosage,
+		CreatedBy:      m.CreatedBy,
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&VaccinationResponse{Vaccination: out}), nil
 }
 
-func (h *Handler) GetVaccinationHistory(w http.ResponseWriter, r *http.Request) {
-	var req HistoryRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := h.svc.GetVaccinationHistory(r.Context(), req.TenantID, req.CattleID)
+func (h *Handler) GetVaccinationHistory(ctx context.Context, req *connect.Request[HistoryRequest]) (*connect.Response[ListVaccinationsResponse], error) {
+	out, err := h.svc.GetVaccinationHistory(ctx, req.Msg.TenantID, req.Msg.CattleID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&ListVaccinationsResponse{Vaccinations: out}), nil
 }
 
-func (h *Handler) RecordTreatment(w http.ResponseWriter, r *http.Request) {
-	var req RecordTreatmentRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	t := &domain.Treatment{
-		TenantID:      req.TenantID,
-		CattleID:      req.CattleID,
-		DiagnosisCode: req.DiagnosisCode,
-		Diagnosis:     req.Diagnosis,
-		MedicineName:  req.MedicineName,
-		Dosage:        req.Dosage,
-		TreatedAt:     req.TreatedAt,
-		TreatedBy:     req.TreatedBy,
-		FollowUpDate:  req.FollowUpDate,
-		Status:        req.Status,
-		CreatedBy:     req.CreatedBy,
-	}
-	result, err := h.svc.RecordTreatment(r.Context(), t)
+func (h *Handler) RecordTreatment(ctx context.Context, req *connect.Request[RecordTreatmentRequest]) (*connect.Response[TreatmentResponse], error) {
+	m := req.Msg
+	out, err := h.svc.RecordTreatment(ctx, &domain.Treatment{
+		TenantID:      m.TenantID,
+		CattleID:      m.CattleID,
+		DiagnosisCode: m.DiagnosisCode,
+		Diagnosis:     m.Diagnosis,
+		MedicineName:  m.MedicineName,
+		Dosage:        m.Dosage,
+		TreatedAt:     m.TreatedAt,
+		TreatedBy:     m.TreatedBy,
+		FollowUpDate:  m.FollowUpDate,
+		Status:        m.Status,
+		CreatedBy:     m.CreatedBy,
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&TreatmentResponse{Treatment: out}), nil
 }
 
-func (h *Handler) GetTreatmentHistory(w http.ResponseWriter, r *http.Request) {
-	var req HistoryRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := h.svc.GetTreatmentHistory(r.Context(), req.TenantID, req.CattleID)
+func (h *Handler) GetTreatmentHistory(ctx context.Context, req *connect.Request[HistoryRequest]) (*connect.Response[ListTreatmentsResponse], error) {
+	out, err := h.svc.GetTreatmentHistory(ctx, req.Msg.TenantID, req.Msg.CattleID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&ListTreatmentsResponse{Treatments: out}), nil
 }
 
-func (h *Handler) ScheduleVetVisit(w http.ResponseWriter, r *http.Request) {
-	var req ScheduleVetVisitRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	v := &domain.VetVisit{
-		TenantID:       req.TenantID,
-		CattleID:       req.CattleID,
-		VeterinarianID: req.VeterinarianID,
-		VisitDate:      req.VisitDate,
-		Purpose:        req.Purpose,
-		Notes:          req.Notes,
-		Cost:           req.Cost,
-		CreatedBy:      req.CreatedBy,
-	}
-	result, err := h.svc.ScheduleVetVisit(r.Context(), v)
+func (h *Handler) ScheduleVetVisit(ctx context.Context, req *connect.Request[ScheduleVetVisitRequest]) (*connect.Response[VetVisitResponse], error) {
+	m := req.Msg
+	out, err := h.svc.ScheduleVetVisit(ctx, &domain.VetVisit{
+		TenantID:       m.TenantID,
+		CattleID:       m.CattleID,
+		VeterinarianID: m.VeterinarianID,
+		VisitDate:      m.VisitDate,
+		Purpose:        m.Purpose,
+		Notes:          m.Notes,
+		Cost:           m.Cost,
+		CreatedBy:      m.CreatedBy,
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&VetVisitResponse{VetVisit: out}), nil
 }
 
-func (h *Handler) ListUpcomingVaccinations(w http.ResponseWriter, r *http.Request) {
-	var req TenantRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := h.svc.ListUpcomingVaccinations(r.Context(), req.TenantID)
+func (h *Handler) ListUpcomingVaccinations(ctx context.Context, req *connect.Request[TenantRequest]) (*connect.Response[ListVaccinationsResponse], error) {
+	out, err := h.svc.ListUpcomingVaccinations(ctx, req.Msg.TenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&ListVaccinationsResponse{Vaccinations: out}), nil
 }

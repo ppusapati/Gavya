@@ -1,13 +1,22 @@
 package handler
 
 import (
-	"encoding/json"
+	"context"
+	"errors"
 	"net/http"
 	"time"
 
+	"connectrpc.com/connect"
+
+	"github.com/ppusapati/gavya/libs/integrity/connectjson"
 	"github.com/ppusapati/gavya/services/feed-service/internal/domain"
+	"github.com/ppusapati/gavya/services/feed-service/internal/repository"
 	"github.com/ppusapati/gavya/services/feed-service/internal/service"
 )
+
+// ServiceName is the fully qualified Connect service these procedures are
+// addressed under.
+const ServiceName = "feed.v1.FeedService"
 
 type Handler struct {
 	svc *service.Service
@@ -18,29 +27,34 @@ func New(svc *service.Service) *Handler {
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("/healthz", h.healthz)
-	mux.HandleFunc("/feed.v1.FeedService/CreateFeedType", h.CreateFeedType)
-	mux.HandleFunc("/feed.v1.FeedService/ListFeedTypes", h.ListFeedTypes)
-	mux.HandleFunc("/feed.v1.FeedService/CreateNutritionPlan", h.CreateNutritionPlan)
-	mux.HandleFunc("/feed.v1.FeedService/GetNutritionPlan", h.GetNutritionPlan)
-	mux.HandleFunc("/feed.v1.FeedService/RecordFeedConsumption", h.RecordFeedConsumption)
-	mux.HandleFunc("/feed.v1.FeedService/GetFeedConsumptionReport", h.GetFeedConsumptionReport)
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	route := func(method string, handler http.HandlerFunc) {
+		mux.HandleFunc(connectjson.Procedure(ServiceName, method), handler)
+	}
+
+	route("CreateFeedType", connectjson.Unary(h.CreateFeedType))
+	route("ListFeedTypes", connectjson.Unary(h.ListFeedTypes))
+	route("CreateNutritionPlan", connectjson.Unary(h.CreateNutritionPlan))
+	route("GetNutritionPlan", connectjson.Unary(h.GetNutritionPlan))
+	route("RecordFeedConsumption", connectjson.Unary(h.RecordFeedConsumption))
+	route("GetFeedConsumptionReport", connectjson.Unary(h.GetFeedConsumptionReport))
 }
 
-func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
+// classify maps a failure onto the code that describes it.
+//
+// Reporting everything as internal, as this service used to, leaves a caller
+// unable to tell a missing plan from an unreachable database — and makes an
+// unrecoverable mistake look like something worth retrying.
+func classify(err error) error {
+	switch {
+	case errors.Is(err, repository.ErrNotFound):
+		return connect.NewError(connect.CodeNotFound, err)
+	case errors.Is(err, service.ErrInvalidArgument):
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	default:
+		return connect.NewError(connect.CodeInternal, err)
+	}
 }
 
 type CreateFeedTypeRequest struct {
@@ -52,8 +66,16 @@ type CreateFeedTypeRequest struct {
 	CreatedBy       string `json:"created_by"`
 }
 
+type FeedTypeResponse struct {
+	FeedType *domain.FeedType `json:"feed_type"`
+}
+
 type TenantRequest struct {
 	TenantID string `json:"tenant_id"`
+}
+
+type ListFeedTypesResponse struct {
+	FeedTypes []*domain.FeedType `json:"feed_types"`
 }
 
 type CreateNutritionPlanRequest struct {
@@ -65,6 +87,10 @@ type CreateNutritionPlanRequest struct {
 	EndDate         *time.Time `json:"end_date"`
 	Notes           string     `json:"notes"`
 	CreatedBy       string     `json:"created_by"`
+}
+
+type NutritionPlanResponse struct {
+	NutritionPlan *domain.NutritionPlan `json:"nutrition_plan"`
 }
 
 type GetNutritionPlanRequest struct {
@@ -82,6 +108,10 @@ type RecordFeedConsumptionRequest struct {
 	CreatedBy  string    `json:"created_by"`
 }
 
+type FeedConsumptionResponse struct {
+	Consumption *domain.FeedConsumption `json:"consumption"`
+}
+
 type GetFeedConsumptionReportRequest struct {
 	TenantID string    `json:"tenant_id"`
 	CattleID string    `json:"cattle_id"`
@@ -89,113 +119,82 @@ type GetFeedConsumptionReportRequest struct {
 	To       time.Time `json:"to"`
 }
 
-func (h *Handler) CreateFeedType(w http.ResponseWriter, r *http.Request) {
-	var req CreateFeedTypeRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	f := &domain.FeedType{
-		TenantID:        req.TenantID,
-		Name:            req.Name,
-		Category:        req.Category,
-		Unit:            req.Unit,
-		NutritionalInfo: req.NutritionalInfo,
-		CreatedBy:       req.CreatedBy,
-	}
-	result, err := h.svc.CreateFeedType(r.Context(), f)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, result)
+type GetFeedConsumptionReportResponse struct {
+	Entries []*domain.FeedConsumptionReport `json:"entries"`
 }
 
-func (h *Handler) ListFeedTypes(w http.ResponseWriter, r *http.Request) {
-	var req TenantRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := h.svc.ListFeedTypes(r.Context(), req.TenantID)
+func (h *Handler) CreateFeedType(ctx context.Context, req *connect.Request[CreateFeedTypeRequest]) (*connect.Response[FeedTypeResponse], error) {
+	m := req.Msg
+	out, err := h.svc.CreateFeedType(ctx, &domain.FeedType{
+		TenantID:        m.TenantID,
+		Name:            m.Name,
+		Category:        m.Category,
+		Unit:            m.Unit,
+		NutritionalInfo: m.NutritionalInfo,
+		CreatedBy:       m.CreatedBy,
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&FeedTypeResponse{FeedType: out}), nil
 }
 
-func (h *Handler) CreateNutritionPlan(w http.ResponseWriter, r *http.Request) {
-	var req CreateNutritionPlanRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	p := &domain.NutritionPlan{
-		TenantID:        req.TenantID,
-		CattleID:        req.CattleID,
-		FeedTypeID:      req.FeedTypeID,
-		DailyQuantityKg: req.DailyQuantityKg,
-		StartDate:       req.StartDate,
-		EndDate:         req.EndDate,
-		Notes:           req.Notes,
-		CreatedBy:       req.CreatedBy,
-	}
-	result, err := h.svc.CreateNutritionPlan(r.Context(), p)
+func (h *Handler) ListFeedTypes(ctx context.Context, req *connect.Request[TenantRequest]) (*connect.Response[ListFeedTypesResponse], error) {
+	out, err := h.svc.ListFeedTypes(ctx, req.Msg.TenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&ListFeedTypesResponse{FeedTypes: out}), nil
 }
 
-func (h *Handler) GetNutritionPlan(w http.ResponseWriter, r *http.Request) {
-	var req GetNutritionPlanRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := h.svc.GetNutritionPlan(r.Context(), req.ID, req.TenantID)
+func (h *Handler) CreateNutritionPlan(ctx context.Context, req *connect.Request[CreateNutritionPlanRequest]) (*connect.Response[NutritionPlanResponse], error) {
+	m := req.Msg
+	out, err := h.svc.CreateNutritionPlan(ctx, &domain.NutritionPlan{
+		TenantID:        m.TenantID,
+		CattleID:        m.CattleID,
+		FeedTypeID:      m.FeedTypeID,
+		DailyQuantityKg: m.DailyQuantityKg,
+		StartDate:       m.StartDate,
+		EndDate:         m.EndDate,
+		Notes:           m.Notes,
+		CreatedBy:       m.CreatedBy,
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&NutritionPlanResponse{NutritionPlan: out}), nil
 }
 
-func (h *Handler) RecordFeedConsumption(w http.ResponseWriter, r *http.Request) {
-	var req RecordFeedConsumptionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	c := &domain.FeedConsumption{
-		TenantID:   req.TenantID,
-		CattleID:   req.CattleID,
-		FeedTypeID: req.FeedTypeID,
-		QuantityKg: req.QuantityKg,
-		FedAt:      req.FedAt,
-		FedBy:      req.FedBy,
-		CreatedBy:  req.CreatedBy,
-	}
-	result, err := h.svc.RecordFeedConsumption(r.Context(), c)
+func (h *Handler) GetNutritionPlan(ctx context.Context, req *connect.Request[GetNutritionPlanRequest]) (*connect.Response[NutritionPlanResponse], error) {
+	out, err := h.svc.GetNutritionPlan(ctx, req.Msg.ID, req.Msg.TenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&NutritionPlanResponse{NutritionPlan: out}), nil
 }
 
-func (h *Handler) GetFeedConsumptionReport(w http.ResponseWriter, r *http.Request) {
-	var req GetFeedConsumptionReportRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := h.svc.GetFeedConsumptionReport(r.Context(), req.TenantID, req.CattleID, req.From, req.To)
+func (h *Handler) RecordFeedConsumption(ctx context.Context, req *connect.Request[RecordFeedConsumptionRequest]) (*connect.Response[FeedConsumptionResponse], error) {
+	m := req.Msg
+	out, err := h.svc.RecordFeedConsumption(ctx, &domain.FeedConsumption{
+		TenantID:   m.TenantID,
+		CattleID:   m.CattleID,
+		FeedTypeID: m.FeedTypeID,
+		QuantityKg: m.QuantityKg,
+		FedAt:      m.FedAt,
+		FedBy:      m.FedBy,
+		CreatedBy:  m.CreatedBy,
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&FeedConsumptionResponse{Consumption: out}), nil
+}
+
+func (h *Handler) GetFeedConsumptionReport(ctx context.Context, req *connect.Request[GetFeedConsumptionReportRequest]) (*connect.Response[GetFeedConsumptionReportResponse], error) {
+	m := req.Msg
+	out, err := h.svc.GetFeedConsumptionReport(ctx, m.TenantID, m.CattleID, m.From, m.To)
+	if err != nil {
+		return nil, classify(err)
+	}
+	return connect.NewResponse(&GetFeedConsumptionReportResponse{Entries: out}), nil
 }

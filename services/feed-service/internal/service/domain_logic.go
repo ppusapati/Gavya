@@ -9,12 +9,28 @@ import (
 	ulidpkg "p9e.in/samavaya/packages/ULID"
 )
 
+// ErrInvalidArgument marks a caller mistake. Without it the handler cannot tell
+// "you did not supply an id" from "the query failed", and would have to report
+// both the same way.
+var ErrInvalidArgument = errors.New("invalid argument")
+
+// invalidArgument carries the reason alone. The marker is matched through Is,
+// so errors.Is finds it while the message stays free of a prefix the error code
+// already conveys.
+type invalidArgument struct{ reason string }
+
+func (e *invalidArgument) Error() string { return e.reason }
+
+func (e *invalidArgument) Is(target error) bool { return target == ErrInvalidArgument }
+
+func invalid(msg string) error { return &invalidArgument{reason: msg} }
+
 func (s *Service) CreateFeedType(ctx context.Context, f *domain.FeedType) (*domain.FeedType, error) {
 	if f.TenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	if f.Name == "" {
-		return nil, errors.New("name is required")
+		return nil, invalid("name is required")
 	}
 	f.ID = ulidpkg.New().String()
 	if f.Unit == "" {
@@ -29,20 +45,20 @@ func (s *Service) CreateFeedType(ctx context.Context, f *domain.FeedType) (*doma
 
 func (s *Service) ListFeedTypes(ctx context.Context, tenantID string) ([]*domain.FeedType, error) {
 	if tenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	return s.repo.ListFeedTypes(ctx, tenantID)
 }
 
 func (s *Service) CreateNutritionPlan(ctx context.Context, p *domain.NutritionPlan) (*domain.NutritionPlan, error) {
 	if p.TenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	if p.CattleID == "" {
-		return nil, errors.New("cattle_id is required")
+		return nil, invalid("cattle_id is required")
 	}
 	if p.FeedTypeID == "" {
-		return nil, errors.New("feed_type_id is required")
+		return nil, invalid("feed_type_id is required")
 	}
 	p.ID = ulidpkg.New().String()
 	if p.StartDate.IsZero() {
@@ -57,20 +73,20 @@ func (s *Service) CreateNutritionPlan(ctx context.Context, p *domain.NutritionPl
 
 func (s *Service) GetNutritionPlan(ctx context.Context, id, tenantID string) (*domain.NutritionPlan, error) {
 	if id == "" || tenantID == "" {
-		return nil, errors.New("id and tenant_id are required")
+		return nil, invalid("id and tenant_id are required")
 	}
 	return s.repo.GetNutritionPlan(ctx, id, tenantID)
 }
 
 func (s *Service) RecordFeedConsumption(ctx context.Context, c *domain.FeedConsumption) (*domain.FeedConsumption, error) {
 	if c.TenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	if c.CattleID == "" {
-		return nil, errors.New("cattle_id is required")
+		return nil, invalid("cattle_id is required")
 	}
 	if c.FeedTypeID == "" {
-		return nil, errors.New("feed_type_id is required")
+		return nil, invalid("feed_type_id is required")
 	}
 	c.ID = ulidpkg.New().String()
 	if c.FedAt.IsZero() {
@@ -85,10 +101,10 @@ func (s *Service) RecordFeedConsumption(ctx context.Context, c *domain.FeedConsu
 
 func (s *Service) GetFeedConsumptionReport(ctx context.Context, tenantID, cattleID string, from, to time.Time) ([]*domain.FeedConsumptionReport, error) {
 	if tenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	if cattleID == "" {
-		return nil, errors.New("cattle_id is required")
+		return nil, invalid("cattle_id is required")
 	}
 	return s.repo.GetFeedConsumptionReport(ctx, tenantID, cattleID, from, to)
 }

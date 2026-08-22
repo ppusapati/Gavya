@@ -1,13 +1,22 @@
 package handler
 
 import (
-	"encoding/json"
+	"context"
+	"errors"
 	"net/http"
 	"time"
 
+	"connectrpc.com/connect"
+
+	"github.com/ppusapati/gavya/libs/integrity/connectjson"
 	"github.com/ppusapati/gavya/services/billing-service/internal/domain"
+	"github.com/ppusapati/gavya/services/billing-service/internal/repository"
 	"github.com/ppusapati/gavya/services/billing-service/internal/service"
 )
+
+// ServiceName is the fully qualified Connect service these procedures are
+// addressed under.
+const ServiceName = "billing.v1.BillingService"
 
 type Handler struct {
 	svc *service.Service
@@ -18,29 +27,36 @@ func New(svc *service.Service) *Handler {
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("/healthz", h.healthz)
-	mux.HandleFunc("/billing.v1.BillingService/CreateInvoice", h.CreateInvoice)
-	mux.HandleFunc("/billing.v1.BillingService/AddInvoiceItem", h.AddInvoiceItem)
-	mux.HandleFunc("/billing.v1.BillingService/SendInvoice", h.SendInvoice)
-	mux.HandleFunc("/billing.v1.BillingService/RecordPayment", h.RecordPayment)
-	mux.HandleFunc("/billing.v1.BillingService/VoidInvoice", h.VoidInvoice)
-	mux.HandleFunc("/billing.v1.BillingService/GetOutstandingInvoices", h.GetOutstandingInvoices)
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	route := func(method string, handler http.HandlerFunc) {
+		mux.HandleFunc(connectjson.Procedure(ServiceName, method), handler)
+	}
+
+	route("CreateInvoice", connectjson.Unary(h.CreateInvoice))
+	route("AddInvoiceItem", connectjson.Unary(h.AddInvoiceItem))
+	route("SendInvoice", connectjson.Unary(h.SendInvoice))
+	route("RecordPayment", connectjson.Unary(h.RecordPayment))
+	route("VoidInvoice", connectjson.Unary(h.VoidInvoice))
+	route("GetOutstandingInvoices", connectjson.Unary(h.GetOutstandingInvoices))
 }
 
-func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
+// classify maps a failure onto the code that describes it.
+//
+// Reporting everything as internal, as this service used to, leaves a caller
+// unable to tell a missing invoice from an unreachable database — and makes an
+// unrecoverable mistake look like something worth retrying.
+func classify(err error) error {
+	switch {
+	case errors.Is(err, repository.ErrNotFound):
+		return connect.NewError(connect.CodeNotFound, err)
+	case errors.Is(err, repository.ErrDuplicateInvoiceNumber):
+		return connect.NewError(connect.CodeAlreadyExists, err)
+	case errors.Is(err, service.ErrInvalidArgument):
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	default:
+		return connect.NewError(connect.CodeInternal, err)
+	}
 }
 
 type CreateInvoiceRequest struct {
@@ -86,116 +102,98 @@ type RecordPaymentRequest struct {
 	CreatedBy     string    `json:"created_by"`
 }
 
-func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
-	var req CreateInvoiceRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	inv := &domain.Invoice{
-		TenantID:      req.TenantID,
-		CustomerID:    req.CustomerID,
-		ReferenceID:   req.ReferenceID,
-		ReferenceType: req.ReferenceType,
-		Currency:      req.Currency,
-		IssuedAt:      req.IssuedAt,
-		Notes:         req.Notes,
-		CreatedBy:     req.CreatedBy,
-	}
-	result, err := h.svc.CreateInvoice(r.Context(), inv)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, result)
+type InvoiceResponse struct {
+	Invoice *domain.Invoice `json:"invoice"`
 }
 
-func (h *Handler) AddInvoiceItem(w http.ResponseWriter, r *http.Request) {
-	var req AddInvoiceItemRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	item := &domain.InvoiceItem{
-		TenantID:    req.TenantID,
-		InvoiceID:   req.InvoiceID,
-		Description: req.Description,
-		Quantity:    req.Quantity,
-		UnitPrice:   req.UnitPrice,
-		TaxRate:     req.TaxRate,
-		CreatedBy:   req.CreatedBy,
-	}
-	result, err := h.svc.AddInvoiceItem(r.Context(), item)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, result)
+type InvoiceItemResponse struct {
+	Item *domain.InvoiceItem `json:"item"`
 }
 
-func (h *Handler) SendInvoice(w http.ResponseWriter, r *http.Request) {
-	var req InvoiceActionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := h.svc.SendInvoice(r.Context(), req.ID, req.TenantID, req.UpdatedBy)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, result)
+type PaymentResponse struct {
+	Payment *domain.Payment `json:"payment"`
 }
 
-func (h *Handler) RecordPayment(w http.ResponseWriter, r *http.Request) {
-	var req RecordPaymentRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	p := &domain.Payment{
-		TenantID:      req.TenantID,
-		InvoiceID:     req.InvoiceID,
-		Amount:        req.Amount,
-		Currency:      req.Currency,
-		PaymentMethod: req.PaymentMethod,
-		ReferenceNo:   req.ReferenceNo,
-		PaidAt:        req.PaidAt,
-		Notes:         req.Notes,
-		CreatedBy:     req.CreatedBy,
-	}
-	result, err := h.svc.RecordPayment(r.Context(), p)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, result)
+type ListInvoicesResponse struct {
+	Invoices []*domain.Invoice `json:"invoices"`
 }
 
-func (h *Handler) VoidInvoice(w http.ResponseWriter, r *http.Request) {
-	var req InvoiceActionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := h.svc.VoidInvoice(r.Context(), req.ID, req.TenantID, req.UpdatedBy)
+func (h *Handler) CreateInvoice(ctx context.Context, req *connect.Request[CreateInvoiceRequest]) (*connect.Response[InvoiceResponse], error) {
+	m := req.Msg
+	out, err := h.svc.CreateInvoice(ctx, &domain.Invoice{
+		TenantID:      m.TenantID,
+		CustomerID:    m.CustomerID,
+		ReferenceID:   m.ReferenceID,
+		ReferenceType: m.ReferenceType,
+		Currency:      m.Currency,
+		IssuedAt:      m.IssuedAt,
+		Notes:         m.Notes,
+		CreatedBy:     m.CreatedBy,
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&InvoiceResponse{Invoice: out}), nil
 }
 
-func (h *Handler) GetOutstandingInvoices(w http.ResponseWriter, r *http.Request) {
-	var req TenantRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := h.svc.GetOutstandingInvoices(r.Context(), req.TenantID)
+func (h *Handler) AddInvoiceItem(ctx context.Context, req *connect.Request[AddInvoiceItemRequest]) (*connect.Response[InvoiceItemResponse], error) {
+	m := req.Msg
+	out, err := h.svc.AddInvoiceItem(ctx, &domain.InvoiceItem{
+		TenantID:    m.TenantID,
+		InvoiceID:   m.InvoiceID,
+		Description: m.Description,
+		Quantity:    m.Quantity,
+		UnitPrice:   m.UnitPrice,
+		TaxRate:     m.TaxRate,
+		CreatedBy:   m.CreatedBy,
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&InvoiceItemResponse{Item: out}), nil
+}
+
+func (h *Handler) SendInvoice(ctx context.Context, req *connect.Request[InvoiceActionRequest]) (*connect.Response[InvoiceResponse], error) {
+	m := req.Msg
+	out, err := h.svc.SendInvoice(ctx, m.ID, m.TenantID, m.UpdatedBy)
+	if err != nil {
+		return nil, classify(err)
+	}
+	return connect.NewResponse(&InvoiceResponse{Invoice: out}), nil
+}
+
+func (h *Handler) RecordPayment(ctx context.Context, req *connect.Request[RecordPaymentRequest]) (*connect.Response[PaymentResponse], error) {
+	m := req.Msg
+	out, err := h.svc.RecordPayment(ctx, &domain.Payment{
+		TenantID:      m.TenantID,
+		InvoiceID:     m.InvoiceID,
+		Amount:        m.Amount,
+		Currency:      m.Currency,
+		PaymentMethod: m.PaymentMethod,
+		ReferenceNo:   m.ReferenceNo,
+		PaidAt:        m.PaidAt,
+		Notes:         m.Notes,
+		CreatedBy:     m.CreatedBy,
+	})
+	if err != nil {
+		return nil, classify(err)
+	}
+	return connect.NewResponse(&PaymentResponse{Payment: out}), nil
+}
+
+func (h *Handler) VoidInvoice(ctx context.Context, req *connect.Request[InvoiceActionRequest]) (*connect.Response[InvoiceResponse], error) {
+	m := req.Msg
+	out, err := h.svc.VoidInvoice(ctx, m.ID, m.TenantID, m.UpdatedBy)
+	if err != nil {
+		return nil, classify(err)
+	}
+	return connect.NewResponse(&InvoiceResponse{Invoice: out}), nil
+}
+
+func (h *Handler) GetOutstandingInvoices(ctx context.Context, req *connect.Request[TenantRequest]) (*connect.Response[ListInvoicesResponse], error) {
+	out, err := h.svc.GetOutstandingInvoices(ctx, req.Msg.TenantID)
+	if err != nil {
+		return nil, classify(err)
+	}
+	return connect.NewResponse(&ListInvoicesResponse{Invoices: out}), nil
 }

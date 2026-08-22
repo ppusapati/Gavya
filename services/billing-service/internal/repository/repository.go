@@ -2,11 +2,38 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/ppusapati/gavya/services/billing-service/internal/domain"
 )
+
+// ErrNotFound lets a caller tell a missing record from a failed query. Without
+// it every outcome reaches the handler as an opaque error and is reported as
+// internal, so a client cannot distinguish "no such invoice" from "the database
+// is unreachable".
+var ErrNotFound = errors.New("not found")
+
+// ErrDuplicateInvoiceNumber is the unique violation on (tenant_id,
+// invoice_number), named so the handler can report a conflict rather than an
+// internal failure.
+var ErrDuplicateInvoiceNumber = errors.New("an invoice with that number already exists")
+
+// Columns are listed explicitly rather than selected with *, because the scans
+// below are positional: adding a column to the table would silently misalign
+// every field after it.
+const invoiceCols = `id,tenant_id,customer_id,invoice_number,reference_id,reference_type,status,` +
+	`sub_total,tax_amount,total_amount,currency,issued_at,due_at,paid_at,notes,created_at,` +
+	`updated_at,created_by,updated_by,deleted_at`
+
+const invoiceItemCols = `id,tenant_id,invoice_id,description,quantity,unit_price,total_price,` +
+	`tax_rate,created_at,updated_at,created_by,updated_by`
+
+const paymentCols = `id,tenant_id,invoice_id,amount,currency,payment_method,reference_no,paid_at,` +
+	`notes,created_at,updated_at,created_by,updated_by`
 
 type Repository interface {
 	CreateInvoice(ctx context.Context, inv *domain.Invoice) (*domain.Invoice, error)
@@ -37,17 +64,21 @@ type scanner interface {
 func (r *repo) CreateInvoice(ctx context.Context, inv *domain.Invoice) (*domain.Invoice, error) {
 	row := r.pool.QueryRow(ctx,
 		`INSERT INTO invoices (id,tenant_id,customer_id,invoice_number,reference_id,reference_type,status,sub_total,tax_amount,total_amount,currency,issued_at,due_at,notes,created_by,updated_by)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING `+invoiceCols,
 		inv.ID, inv.TenantID, inv.CustomerID, inv.InvoiceNumber, inv.ReferenceID, inv.ReferenceType,
 		inv.Status, inv.SubTotal, inv.TaxAmount, inv.TotalAmount, inv.Currency,
 		inv.IssuedAt, inv.DueAt, inv.Notes, inv.CreatedBy, inv.UpdatedBy,
 	)
-	return scanInvoice(row)
+	out, err := scanInvoice(row)
+	if isUniqueViolation(err) {
+		return nil, ErrDuplicateInvoiceNumber
+	}
+	return out, err
 }
 
 func (r *repo) GetInvoice(ctx context.Context, id, tenantID string) (*domain.Invoice, error) {
 	row := r.pool.QueryRow(ctx,
-		`SELECT * FROM invoices WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL`,
+		`SELECT `+invoiceCols+` FROM invoices WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL`,
 		id, tenantID,
 	)
 	return scanInvoice(row)
@@ -55,7 +86,7 @@ func (r *repo) GetInvoice(ctx context.Context, id, tenantID string) (*domain.Inv
 
 func (r *repo) UpdateInvoiceStatus(ctx context.Context, id, tenantID, status, updatedBy string) (*domain.Invoice, error) {
 	row := r.pool.QueryRow(ctx,
-		`UPDATE invoices SET status=$3,updated_by=$4,updated_at=NOW() WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL RETURNING *`,
+		`UPDATE invoices SET status=$3,updated_by=$4,updated_at=NOW() WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL RETURNING `+invoiceCols,
 		id, tenantID, status, updatedBy,
 	)
 	return scanInvoice(row)
@@ -64,7 +95,7 @@ func (r *repo) UpdateInvoiceStatus(ctx context.Context, id, tenantID, status, up
 func (r *repo) UpdateInvoiceTotals(ctx context.Context, id, tenantID string, subTotal, taxAmount, totalAmount float64, updatedBy string) (*domain.Invoice, error) {
 	row := r.pool.QueryRow(ctx,
 		`UPDATE invoices SET sub_total=$3,tax_amount=$4,total_amount=$5,updated_by=$6,updated_at=NOW()
-		 WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL RETURNING *`,
+		 WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL RETURNING `+invoiceCols,
 		id, tenantID, subTotal, taxAmount, totalAmount, updatedBy,
 	)
 	return scanInvoice(row)
@@ -73,7 +104,7 @@ func (r *repo) UpdateInvoiceTotals(ctx context.Context, id, tenantID string, sub
 func (r *repo) MarkInvoicePaid(ctx context.Context, id, tenantID, updatedBy string, paidAt time.Time) (*domain.Invoice, error) {
 	row := r.pool.QueryRow(ctx,
 		`UPDATE invoices SET status='paid',paid_at=$3,updated_by=$4,updated_at=NOW()
-		 WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL RETURNING *`,
+		 WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL RETURNING `+invoiceCols,
 		id, tenantID, paidAt, updatedBy,
 	)
 	return scanInvoice(row)
@@ -81,7 +112,7 @@ func (r *repo) MarkInvoicePaid(ctx context.Context, id, tenantID, updatedBy stri
 
 func (r *repo) ListOutstandingInvoices(ctx context.Context, tenantID string) ([]*domain.Invoice, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT * FROM invoices WHERE tenant_id=$1 AND status IN ('sent','overdue') AND deleted_at IS NULL ORDER BY due_at`,
+		`SELECT `+invoiceCols+` FROM invoices WHERE tenant_id=$1 AND status IN ('sent','overdue') AND deleted_at IS NULL ORDER BY due_at`,
 		tenantID,
 	)
 	if err != nil {
@@ -90,11 +121,8 @@ func (r *repo) ListOutstandingInvoices(ctx context.Context, tenantID string) ([]
 	defer rows.Close()
 	var result []*domain.Invoice
 	for rows.Next() {
-		inv := &domain.Invoice{}
-		if err := rows.Scan(&inv.ID, &inv.TenantID, &inv.CustomerID, &inv.InvoiceNumber, &inv.ReferenceID,
-			&inv.ReferenceType, &inv.Status, &inv.SubTotal, &inv.TaxAmount, &inv.TotalAmount, &inv.Currency,
-			&inv.IssuedAt, &inv.DueAt, &inv.PaidAt, &inv.Notes,
-			&inv.CreatedAt, &inv.UpdatedAt, &inv.CreatedBy, &inv.UpdatedBy, &inv.DeletedAt); err != nil {
+		inv, err := scanInvoice(rows)
+		if err != nil {
 			return nil, err
 		}
 		result = append(result, inv)
@@ -105,7 +133,7 @@ func (r *repo) ListOutstandingInvoices(ctx context.Context, tenantID string) ([]
 func (r *repo) CreateInvoiceItem(ctx context.Context, item *domain.InvoiceItem) (*domain.InvoiceItem, error) {
 	row := r.pool.QueryRow(ctx,
 		`INSERT INTO invoice_items (id,tenant_id,invoice_id,description,quantity,unit_price,total_price,tax_rate,created_by,updated_by)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING `+invoiceItemCols,
 		item.ID, item.TenantID, item.InvoiceID, item.Description, item.Quantity,
 		item.UnitPrice, item.TotalPrice, item.TaxRate, item.CreatedBy, item.UpdatedBy,
 	)
@@ -114,7 +142,7 @@ func (r *repo) CreateInvoiceItem(ctx context.Context, item *domain.InvoiceItem) 
 
 func (r *repo) ListInvoiceItems(ctx context.Context, invoiceID, tenantID string) ([]*domain.InvoiceItem, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT * FROM invoice_items WHERE invoice_id=$1 AND tenant_id=$2 ORDER BY created_at`,
+		`SELECT `+invoiceItemCols+` FROM invoice_items WHERE invoice_id=$1 AND tenant_id=$2 ORDER BY created_at`,
 		invoiceID, tenantID,
 	)
 	if err != nil {
@@ -123,10 +151,8 @@ func (r *repo) ListInvoiceItems(ctx context.Context, invoiceID, tenantID string)
 	defer rows.Close()
 	var result []*domain.InvoiceItem
 	for rows.Next() {
-		item := &domain.InvoiceItem{}
-		if err := rows.Scan(&item.ID, &item.TenantID, &item.InvoiceID, &item.Description,
-			&item.Quantity, &item.UnitPrice, &item.TotalPrice, &item.TaxRate,
-			&item.CreatedAt, &item.UpdatedAt, &item.CreatedBy, &item.UpdatedBy); err != nil {
+		item, err := scanInvoiceItem(rows)
+		if err != nil {
 			return nil, err
 		}
 		result = append(result, item)
@@ -155,7 +181,7 @@ func (r *repo) SumPayments(ctx context.Context, invoiceID, tenantID string) (flo
 func (r *repo) CreatePayment(ctx context.Context, p *domain.Payment) (*domain.Payment, error) {
 	row := r.pool.QueryRow(ctx,
 		`INSERT INTO payments (id,tenant_id,invoice_id,amount,currency,payment_method,reference_no,paid_at,notes,created_by,updated_by)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING `+paymentCols,
 		p.ID, p.TenantID, p.InvoiceID, p.Amount, p.Currency, p.PaymentMethod,
 		p.ReferenceNo, p.PaidAt, p.Notes, p.CreatedBy, p.UpdatedBy,
 	)
@@ -169,6 +195,9 @@ func scanInvoice(s scanner) (*domain.Invoice, error) {
 		&inv.IssuedAt, &inv.DueAt, &inv.PaidAt, &inv.Notes,
 		&inv.CreatedAt, &inv.UpdatedAt, &inv.CreatedBy, &inv.UpdatedBy, &inv.DeletedAt)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
 		return nil, err
 	}
 	return inv, nil
@@ -180,6 +209,9 @@ func scanInvoiceItem(s scanner) (*domain.InvoiceItem, error) {
 		&item.Quantity, &item.UnitPrice, &item.TotalPrice, &item.TaxRate,
 		&item.CreatedAt, &item.UpdatedAt, &item.CreatedBy, &item.UpdatedBy)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
 		return nil, err
 	}
 	return item, nil
@@ -190,7 +222,15 @@ func scanPayment(s scanner) (*domain.Payment, error) {
 	err := s.Scan(&p.ID, &p.TenantID, &p.InvoiceID, &p.Amount, &p.Currency, &p.PaymentMethod,
 		&p.ReferenceNo, &p.PaidAt, &p.Notes, &p.CreatedAt, &p.UpdatedAt, &p.CreatedBy, &p.UpdatedBy)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
 		return nil, err
 	}
 	return p, nil
+}
+
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
