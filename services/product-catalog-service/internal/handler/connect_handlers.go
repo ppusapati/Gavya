@@ -59,6 +59,10 @@ func classify(err error) error {
 		errors.Is(err, repository.ErrDuplicateProductSlug),
 		errors.Is(err, repository.ErrDuplicateSKUCode):
 		return connect.NewError(connect.CodeAlreadyExists, err)
+	case errors.Is(err, repository.ErrUnknownReference):
+		// The request named something that is not there. That is the caller's to
+		// fix, not a failure to retry.
+		return connect.NewError(connect.CodeInvalidArgument, err)
 	case errors.Is(err, service.ErrInvalidArgument):
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	default:

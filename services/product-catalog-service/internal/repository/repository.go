@@ -16,6 +16,12 @@ import (
 // is unreachable".
 var ErrNotFound = errors.New("not found")
 
+// ErrUnknownReference is a foreign key the caller supplied that does not resolve
+// — a category, brand or product that is not there. Without it the constraint
+// violation reaches the handler as an opaque error and is reported as internal,
+// which tells a client to retry a call that will never succeed.
+var ErrUnknownReference = errors.New("a referenced category, brand or product does not exist")
+
 // The unique violations, named so the handler can report a conflict rather than
 // an internal failure.
 var (
@@ -152,14 +158,24 @@ func (r *repo) ListBrands(ctx context.Context, tenantID string) ([]*domain.Brand
 
 func (r *repo) CreateProduct(ctx context.Context, p *domain.Product) (*domain.Product, error) {
 	row := r.pool.QueryRow(ctx,
+		// Category and brand are optional, and the columns are nullable. An empty
+		// string is not the same as no category: it is a foreign key to a row
+		// whose id is "", which does not exist. NULLIF turns "none supplied" into
+		// the absence the column was designed for.
 		`INSERT INTO products (id,tenant_id,category_id,brand_id,name,slug,description,product_type,status,created_by,updated_by)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING `+productCols,
+		 VALUES ($1,$2,NULLIF($3,''),NULLIF($4,''),$5,$6,$7,$8,$9,$10,$11) RETURNING `+productCols,
 		p.ID, p.TenantID, p.CategoryID, p.BrandID, p.Name, p.Slug, p.Description,
 		p.ProductType, p.Status, p.CreatedBy, p.UpdatedBy,
 	)
 	out, err := scanProduct(row)
 	if isUniqueViolation(err) {
 		return nil, ErrDuplicateProductSlug
+	}
+	if isForeignKeyViolation(err) {
+		// The caller named a category or brand that is not there. Reporting that
+		// as an internal failure tells them to try again, when what they need to
+		// do is fix the id.
+		return nil, ErrUnknownReference
 	}
 	return out, err
 }
@@ -202,6 +218,9 @@ func (r *repo) CreateSKU(ctx context.Context, s *domain.SKU) (*domain.SKU, error
 	out, err := scanSKU(row)
 	if isUniqueViolation(err) {
 		return nil, ErrDuplicateSKUCode
+	}
+	if isForeignKeyViolation(err) {
+		return nil, ErrUnknownReference
 	}
 	return out, err
 }
@@ -292,6 +311,11 @@ func scanSKU(s scanner) (*domain.SKU, error) {
 		return nil, err
 	}
 	return s2, nil
+}
+
+func isForeignKeyViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23503"
 }
 
 func isUniqueViolation(err error) bool {
