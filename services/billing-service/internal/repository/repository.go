@@ -3,7 +3,6 @@ package repository
 import (
 	"context"
 	"errors"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -39,14 +38,14 @@ type Repository interface {
 	CreateInvoice(ctx context.Context, inv *domain.Invoice) (*domain.Invoice, error)
 	GetInvoice(ctx context.Context, id, tenantID string) (*domain.Invoice, error)
 	UpdateInvoiceStatus(ctx context.Context, id, tenantID, status, updatedBy string) (*domain.Invoice, error)
-	UpdateInvoiceTotals(ctx context.Context, id, tenantID string, subTotal, taxAmount, totalAmount float64, updatedBy string) (*domain.Invoice, error)
-	MarkInvoicePaid(ctx context.Context, id, tenantID, updatedBy string, paidAt time.Time) (*domain.Invoice, error)
+	// AddItemAndRetotal writes a line and its invoice's totals together, so an
+	// invoice can never disagree with the sum of its own lines.
+	AddItemAndRetotal(ctx context.Context, item *domain.InvoiceItem, quantity, unitPrice, taxRate string) (*ItemOutcome, error)
 	ListOutstandingInvoices(ctx context.Context, tenantID string) ([]*domain.Invoice, error)
-	CreateInvoiceItem(ctx context.Context, item *domain.InvoiceItem) (*domain.InvoiceItem, error)
 	ListInvoiceItems(ctx context.Context, invoiceID, tenantID string) ([]*domain.InvoiceItem, error)
-	SumInvoiceItems(ctx context.Context, invoiceID, tenantID string) (float64, error)
-	SumPayments(ctx context.Context, invoiceID, tenantID string) (float64, error)
-	CreatePayment(ctx context.Context, p *domain.Payment) (*domain.Payment, error)
+	// RecordPaymentAndSettle writes a payment and settles the invoice together,
+	// so an invoice's status cannot disagree with the money against it.
+	RecordPaymentAndSettle(ctx context.Context, p *domain.Payment, amount string) (*PaymentOutcome, error)
 }
 
 type repo struct {
@@ -92,23 +91,7 @@ func (r *repo) UpdateInvoiceStatus(ctx context.Context, id, tenantID, status, up
 	return scanInvoice(row)
 }
 
-func (r *repo) UpdateInvoiceTotals(ctx context.Context, id, tenantID string, subTotal, taxAmount, totalAmount float64, updatedBy string) (*domain.Invoice, error) {
-	row := r.pool.QueryRow(ctx,
-		`UPDATE invoices SET sub_total=$3,tax_amount=$4,total_amount=$5,updated_by=$6,updated_at=NOW()
-		 WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL RETURNING `+invoiceCols,
-		id, tenantID, subTotal, taxAmount, totalAmount, updatedBy,
-	)
-	return scanInvoice(row)
-}
 
-func (r *repo) MarkInvoicePaid(ctx context.Context, id, tenantID, updatedBy string, paidAt time.Time) (*domain.Invoice, error) {
-	row := r.pool.QueryRow(ctx,
-		`UPDATE invoices SET status='paid',paid_at=$3,updated_by=$4,updated_at=NOW()
-		 WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL RETURNING `+invoiceCols,
-		id, tenantID, paidAt, updatedBy,
-	)
-	return scanInvoice(row)
-}
 
 func (r *repo) ListOutstandingInvoices(ctx context.Context, tenantID string) ([]*domain.Invoice, error) {
 	rows, err := r.pool.Query(ctx,
@@ -130,15 +113,6 @@ func (r *repo) ListOutstandingInvoices(ctx context.Context, tenantID string) ([]
 	return result, rows.Err()
 }
 
-func (r *repo) CreateInvoiceItem(ctx context.Context, item *domain.InvoiceItem) (*domain.InvoiceItem, error) {
-	row := r.pool.QueryRow(ctx,
-		`INSERT INTO invoice_items (id,tenant_id,invoice_id,description,quantity,unit_price,total_price,tax_rate,created_by,updated_by)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING `+invoiceItemCols,
-		item.ID, item.TenantID, item.InvoiceID, item.Description, item.Quantity,
-		item.UnitPrice, item.TotalPrice, item.TaxRate, item.CreatedBy, item.UpdatedBy,
-	)
-	return scanInvoiceItem(row)
-}
 
 func (r *repo) ListInvoiceItems(ctx context.Context, invoiceID, tenantID string) ([]*domain.InvoiceItem, error) {
 	rows, err := r.pool.Query(ctx,
@@ -160,33 +134,8 @@ func (r *repo) ListInvoiceItems(ctx context.Context, invoiceID, tenantID string)
 	return result, rows.Err()
 }
 
-func (r *repo) SumInvoiceItems(ctx context.Context, invoiceID, tenantID string) (float64, error) {
-	var total float64
-	err := r.pool.QueryRow(ctx,
-		`SELECT COALESCE(SUM(total_price),0) FROM invoice_items WHERE invoice_id=$1 AND tenant_id=$2`,
-		invoiceID, tenantID,
-	).Scan(&total)
-	return total, err
-}
 
-func (r *repo) SumPayments(ctx context.Context, invoiceID, tenantID string) (float64, error) {
-	var total float64
-	err := r.pool.QueryRow(ctx,
-		`SELECT COALESCE(SUM(amount),0) FROM payments WHERE invoice_id=$1 AND tenant_id=$2`,
-		invoiceID, tenantID,
-	).Scan(&total)
-	return total, err
-}
 
-func (r *repo) CreatePayment(ctx context.Context, p *domain.Payment) (*domain.Payment, error) {
-	row := r.pool.QueryRow(ctx,
-		`INSERT INTO payments (id,tenant_id,invoice_id,amount,currency,payment_method,reference_no,paid_at,notes,created_by,updated_by)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING `+paymentCols,
-		p.ID, p.TenantID, p.InvoiceID, p.Amount, p.Currency, p.PaymentMethod,
-		p.ReferenceNo, p.PaidAt, p.Notes, p.CreatedBy, p.UpdatedBy,
-	)
-	return scanPayment(row)
-}
 
 func scanInvoice(s scanner) (*domain.Invoice, error) {
 	inv := &domain.Invoice{}

@@ -39,10 +39,10 @@ type Repository interface {
 	GetOrder(ctx context.Context, id, tenantID string) (*domain.Order, error)
 	ListOrders(ctx context.Context, tenantID, status string) ([]*domain.Order, error)
 	UpdateOrderStatus(ctx context.Context, id, tenantID, status, updatedBy string) (*domain.Order, error)
-	UpdateOrderTotals(ctx context.Context, id, tenantID string, subTotal, taxAmount, totalAmount float64, updatedBy string) (*domain.Order, error)
-	CreateOrderItem(ctx context.Context, item *domain.OrderItem) (*domain.OrderItem, error)
+	// AddItemAndRetotal writes a line and its order's totals together, so an
+	// order can never disagree with the sum of its own lines.
+	AddItemAndRetotal(ctx context.Context, item *domain.OrderItem, quantity, unitPrice, taxRate string) (*ItemOutcome, error)
 	ListOrderItems(ctx context.Context, orderID, tenantID string) ([]*domain.OrderItem, error)
-	SumOrderItems(ctx context.Context, orderID, tenantID string) (float64, error)
 	CreateInvoice(ctx context.Context, inv *domain.Invoice) (*domain.Invoice, error)
 	GetInvoice(ctx context.Context, id, tenantID string) (*domain.Invoice, error)
 }
@@ -109,24 +109,7 @@ func (r *repo) UpdateOrderStatus(ctx context.Context, id, tenantID, status, upda
 	return scanOrder(row)
 }
 
-func (r *repo) UpdateOrderTotals(ctx context.Context, id, tenantID string, subTotal, taxAmount, totalAmount float64, updatedBy string) (*domain.Order, error) {
-	row := r.pool.QueryRow(ctx,
-		`UPDATE orders SET sub_total=$3,tax_amount=$4,total_amount=$5,updated_by=$6,updated_at=NOW()
-		 WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL RETURNING `+orderCols,
-		id, tenantID, subTotal, taxAmount, totalAmount, updatedBy,
-	)
-	return scanOrder(row)
-}
 
-func (r *repo) CreateOrderItem(ctx context.Context, item *domain.OrderItem) (*domain.OrderItem, error) {
-	row := r.pool.QueryRow(ctx,
-		`INSERT INTO order_items (id,tenant_id,order_id,sku_id,product_id,quantity,unit_price,total_price,status,created_by,updated_by)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING `+orderItemCols,
-		item.ID, item.TenantID, item.OrderID, item.SKUID, item.ProductID, item.Quantity,
-		item.UnitPrice, item.TotalPrice, item.Status, item.CreatedBy, item.UpdatedBy,
-	)
-	return scanOrderItem(row)
-}
 
 func (r *repo) ListOrderItems(ctx context.Context, orderID, tenantID string) ([]*domain.OrderItem, error) {
 	rows, err := r.pool.Query(ctx,
@@ -148,14 +131,6 @@ func (r *repo) ListOrderItems(ctx context.Context, orderID, tenantID string) ([]
 	return result, rows.Err()
 }
 
-func (r *repo) SumOrderItems(ctx context.Context, orderID, tenantID string) (float64, error) {
-	var total float64
-	err := r.pool.QueryRow(ctx,
-		`SELECT COALESCE(SUM(total_price),0) AS total FROM order_items WHERE order_id=$1 AND tenant_id=$2`,
-		orderID, tenantID,
-	).Scan(&total)
-	return total, err
-}
 
 func (r *repo) CreateInvoice(ctx context.Context, inv *domain.Invoice) (*domain.Invoice, error) {
 	row := r.pool.QueryRow(ctx,

@@ -52,6 +52,10 @@ func classify(err error) error {
 		return connect.NewError(connect.CodeNotFound, err)
 	case errors.Is(err, repository.ErrDuplicateInvoiceNumber):
 		return connect.NewError(connect.CodeAlreadyExists, err)
+	case errors.Is(err, repository.ErrNotPayable):
+		return connect.NewError(connect.CodeFailedPrecondition, err)
+	case errors.Is(err, repository.ErrNotDraft):
+		return connect.NewError(connect.CodeFailedPrecondition, err)
 	case errors.Is(err, service.ErrInvalidArgument):
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	default:
@@ -108,10 +112,17 @@ type InvoiceResponse struct {
 
 type InvoiceItemResponse struct {
 	Item *domain.InvoiceItem `json:"item"`
+	// Invoice is returned with the line because adding one changes the totals,
+	// and a caller that fetched them separately could be handed figures a
+	// concurrent line had already moved on from.
+	Invoice *domain.Invoice `json:"invoice,omitempty"`
 }
 
 type PaymentResponse struct {
 	Payment *domain.Payment `json:"payment"`
+	// Invoice is returned with the payment, so a caller learns from the same
+	// reply whether that payment settled it.
+	Invoice *domain.Invoice `json:"invoice,omitempty"`
 }
 
 type ListInvoicesResponse struct {
@@ -150,7 +161,7 @@ func (h *Handler) AddInvoiceItem(ctx context.Context, req *connect.Request[AddIn
 	if err != nil {
 		return nil, classify(err)
 	}
-	return connect.NewResponse(&InvoiceItemResponse{Item: out}), nil
+	return connect.NewResponse(&InvoiceItemResponse{Item: out.Item, Invoice: out.Invoice}), nil
 }
 
 func (h *Handler) SendInvoice(ctx context.Context, req *connect.Request[InvoiceActionRequest]) (*connect.Response[InvoiceResponse], error) {
@@ -178,7 +189,7 @@ func (h *Handler) RecordPayment(ctx context.Context, req *connect.Request[Record
 	if err != nil {
 		return nil, classify(err)
 	}
-	return connect.NewResponse(&PaymentResponse{Payment: out}), nil
+	return connect.NewResponse(&PaymentResponse{Payment: out.Payment, Invoice: out.Invoice}), nil
 }
 
 func (h *Handler) VoidInvoice(ctx context.Context, req *connect.Request[InvoiceActionRequest]) (*connect.Response[InvoiceResponse], error) {

@@ -55,3 +55,11 @@ type Payment struct {
 	CreatedBy     string
 	UpdatedBy     string
 }
+
+// Invoice statuses, named so a comparison cannot drift from what is written.
+const (
+	InvoiceDraft     = "draft"
+	InvoiceSent      = "sent"
+	InvoicePaid      = "paid"
+	InvoiceCancelled = "cancelled"
+)

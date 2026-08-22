@@ -75,3 +75,11 @@ type Return struct {
 	UpdatedBy    string
 	DeletedAt    *time.Time
 }
+
+// Order statuses, named so a comparison against a literal string cannot drift
+// from what the service writes.
+const (
+	OrderDraft     = "draft"
+	OrderConfirmed = "confirmed"
+	OrderCancelled = "cancelled"
+)

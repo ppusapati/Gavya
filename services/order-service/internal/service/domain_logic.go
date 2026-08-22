@@ -5,7 +5,9 @@ import (
 	"errors"
 	"time"
 
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/services/order-service/internal/domain"
+	"github.com/ppusapati/gavya/services/order-service/internal/repository"
 	ulidpkg "p9e.in/samavaya/packages/ULID"
 )
 
@@ -59,20 +61,44 @@ func (s *Service) GetOrder(ctx context.Context, id, tenantID string) (*domain.Or
 	return s.repo.GetOrder(ctx, id, tenantID)
 }
 
-func (s *Service) AddOrderItem(ctx context.Context, item *domain.OrderItem) (*domain.OrderItem, error) {
+// DefaultTaxRate is the rate applied to every order.
+//
+// It is a placeholder, not a tax model: one rate for every line of every order
+// cannot be right for a catalogue that mixes exempt and rated goods. It is kept
+// here, named and in one place, so that it is visible as a decision rather than
+// buried as a literal in an expression — and so that replacing it with a real
+// per-line rate changes one thing.
+const DefaultTaxRate = "0.18"
+
+// AddOrderItem adds a line and brings the order's totals back in step with its
+// contents.
+//
+// Neither the line total nor the order totals are computed here. Multiplying a
+// quantity by a price in float64 and storing the result in a NUMERIC(12,2)
+// column writes a rounded version of a number that was already inexact, and
+// this is money. The repository does the arithmetic in the database, in the
+// column's own type, inside the transaction that writes it.
+func (s *Service) AddOrderItem(ctx context.Context, item *domain.OrderItem) (*repository.ItemOutcome, error) {
 	if item.OrderID == "" || item.TenantID == "" {
 		return nil, invalid("order_id and tenant_id are required")
 	}
-	// Validate order is still in draft
-	order, err := s.repo.GetOrder(ctx, item.OrderID, item.TenantID)
+	if item.Quantity <= 0 {
+		return nil, invalid("quantity must be more than zero")
+	}
+
+	// The wire carries these as JSON numbers, so they arrive as float64. They are
+	// converted to the exact decimals the columns hold, and a value finer than
+	// that is refused rather than rounded on the way in without telling anyone.
+	quantity, err := exact.NonNegativeDecimal(item.Quantity, 3, 10)
 	if err != nil {
-		return nil, err
+		return nil, invalid(exact.Field("quantity", err).Error())
 	}
-	if order.Status != "draft" {
-		return nil, invalid("can only add items to draft orders")
+	unitPrice, err := exact.NonNegativeDecimal(item.UnitPrice, 2, 12)
+	if err != nil {
+		return nil, invalid(exact.Field("unit_price", err).Error())
 	}
+
 	item.ID = ulidpkg.New().String()
-	item.TotalPrice = item.Quantity * item.UnitPrice
 	if item.Status == "" {
 		item.Status = "pending"
 	}
@@ -81,24 +107,7 @@ func (s *Service) AddOrderItem(ctx context.Context, item *domain.OrderItem) (*do
 	}
 	item.UpdatedBy = item.CreatedBy
 
-	result, err := s.repo.CreateOrderItem(ctx, item)
-	if err != nil {
-		return nil, err
-	}
-
-	// Recalculate order totals
-	subTotal, err := s.repo.SumOrderItems(ctx, item.OrderID, item.TenantID)
-	if err != nil {
-		s.log.Errorf("failed to sum order items: %v", err)
-	} else {
-		taxAmount := subTotal * 0.18
-		totalAmount := subTotal + taxAmount
-		if _, err := s.repo.UpdateOrderTotals(ctx, item.OrderID, item.TenantID, subTotal, taxAmount, totalAmount, item.CreatedBy); err != nil {
-			s.log.Errorf("failed to update order totals: %v", err)
-		}
-	}
-
-	return result, nil
+	return s.repo.AddItemAndRetotal(ctx, item, quantity, unitPrice, DefaultTaxRate)
 }
 
 func (s *Service) ConfirmOrder(ctx context.Context, id, tenantID, updatedBy string) (*domain.Order, error) {

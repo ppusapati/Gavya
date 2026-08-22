@@ -52,6 +52,10 @@ func classify(err error) error {
 		return connect.NewError(connect.CodeNotFound, err)
 	case errors.Is(err, repository.ErrDuplicateOrderNumber):
 		return connect.NewError(connect.CodeAlreadyExists, err)
+	case errors.Is(err, repository.ErrNotDraft):
+		// The request was well formed; the order's state refused it. Retrying
+		// changes nothing until the order changes.
+		return connect.NewError(connect.CodeFailedPrecondition, err)
 	case errors.Is(err, service.ErrInvalidArgument):
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	default:
@@ -102,6 +106,10 @@ type OrderResponse struct {
 
 type OrderItemResponse struct {
 	Item *domain.OrderItem `json:"item"`
+	// Order is returned with the item because adding a line changes the order's
+	// totals, and a caller that fetched them separately could be handed figures
+	// a concurrent line had already moved on from.
+	Order *domain.Order `json:"order,omitempty"`
 }
 
 type InvoiceResponse struct {
@@ -147,7 +155,7 @@ func (h *Handler) AddOrderItem(ctx context.Context, req *connect.Request[AddOrde
 	if err != nil {
 		return nil, classify(err)
 	}
-	return connect.NewResponse(&OrderItemResponse{Item: out}), nil
+	return connect.NewResponse(&OrderItemResponse{Item: out.Item, Order: out.Order}), nil
 }
 
 func (h *Handler) ConfirmOrder(ctx context.Context, req *connect.Request[OrderActionRequest]) (*connect.Response[OrderResponse], error) {
