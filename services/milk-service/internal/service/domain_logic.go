@@ -7,6 +7,7 @@ import (
 
 	ulidpkg "p9e.in/samavaya/packages/ULID"
 
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/services/milk-service/internal/domain"
 )
 
@@ -56,6 +57,11 @@ func (s *Service) UpdateSessionStatus(ctx context.Context, id, tenantID, status,
 }
 
 func (s *Service) RecordMilk(ctx context.Context, r *domain.MilkRecord) (*domain.MilkRecord, error) {
+	// quantity_liters is stored as NUMERIC(8,3). A finer value would be rounded
+	// into the column without anyone being told, so it is refused instead.
+	if _, err := exact.NonNegativeDecimal(r.QuantityLiters, 3, 8); err != nil {
+		return nil, exact.Field("quantity_liters", err)
+	}
 	if r.TenantID == "" || r.SessionID == "" || r.CattleID == "" {
 		return nil, fmt.Errorf("tenant_id, session_id and cattle_id are required")
 	}
@@ -86,6 +92,21 @@ func (s *Service) GetDailyYield(ctx context.Context, tenantID, cattleID string, 
 }
 
 func (s *Service) RecordQuality(ctx context.Context, mq *domain.MilkQuality) (*domain.MilkQuality, error) {
+	// fat_percent is stored as NUMERIC(5,2). A finer value would be rounded
+	// into the column without anyone being told, so it is refused instead.
+	if _, err := exact.NonNegativeDecimal(mq.FatPercent, 2, 5); err != nil {
+		return nil, exact.Field("fat_percent", err)
+	}
+	// snf_percent is stored as NUMERIC(5,2). A finer value would be rounded
+	// into the column without anyone being told, so it is refused instead.
+	if _, err := exact.NonNegativeDecimal(mq.SNFPercent, 2, 5); err != nil {
+		return nil, exact.Field("snf_percent", err)
+	}
+	// lactose is stored as NUMERIC(5,2). A finer value would be rounded
+	// into the column without anyone being told, so it is refused instead.
+	if _, err := exact.NonNegativeDecimal(mq.Lactose, 2, 5); err != nil {
+		return nil, exact.Field("lactose", err)
+	}
 	if mq.TenantID == "" || mq.RecordID == "" {
 		return nil, fmt.Errorf("tenant_id and record_id are required")
 	}

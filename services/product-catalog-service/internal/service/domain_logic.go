@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/services/product-catalog-service/internal/domain"
 	ulidpkg "p9e.in/samavaya/packages/ULID"
 )
@@ -125,6 +126,16 @@ func (s *Service) ListProducts(ctx context.Context, tenantID, productType, statu
 }
 
 func (s *Service) CreateSKU(ctx context.Context, sku *domain.SKU) (*domain.SKU, error) {
+	// price is stored as NUMERIC(12,2). A finer value would be rounded
+	// into the column without anyone being told, so it is refused instead.
+	if _, err := exact.NonNegativeDecimal(sku.Price, 2, 12); err != nil {
+		return nil, invalid(exact.Field("price", err).Error())
+	}
+	// unit_size is stored as NUMERIC(10,3). A finer value would be rounded
+	// into the column without anyone being told, so it is refused instead.
+	if _, err := exact.NonNegativeDecimal(sku.UnitSize, 3, 10); err != nil {
+		return nil, invalid(exact.Field("unit_size", err).Error())
+	}
 	if sku.TenantID == "" {
 		return nil, invalid("tenant_id is required")
 	}
@@ -163,6 +174,11 @@ func (s *Service) ListProductSKUs(ctx context.Context, productID, tenantID strin
 }
 
 func (s *Service) UpdateSKUPrice(ctx context.Context, id, tenantID string, price float64, updatedBy string) (*domain.SKU, error) {
+	// The same column, reached by a different path. Validating only on create
+	// would leave a price that cannot be stored exactly one update away.
+	if _, err := exact.NonNegativeDecimal(price, 2, 12); err != nil {
+		return nil, invalid(exact.Field("price", err).Error())
+	}
 	if id == "" || tenantID == "" {
 		return nil, invalid("id and tenant_id are required")
 	}

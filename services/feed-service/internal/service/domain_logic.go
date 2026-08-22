@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/services/feed-service/internal/domain"
 	ulidpkg "p9e.in/samavaya/packages/ULID"
 )
@@ -51,6 +52,11 @@ func (s *Service) ListFeedTypes(ctx context.Context, tenantID string) ([]*domain
 }
 
 func (s *Service) CreateNutritionPlan(ctx context.Context, p *domain.NutritionPlan) (*domain.NutritionPlan, error) {
+	// daily_quantity_kg is stored as NUMERIC(8,3). A finer value would be rounded
+	// into the column without anyone being told, so it is refused instead.
+	if _, err := exact.NonNegativeDecimal(p.DailyQuantityKg, 3, 8); err != nil {
+		return nil, invalid(exact.Field("daily_quantity_kg", err).Error())
+	}
 	if p.TenantID == "" {
 		return nil, invalid("tenant_id is required")
 	}
@@ -79,6 +85,11 @@ func (s *Service) GetNutritionPlan(ctx context.Context, id, tenantID string) (*d
 }
 
 func (s *Service) RecordFeedConsumption(ctx context.Context, c *domain.FeedConsumption) (*domain.FeedConsumption, error) {
+	// quantity_kg is stored as NUMERIC(8,3). A finer value would be rounded
+	// into the column without anyone being told, so it is refused instead.
+	if _, err := exact.NonNegativeDecimal(c.QuantityKg, 3, 8); err != nil {
+		return nil, invalid(exact.Field("quantity_kg", err).Error())
+	}
 	if c.TenantID == "" {
 		return nil, invalid("tenant_id is required")
 	}

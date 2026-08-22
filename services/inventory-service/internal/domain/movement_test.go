@@ -5,6 +5,8 @@ import (
 	"math"
 	"strconv"
 	"testing"
+
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 )
 
 func TestFormatQuantityKeepsWhatTheColumnsCanHold(t *testing.T) {
@@ -36,8 +38,8 @@ func TestFormatQuantityKeepsWhatTheColumnsCanHold(t *testing.T) {
 // problem, and should be told rather than have it quietly corrected.
 func TestFormatQuantityRefusesWhatWouldBeSilentlyRounded(t *testing.T) {
 	for _, q := range []float64{12.3456, 0.0001, 1.00049} {
-		if got, err := FormatQuantity(q); !errors.Is(err, ErrQuantityTooPrecise) {
-			t.Errorf("FormatQuantity(%v) = %q, %v; want ErrQuantityTooPrecise", q, got, err)
+		if got, err := FormatQuantity(q); !errors.Is(err, exact.ErrTooPrecise) {
+			t.Errorf("FormatQuantity(%v) = %q, %v; want exact.ErrTooPrecise", q, got, err)
 		}
 	}
 }
@@ -45,15 +47,15 @@ func TestFormatQuantityRefusesWhatWouldBeSilentlyRounded(t *testing.T) {
 // The direction of a movement is its type. A negative quantity would make an
 // "in" behave as an "out" and defeat every reading of the movement history.
 func TestFormatQuantityRefusesANegativeQuantity(t *testing.T) {
-	if _, err := FormatQuantity(-1); !errors.Is(err, ErrQuantityNegative) {
-		t.Errorf("err = %v, want ErrQuantityNegative", err)
+	if _, err := FormatQuantity(-1); !errors.Is(err, exact.ErrNegative) {
+		t.Errorf("err = %v, want exact.ErrNegative", err)
 	}
 }
 
 func TestFormatQuantityRefusesWhatTheColumnsCannotRepresent(t *testing.T) {
 	for _, q := range []float64{1e9, 1e12} {
-		if _, err := FormatQuantity(q); !errors.Is(err, ErrQuantityTooLarge) {
-			t.Errorf("FormatQuantity(%v) err = %v, want ErrQuantityTooLarge", q, err)
+		if _, err := FormatQuantity(q); !errors.Is(err, exact.ErrOutOfRange) {
+			t.Errorf("FormatQuantity(%v) err = %v, want exact.ErrOutOfRange", q, err)
 		}
 	}
 	for _, q := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {

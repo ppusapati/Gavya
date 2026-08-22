@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/services/health-service/internal/domain"
 	ulidpkg "p9e.in/samavaya/packages/ULID"
 )
@@ -91,6 +92,11 @@ func (s *Service) GetTreatmentHistory(ctx context.Context, tenantID, cattleID st
 }
 
 func (s *Service) ScheduleVetVisit(ctx context.Context, v *domain.VetVisit) (*domain.VetVisit, error) {
+	// cost is stored as NUMERIC(10,2). A finer value would be rounded
+	// into the column without anyone being told, so it is refused instead.
+	if _, err := exact.NonNegativeDecimal(v.Cost, 2, 10); err != nil {
+		return nil, invalid(exact.Field("cost", err).Error())
+	}
 	if v.TenantID == "" {
 		return nil, invalid("tenant_id is required")
 	}
