@@ -9,12 +9,28 @@ import (
 	ulidpkg "p9e.in/samavaya/packages/ULID"
 )
 
+// ErrInvalidArgument marks a caller mistake. Without it the handler cannot tell
+// "you did not supply an id" from "the query failed", and would have to report
+// both the same way.
+var ErrInvalidArgument = errors.New("invalid argument")
+
+// invalidArgument carries the reason alone. The marker is matched through Is,
+// so errors.Is finds it while the message stays free of a prefix the error code
+// already conveys.
+type invalidArgument struct{ reason string }
+
+func (e *invalidArgument) Error() string { return e.reason }
+
+func (e *invalidArgument) Is(target error) bool { return target == ErrInvalidArgument }
+
+func invalid(msg string) error { return &invalidArgument{reason: msg} }
+
 func (s *Service) CreateBreedingCycle(ctx context.Context, b *domain.BreedingCycle) (*domain.BreedingCycle, error) {
 	if b.TenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	if b.CattleID == "" {
-		return nil, errors.New("cattle_id is required")
+		return nil, invalid("cattle_id is required")
 	}
 	b.ID = ulidpkg.New().String()
 	if b.Status == "" {
@@ -32,13 +48,13 @@ func (s *Service) CreateBreedingCycle(ctx context.Context, b *domain.BreedingCyc
 
 func (s *Service) RecordInsemination(ctx context.Context, ins *domain.Insemination) (*domain.Insemination, error) {
 	if ins.TenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	if ins.CycleID == "" {
-		return nil, errors.New("cycle_id is required")
+		return nil, invalid("cycle_id is required")
 	}
 	if ins.CattleID == "" {
-		return nil, errors.New("cattle_id is required")
+		return nil, invalid("cattle_id is required")
 	}
 	ins.ID = ulidpkg.New().String()
 	if ins.Method == "" {
@@ -64,16 +80,16 @@ func (s *Service) RecordInsemination(ctx context.Context, ins *domain.Inseminati
 
 func (s *Service) ConfirmPregnancy(ctx context.Context, p *domain.Pregnancy) (*domain.Pregnancy, error) {
 	if p.TenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	if p.InseminationID == "" {
-		return nil, errors.New("insemination_id is required")
+		return nil, invalid("insemination_id is required")
 	}
 	if p.CattleID == "" {
-		return nil, errors.New("cattle_id is required")
+		return nil, invalid("cattle_id is required")
 	}
 	if p.ExpectedCalvingDate.IsZero() {
-		return nil, errors.New("expected_calving_date is required")
+		return nil, invalid("expected_calving_date is required")
 	}
 	p.ID = ulidpkg.New().String()
 	p.Status = "active"
@@ -100,13 +116,13 @@ func (s *Service) ConfirmPregnancy(ctx context.Context, p *domain.Pregnancy) (*d
 
 func (s *Service) RecordCalving(ctx context.Context, c *domain.CalvingRecord) (*domain.CalvingRecord, error) {
 	if c.TenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	if c.PregnancyID == "" {
-		return nil, errors.New("pregnancy_id is required")
+		return nil, invalid("pregnancy_id is required")
 	}
 	if c.CattleID == "" {
-		return nil, errors.New("cattle_id is required")
+		return nil, invalid("cattle_id is required")
 	}
 	c.ID = ulidpkg.New().String()
 	if c.Status == "" {
@@ -132,17 +148,17 @@ func (s *Service) RecordCalving(ctx context.Context, c *domain.CalvingRecord) (*
 
 func (s *Service) GetBreedingHistory(ctx context.Context, tenantID, cattleID string) ([]*domain.BreedingCycle, error) {
 	if tenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	if cattleID == "" {
-		return nil, errors.New("cattle_id is required")
+		return nil, invalid("cattle_id is required")
 	}
 	return s.repo.ListCattleBreedingCycles(ctx, tenantID, cattleID)
 }
 
 func (s *Service) ListActivePregnancies(ctx context.Context, tenantID string) ([]*domain.Pregnancy, error) {
 	if tenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	return s.repo.ListActivePregnancies(ctx, tenantID)
 }

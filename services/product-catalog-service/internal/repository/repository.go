@@ -2,10 +2,43 @@ package repository
 
 import (
 	"context"
+	"errors"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/ppusapati/gavya/services/product-catalog-service/internal/domain"
 )
+
+// ErrNotFound lets a caller tell a missing record from a failed query. Without
+// it every outcome reaches the handler as an opaque error and is reported as
+// internal, so a client cannot distinguish "no such product" from "the database
+// is unreachable".
+var ErrNotFound = errors.New("not found")
+
+// The unique violations, named so the handler can report a conflict rather than
+// an internal failure.
+var (
+	ErrDuplicateCategorySlug = errors.New("a category with that slug already exists")
+	ErrDuplicateBrandSlug    = errors.New("a brand with that slug already exists")
+	ErrDuplicateProductSlug  = errors.New("a product with that slug already exists")
+	ErrDuplicateSKUCode      = errors.New("a sku with that code already exists")
+)
+
+// Columns are listed explicitly rather than selected with *, because the scans
+// below are positional: adding a column to the table would silently misalign
+// every field after it.
+const categoryCols = `id,tenant_id,name,slug,parent_id,COALESCE(description,''),COALESCE(sort_order,0),` +
+	`created_at,updated_at,created_by,updated_by,deleted_at`
+
+const brandCols = `id,tenant_id,name,slug,COALESCE(logo_url,''),` +
+	`created_at,updated_at,created_by,updated_by,deleted_at`
+
+const productCols = `id,tenant_id,COALESCE(category_id,''),COALESCE(brand_id,''),name,slug,COALESCE(description,''),product_type,status,` +
+	`created_at,updated_at,created_by,updated_by,deleted_at`
+
+const skuCols = `id,tenant_id,product_id,code,name,price,currency,unit,COALESCE(unit_size,0),status,` +
+	`created_at,updated_at,created_by,updated_by,deleted_at`
 
 type Repository interface {
 	CreateCategory(ctx context.Context, c *domain.Category) (*domain.Category, error)
@@ -38,15 +71,19 @@ type scanner interface {
 func (r *repo) CreateCategory(ctx context.Context, c *domain.Category) (*domain.Category, error) {
 	row := r.pool.QueryRow(ctx,
 		`INSERT INTO categories (id,tenant_id,name,slug,parent_id,description,sort_order,created_by,updated_by)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING `+categoryCols,
 		c.ID, c.TenantID, c.Name, c.Slug, c.ParentID, c.Description, c.SortOrder, c.CreatedBy, c.UpdatedBy,
 	)
-	return scanCategory(row)
+	out, err := scanCategory(row)
+	if isUniqueViolation(err) {
+		return nil, ErrDuplicateCategorySlug
+	}
+	return out, err
 }
 
 func (r *repo) GetCategory(ctx context.Context, id, tenantID string) (*domain.Category, error) {
 	row := r.pool.QueryRow(ctx,
-		`SELECT * FROM categories WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL`,
+		`SELECT `+categoryCols+` FROM categories WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL`,
 		id, tenantID,
 	)
 	return scanCategory(row)
@@ -54,7 +91,7 @@ func (r *repo) GetCategory(ctx context.Context, id, tenantID string) (*domain.Ca
 
 func (r *repo) ListCategories(ctx context.Context, tenantID string) ([]*domain.Category, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT * FROM categories WHERE tenant_id=$1 AND deleted_at IS NULL ORDER BY sort_order, name`,
+		`SELECT `+categoryCols+` FROM categories WHERE tenant_id=$1 AND deleted_at IS NULL ORDER BY sort_order, name`,
 		tenantID,
 	)
 	if err != nil {
@@ -63,9 +100,8 @@ func (r *repo) ListCategories(ctx context.Context, tenantID string) ([]*domain.C
 	defer rows.Close()
 	var result []*domain.Category
 	for rows.Next() {
-		c := &domain.Category{}
-		if err := rows.Scan(&c.ID, &c.TenantID, &c.Name, &c.Slug, &c.ParentID, &c.Description, &c.SortOrder,
-			&c.CreatedAt, &c.UpdatedAt, &c.CreatedBy, &c.UpdatedBy, &c.DeletedAt); err != nil {
+		c, err := scanCategory(rows)
+		if err != nil {
 			return nil, err
 		}
 		result = append(result, c)
@@ -76,15 +112,19 @@ func (r *repo) ListCategories(ctx context.Context, tenantID string) ([]*domain.C
 func (r *repo) CreateBrand(ctx context.Context, b *domain.Brand) (*domain.Brand, error) {
 	row := r.pool.QueryRow(ctx,
 		`INSERT INTO brands (id,tenant_id,name,slug,logo_url,created_by,updated_by)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING `+brandCols,
 		b.ID, b.TenantID, b.Name, b.Slug, b.LogoURL, b.CreatedBy, b.UpdatedBy,
 	)
-	return scanBrand(row)
+	out, err := scanBrand(row)
+	if isUniqueViolation(err) {
+		return nil, ErrDuplicateBrandSlug
+	}
+	return out, err
 }
 
 func (r *repo) GetBrand(ctx context.Context, id, tenantID string) (*domain.Brand, error) {
 	row := r.pool.QueryRow(ctx,
-		`SELECT * FROM brands WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL`,
+		`SELECT `+brandCols+` FROM brands WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL`,
 		id, tenantID,
 	)
 	return scanBrand(row)
@@ -92,7 +132,7 @@ func (r *repo) GetBrand(ctx context.Context, id, tenantID string) (*domain.Brand
 
 func (r *repo) ListBrands(ctx context.Context, tenantID string) ([]*domain.Brand, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT * FROM brands WHERE tenant_id=$1 AND deleted_at IS NULL ORDER BY name`,
+		`SELECT `+brandCols+` FROM brands WHERE tenant_id=$1 AND deleted_at IS NULL ORDER BY name`,
 		tenantID,
 	)
 	if err != nil {
@@ -101,9 +141,8 @@ func (r *repo) ListBrands(ctx context.Context, tenantID string) ([]*domain.Brand
 	defer rows.Close()
 	var result []*domain.Brand
 	for rows.Next() {
-		b := &domain.Brand{}
-		if err := rows.Scan(&b.ID, &b.TenantID, &b.Name, &b.Slug, &b.LogoURL,
-			&b.CreatedAt, &b.UpdatedAt, &b.CreatedBy, &b.UpdatedBy, &b.DeletedAt); err != nil {
+		b, err := scanBrand(rows)
+		if err != nil {
 			return nil, err
 		}
 		result = append(result, b)
@@ -114,16 +153,20 @@ func (r *repo) ListBrands(ctx context.Context, tenantID string) ([]*domain.Brand
 func (r *repo) CreateProduct(ctx context.Context, p *domain.Product) (*domain.Product, error) {
 	row := r.pool.QueryRow(ctx,
 		`INSERT INTO products (id,tenant_id,category_id,brand_id,name,slug,description,product_type,status,created_by,updated_by)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING `+productCols,
 		p.ID, p.TenantID, p.CategoryID, p.BrandID, p.Name, p.Slug, p.Description,
 		p.ProductType, p.Status, p.CreatedBy, p.UpdatedBy,
 	)
-	return scanProduct(row)
+	out, err := scanProduct(row)
+	if isUniqueViolation(err) {
+		return nil, ErrDuplicateProductSlug
+	}
+	return out, err
 }
 
 func (r *repo) GetProduct(ctx context.Context, id, tenantID string) (*domain.Product, error) {
 	row := r.pool.QueryRow(ctx,
-		`SELECT * FROM products WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL`,
+		`SELECT `+productCols+` FROM products WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL`,
 		id, tenantID,
 	)
 	return scanProduct(row)
@@ -131,7 +174,7 @@ func (r *repo) GetProduct(ctx context.Context, id, tenantID string) (*domain.Pro
 
 func (r *repo) ListProducts(ctx context.Context, tenantID, productType, status string) ([]*domain.Product, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT * FROM products WHERE tenant_id=$1 AND product_type=$2 AND status=$3 AND deleted_at IS NULL ORDER BY name`,
+		`SELECT `+productCols+` FROM products WHERE tenant_id=$1 AND ($2='' OR product_type=$2) AND status=$3 AND deleted_at IS NULL ORDER BY name`,
 		tenantID, productType, status,
 	)
 	if err != nil {
@@ -140,9 +183,8 @@ func (r *repo) ListProducts(ctx context.Context, tenantID, productType, status s
 	defer rows.Close()
 	var result []*domain.Product
 	for rows.Next() {
-		p := &domain.Product{}
-		if err := rows.Scan(&p.ID, &p.TenantID, &p.CategoryID, &p.BrandID, &p.Name, &p.Slug, &p.Description,
-			&p.ProductType, &p.Status, &p.CreatedAt, &p.UpdatedAt, &p.CreatedBy, &p.UpdatedBy, &p.DeletedAt); err != nil {
+		p, err := scanProduct(rows)
+		if err != nil {
 			return nil, err
 		}
 		result = append(result, p)
@@ -153,16 +195,20 @@ func (r *repo) ListProducts(ctx context.Context, tenantID, productType, status s
 func (r *repo) CreateSKU(ctx context.Context, s *domain.SKU) (*domain.SKU, error) {
 	row := r.pool.QueryRow(ctx,
 		`INSERT INTO skus (id,tenant_id,product_id,code,name,price,currency,unit,unit_size,status,created_by,updated_by)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING `+skuCols,
 		s.ID, s.TenantID, s.ProductID, s.Code, s.Name, s.Price, s.Currency,
 		s.Unit, s.UnitSize, s.Status, s.CreatedBy, s.UpdatedBy,
 	)
-	return scanSKU(row)
+	out, err := scanSKU(row)
+	if isUniqueViolation(err) {
+		return nil, ErrDuplicateSKUCode
+	}
+	return out, err
 }
 
 func (r *repo) GetSKU(ctx context.Context, id, tenantID string) (*domain.SKU, error) {
 	row := r.pool.QueryRow(ctx,
-		`SELECT * FROM skus WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL`,
+		`SELECT `+skuCols+` FROM skus WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL`,
 		id, tenantID,
 	)
 	return scanSKU(row)
@@ -170,7 +216,7 @@ func (r *repo) GetSKU(ctx context.Context, id, tenantID string) (*domain.SKU, er
 
 func (r *repo) ListProductSKUs(ctx context.Context, productID, tenantID string) ([]*domain.SKU, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT * FROM skus WHERE product_id=$1 AND tenant_id=$2 AND deleted_at IS NULL ORDER BY name`,
+		`SELECT `+skuCols+` FROM skus WHERE product_id=$1 AND tenant_id=$2 AND deleted_at IS NULL ORDER BY name`,
 		productID, tenantID,
 	)
 	if err != nil {
@@ -179,9 +225,8 @@ func (r *repo) ListProductSKUs(ctx context.Context, productID, tenantID string) 
 	defer rows.Close()
 	var result []*domain.SKU
 	for rows.Next() {
-		s := &domain.SKU{}
-		if err := rows.Scan(&s.ID, &s.TenantID, &s.ProductID, &s.Code, &s.Name, &s.Price, &s.Currency,
-			&s.Unit, &s.UnitSize, &s.Status, &s.CreatedAt, &s.UpdatedAt, &s.CreatedBy, &s.UpdatedBy, &s.DeletedAt); err != nil {
+		s, err := scanSKU(rows)
+		if err != nil {
 			return nil, err
 		}
 		result = append(result, s)
@@ -191,7 +236,7 @@ func (r *repo) ListProductSKUs(ctx context.Context, productID, tenantID string) 
 
 func (r *repo) UpdateSKUPrice(ctx context.Context, id, tenantID string, price float64, updatedBy string) (*domain.SKU, error) {
 	row := r.pool.QueryRow(ctx,
-		`UPDATE skus SET price=$3,updated_by=$4,updated_at=NOW() WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL RETURNING *`,
+		`UPDATE skus SET price=$3,updated_by=$4,updated_at=NOW() WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL RETURNING `+skuCols,
 		id, tenantID, price, updatedBy,
 	)
 	return scanSKU(row)
@@ -202,6 +247,9 @@ func scanCategory(s scanner) (*domain.Category, error) {
 	err := s.Scan(&c.ID, &c.TenantID, &c.Name, &c.Slug, &c.ParentID, &c.Description, &c.SortOrder,
 		&c.CreatedAt, &c.UpdatedAt, &c.CreatedBy, &c.UpdatedBy, &c.DeletedAt)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
 		return nil, err
 	}
 	return c, nil
@@ -212,6 +260,9 @@ func scanBrand(s scanner) (*domain.Brand, error) {
 	err := s.Scan(&b.ID, &b.TenantID, &b.Name, &b.Slug, &b.LogoURL,
 		&b.CreatedAt, &b.UpdatedAt, &b.CreatedBy, &b.UpdatedBy, &b.DeletedAt)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
 		return nil, err
 	}
 	return b, nil
@@ -222,6 +273,9 @@ func scanProduct(s scanner) (*domain.Product, error) {
 	err := s.Scan(&p.ID, &p.TenantID, &p.CategoryID, &p.BrandID, &p.Name, &p.Slug, &p.Description,
 		&p.ProductType, &p.Status, &p.CreatedAt, &p.UpdatedAt, &p.CreatedBy, &p.UpdatedBy, &p.DeletedAt)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
 		return nil, err
 	}
 	return p, nil
@@ -232,7 +286,15 @@ func scanSKU(s scanner) (*domain.SKU, error) {
 	err := s.Scan(&s2.ID, &s2.TenantID, &s2.ProductID, &s2.Code, &s2.Name, &s2.Price, &s2.Currency,
 		&s2.Unit, &s2.UnitSize, &s2.Status, &s2.CreatedAt, &s2.UpdatedAt, &s2.CreatedBy, &s2.UpdatedBy, &s2.DeletedAt)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
 		return nil, err
 	}
 	return s2, nil
+}
+
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }

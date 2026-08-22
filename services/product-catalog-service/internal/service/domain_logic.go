@@ -9,16 +9,32 @@ import (
 	ulidpkg "p9e.in/samavaya/packages/ULID"
 )
 
+// ErrInvalidArgument marks a caller mistake. Without it the handler cannot tell
+// "you did not supply an id" from "the query failed", and would have to report
+// both the same way.
+var ErrInvalidArgument = errors.New("invalid argument")
+
+// invalidArgument carries the reason alone. The marker is matched through Is,
+// so errors.Is finds it while the message stays free of a prefix the error code
+// already conveys.
+type invalidArgument struct{ reason string }
+
+func (e *invalidArgument) Error() string { return e.reason }
+
+func (e *invalidArgument) Is(target error) bool { return target == ErrInvalidArgument }
+
+func invalid(msg string) error { return &invalidArgument{reason: msg} }
+
 func slugify(s string) string {
 	return strings.ToLower(strings.ReplaceAll(s, " ", "-"))
 }
 
 func (s *Service) CreateCategory(ctx context.Context, c *domain.Category) (*domain.Category, error) {
 	if c.TenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	if c.Name == "" {
-		return nil, errors.New("name is required")
+		return nil, invalid("name is required")
 	}
 	c.ID = ulidpkg.New().String()
 	if c.Slug == "" {
@@ -33,17 +49,17 @@ func (s *Service) CreateCategory(ctx context.Context, c *domain.Category) (*doma
 
 func (s *Service) ListCategories(ctx context.Context, tenantID string) ([]*domain.Category, error) {
 	if tenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	return s.repo.ListCategories(ctx, tenantID)
 }
 
 func (s *Service) CreateBrand(ctx context.Context, b *domain.Brand) (*domain.Brand, error) {
 	if b.TenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	if b.Name == "" {
-		return nil, errors.New("name is required")
+		return nil, invalid("name is required")
 	}
 	b.ID = ulidpkg.New().String()
 	if b.Slug == "" {
@@ -58,20 +74,20 @@ func (s *Service) CreateBrand(ctx context.Context, b *domain.Brand) (*domain.Bra
 
 func (s *Service) ListBrands(ctx context.Context, tenantID string) ([]*domain.Brand, error) {
 	if tenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	return s.repo.ListBrands(ctx, tenantID)
 }
 
 func (s *Service) CreateProduct(ctx context.Context, p *domain.Product) (*domain.Product, error) {
 	if p.TenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	if p.Name == "" {
-		return nil, errors.New("name is required")
+		return nil, invalid("name is required")
 	}
 	if p.ProductType == "" {
-		return nil, errors.New("product_type is required")
+		return nil, invalid("product_type is required")
 	}
 	p.ID = ulidpkg.New().String()
 	if p.Slug == "" {
@@ -89,18 +105,19 @@ func (s *Service) CreateProduct(ctx context.Context, p *domain.Product) (*domain
 
 func (s *Service) GetProduct(ctx context.Context, id, tenantID string) (*domain.Product, error) {
 	if id == "" || tenantID == "" {
-		return nil, errors.New("id and tenant_id are required")
+		return nil, invalid("id and tenant_id are required")
 	}
 	return s.repo.GetProduct(ctx, id, tenantID)
 }
 
 func (s *Service) ListProducts(ctx context.Context, tenantID, productType, status string) ([]*domain.Product, error) {
 	if tenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
-	if productType == "" {
-		productType = "%"
-	}
+	// An empty product type means "any", and the repository expresses that as an
+	// unfiltered column. It used to substitute a % wildcard, which the query
+	// compared with = rather than LIKE, so listing every product matched the
+	// literal string "%" and always came back empty.
 	if status == "" {
 		status = "active"
 	}
@@ -109,13 +126,13 @@ func (s *Service) ListProducts(ctx context.Context, tenantID, productType, statu
 
 func (s *Service) CreateSKU(ctx context.Context, sku *domain.SKU) (*domain.SKU, error) {
 	if sku.TenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	if sku.ProductID == "" {
-		return nil, errors.New("product_id is required")
+		return nil, invalid("product_id is required")
 	}
 	if sku.Code == "" {
-		return nil, errors.New("code is required")
+		return nil, invalid("code is required")
 	}
 	sku.ID = ulidpkg.New().String()
 	if sku.Currency == "" {
@@ -133,24 +150,24 @@ func (s *Service) CreateSKU(ctx context.Context, sku *domain.SKU) (*domain.SKU, 
 
 func (s *Service) GetSKU(ctx context.Context, id, tenantID string) (*domain.SKU, error) {
 	if id == "" || tenantID == "" {
-		return nil, errors.New("id and tenant_id are required")
+		return nil, invalid("id and tenant_id are required")
 	}
 	return s.repo.GetSKU(ctx, id, tenantID)
 }
 
 func (s *Service) ListProductSKUs(ctx context.Context, productID, tenantID string) ([]*domain.SKU, error) {
 	if productID == "" || tenantID == "" {
-		return nil, errors.New("product_id and tenant_id are required")
+		return nil, invalid("product_id and tenant_id are required")
 	}
 	return s.repo.ListProductSKUs(ctx, productID, tenantID)
 }
 
 func (s *Service) UpdateSKUPrice(ctx context.Context, id, tenantID string, price float64, updatedBy string) (*domain.SKU, error) {
 	if id == "" || tenantID == "" {
-		return nil, errors.New("id and tenant_id are required")
+		return nil, invalid("id and tenant_id are required")
 	}
 	if price < 0 {
-		return nil, errors.New("price must be non-negative")
+		return nil, invalid("price must be non-negative")
 	}
 	if updatedBy == "" {
 		updatedBy = "system"

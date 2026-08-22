@@ -1,140 +1,145 @@
 package handler
 
 import (
-	"encoding/json"
+	"context"
+	"errors"
 	"net/http"
 
+	"connectrpc.com/connect"
+
+	"github.com/ppusapati/gavya/libs/integrity/connectjson"
+	"github.com/ppusapati/gavya/services/audit-service/internal/domain"
+	"github.com/ppusapati/gavya/services/audit-service/internal/repository"
 	"github.com/ppusapati/gavya/services/audit-service/internal/service"
-	"p9e.in/samavaya/packages/p9log"
 )
+
+// ServiceName is the fully qualified Connect service these procedures are
+// addressed under.
+const ServiceName = "audit.v1.AuditService"
 
 type Handler struct {
 	svc *service.Service
-	log *p9log.Helper
 }
 
-func New(svc *service.Service, log *p9log.Helper) *Handler {
-	return &Handler{svc: svc, log: log}
+func New(svc *service.Service) *Handler {
+	return &Handler{svc: svc}
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("/healthz", h.healthz)
-	mux.HandleFunc("/audit.v1.AuditService/CreateAuditLog", h.createAuditLog)
-	mux.HandleFunc("/audit.v1.AuditService/GetAuditLog", h.getAuditLog)
-	mux.HandleFunc("/audit.v1.AuditService/ListAuditLogs", h.listAuditLogs)
-	mux.HandleFunc("/audit.v1.AuditService/ListAuditLogsByResource", h.listAuditLogsByResource)
-	mux.HandleFunc("/audit.v1.AuditService/ListAuditLogsByActor", h.listAuditLogsByActor)
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	route := func(method string, handler http.HandlerFunc) {
+		mux.HandleFunc(connectjson.Procedure(ServiceName, method), handler)
+	}
+
+	route("CreateAuditLog", connectjson.Unary(h.CreateAuditLog))
+	route("GetAuditLog", connectjson.Unary(h.GetAuditLog))
+	route("ListAuditLogs", connectjson.Unary(h.ListAuditLogs))
+	route("ListAuditLogsByResource", connectjson.Unary(h.ListAuditLogsByResource))
+	route("ListAuditLogsByActor", connectjson.Unary(h.ListAuditLogsByActor))
 }
 
-func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+// classify maps a failure onto the code that describes it.
+//
+// Reporting everything as internal, as this service used to, leaves a caller
+// unable to tell a missing audit log from an unreachable database — and makes
+// an unrecoverable mistake look like something worth retrying.
+func classify(err error) error {
+	switch {
+	case errors.Is(err, repository.ErrNotFound):
+		return connect.NewError(connect.CodeNotFound, err)
+	case errors.Is(err, service.ErrInvalidArgument):
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	default:
+		return connect.NewError(connect.CodeInternal, err)
+	}
 }
 
-func (h *Handler) createAuditLog(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		TenantID     string `json:"tenant_id"`
-		ActorID      string `json:"actor_id"`
-		ActorType    string `json:"actor_type"`
-		Action       string `json:"action"`
-		ResourceType string `json:"resource_type"`
-		ResourceID   string `json:"resource_id"`
-		OldValue     string `json:"old_value"`
-		NewValue     string `json:"new_value"`
-		IPAddress    string `json:"ip_address"`
-		UserAgent    string `json:"user_agent"`
-		ServiceName  string `json:"service_name"`
-		TraceID      string `json:"trace_id"`
-		CreatedBy    string `json:"created_by"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	log, err := h.svc.CreateAuditLog(r.Context(), req.TenantID, req.ActorID, req.ActorType, req.Action,
-		req.ResourceType, req.ResourceID, req.OldValue, req.NewValue, req.IPAddress,
-		req.UserAgent, req.ServiceName, req.TraceID, req.CreatedBy)
+type CreateAuditLogRequest struct {
+	TenantID     string `json:"tenant_id"`
+	ActorID      string `json:"actor_id"`
+	ActorType    string `json:"actor_type"`
+	Action       string `json:"action"`
+	ResourceType string `json:"resource_type"`
+	ResourceID   string `json:"resource_id"`
+	OldValue     string `json:"old_value"`
+	NewValue     string `json:"new_value"`
+	IPAddress    string `json:"ip_address"`
+	UserAgent    string `json:"user_agent"`
+	ServiceName  string `json:"service_name"`
+	TraceID      string `json:"trace_id"`
+	CreatedBy    string `json:"created_by"`
+}
+
+type AuditLogResponse struct {
+	AuditLog *domain.AuditLog `json:"audit_log"`
+}
+
+type GetAuditLogRequest struct {
+	ID       string `json:"id"`
+	TenantID string `json:"tenant_id"`
+}
+
+type ListAuditLogsRequest struct {
+	TenantID string `json:"tenant_id"`
+}
+
+type ListAuditLogsByResourceRequest struct {
+	TenantID     string `json:"tenant_id"`
+	ResourceType string `json:"resource_type"`
+	ResourceID   string `json:"resource_id"`
+}
+
+type ListAuditLogsByActorRequest struct {
+	TenantID string `json:"tenant_id"`
+	ActorID  string `json:"actor_id"`
+}
+
+type ListAuditLogsResponse struct {
+	AuditLogs []*domain.AuditLog `json:"audit_logs"`
+}
+
+func (h *Handler) CreateAuditLog(ctx context.Context, req *connect.Request[CreateAuditLogRequest]) (*connect.Response[AuditLogResponse], error) {
+	m := req.Msg
+	out, err := h.svc.CreateAuditLog(ctx, m.TenantID, m.ActorID, m.ActorType, m.Action,
+		m.ResourceType, m.ResourceID, m.OldValue, m.NewValue, m.IPAddress,
+		m.UserAgent, m.ServiceName, m.TraceID, m.CreatedBy)
 	if err != nil {
-		h.log.Errorf("CreateAuditLog: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return nil, classify(err)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(log)
+	return connect.NewResponse(&AuditLogResponse{AuditLog: out}), nil
 }
 
-func (h *Handler) getAuditLog(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		ID       string `json:"id"`
-		TenantID string `json:"tenant_id"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	a, err := h.svc.GetAuditLog(r.Context(), req.ID, req.TenantID)
+func (h *Handler) GetAuditLog(ctx context.Context, req *connect.Request[GetAuditLogRequest]) (*connect.Response[AuditLogResponse], error) {
+	out, err := h.svc.GetAuditLog(ctx, req.Msg.ID, req.Msg.TenantID)
 	if err != nil {
-		h.log.Errorf("GetAuditLog: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return nil, classify(err)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a)
+	return connect.NewResponse(&AuditLogResponse{AuditLog: out}), nil
 }
 
-func (h *Handler) listAuditLogs(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		TenantID string `json:"tenant_id"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	logs, err := h.svc.ListAuditLogs(r.Context(), req.TenantID)
+func (h *Handler) ListAuditLogs(ctx context.Context, req *connect.Request[ListAuditLogsRequest]) (*connect.Response[ListAuditLogsResponse], error) {
+	out, err := h.svc.ListAuditLogs(ctx, req.Msg.TenantID)
 	if err != nil {
-		h.log.Errorf("ListAuditLogs: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return nil, classify(err)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(logs)
+	return connect.NewResponse(&ListAuditLogsResponse{AuditLogs: out}), nil
 }
 
-func (h *Handler) listAuditLogsByResource(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		TenantID     string `json:"tenant_id"`
-		ResourceType string `json:"resource_type"`
-		ResourceID   string `json:"resource_id"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	logs, err := h.svc.ListAuditLogsByResource(r.Context(), req.TenantID, req.ResourceType, req.ResourceID)
+func (h *Handler) ListAuditLogsByResource(ctx context.Context, req *connect.Request[ListAuditLogsByResourceRequest]) (*connect.Response[ListAuditLogsResponse], error) {
+	m := req.Msg
+	out, err := h.svc.ListAuditLogsByResource(ctx, m.TenantID, m.ResourceType, m.ResourceID)
 	if err != nil {
-		h.log.Errorf("ListAuditLogsByResource: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return nil, classify(err)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(logs)
+	return connect.NewResponse(&ListAuditLogsResponse{AuditLogs: out}), nil
 }
 
-func (h *Handler) listAuditLogsByActor(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		TenantID string `json:"tenant_id"`
-		ActorID  string `json:"actor_id"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	logs, err := h.svc.ListAuditLogsByActor(r.Context(), req.TenantID, req.ActorID)
+func (h *Handler) ListAuditLogsByActor(ctx context.Context, req *connect.Request[ListAuditLogsByActorRequest]) (*connect.Response[ListAuditLogsResponse], error) {
+	m := req.Msg
+	out, err := h.svc.ListAuditLogsByActor(ctx, m.TenantID, m.ActorID)
 	if err != nil {
-		h.log.Errorf("ListAuditLogsByActor: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return nil, classify(err)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(logs)
+	return connect.NewResponse(&ListAuditLogsResponse{AuditLogs: out}), nil
 }

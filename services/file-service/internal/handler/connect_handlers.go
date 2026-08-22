@@ -1,138 +1,150 @@
 package handler
 
 import (
-	"encoding/json"
+	"context"
+	"errors"
 	"net/http"
 
+	"connectrpc.com/connect"
+
+	"github.com/ppusapati/gavya/libs/integrity/connectjson"
+	"github.com/ppusapati/gavya/services/file-service/internal/domain"
+	"github.com/ppusapati/gavya/services/file-service/internal/repository"
 	"github.com/ppusapati/gavya/services/file-service/internal/service"
-	"p9e.in/samavaya/packages/p9log"
 )
+
+// ServiceName is the fully qualified Connect service these procedures are
+// addressed under.
+const ServiceName = "file.v1.FileService"
 
 type Handler struct {
 	svc *service.Service
-	log *p9log.Helper
 }
 
-func New(svc *service.Service, log *p9log.Helper) *Handler {
-	return &Handler{svc: svc, log: log}
+func New(svc *service.Service) *Handler {
+	return &Handler{svc: svc}
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("/healthz", h.healthz)
-	mux.HandleFunc("/file.v1.FileService/CreateFileRecord", h.createFileRecord)
-	mux.HandleFunc("/file.v1.FileService/GetFileRecord", h.getFileRecord)
-	mux.HandleFunc("/file.v1.FileService/ListEntityFiles", h.listEntityFiles)
-	mux.HandleFunc("/file.v1.FileService/DeleteFile", h.deleteFile)
-	mux.HandleFunc("/file.v1.FileService/GetDownloadURL", h.getDownloadURL)
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	route := func(method string, handler http.HandlerFunc) {
+		mux.HandleFunc(connectjson.Procedure(ServiceName, method), handler)
+	}
+
+	route("CreateFileRecord", connectjson.Unary(h.CreateFileRecord))
+	route("GetFileRecord", connectjson.Unary(h.GetFileRecord))
+	route("ListEntityFiles", connectjson.Unary(h.ListEntityFiles))
+	route("DeleteFile", connectjson.Unary(h.DeleteFile))
+	route("GetDownloadURL", connectjson.Unary(h.GetDownloadURL))
 }
 
-func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+// classify maps a failure onto the code that describes it.
+//
+// Reporting everything as internal, as this service used to, leaves a caller
+// unable to tell a missing file record from an unreachable database — and makes
+// an unrecoverable mistake look like something worth retrying.
+func classify(err error) error {
+	switch {
+	case errors.Is(err, repository.ErrNotFound):
+		return connect.NewError(connect.CodeNotFound, err)
+	case errors.Is(err, service.ErrInvalidArgument):
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	default:
+		return connect.NewError(connect.CodeInternal, err)
+	}
 }
 
-func (h *Handler) createFileRecord(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		TenantID     string `json:"tenant_id"`
-		OriginalName string `json:"original_name"`
-		StoredName   string `json:"stored_name"`
-		ContentType  string `json:"content_type"`
-		SizeBytes    int64  `json:"size_bytes"`
-		StoragePath  string `json:"storage_path"`
-		EntityType   string `json:"entity_type"`
-		EntityID     string `json:"entity_id"`
-		UploadedBy   string `json:"uploaded_by"`
-		IsPublic     bool   `json:"is_public"`
-		CreatedBy    string `json:"created_by"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	f, err := h.svc.CreateFileRecord(r.Context(), req.TenantID, req.OriginalName, req.StoredName,
-		req.ContentType, req.SizeBytes, req.StoragePath, req.EntityType, req.EntityID,
-		req.UploadedBy, req.IsPublic, req.CreatedBy)
+type CreateFileRecordRequest struct {
+	TenantID     string `json:"tenant_id"`
+	OriginalName string `json:"original_name"`
+	StoredName   string `json:"stored_name"`
+	ContentType  string `json:"content_type"`
+	SizeBytes    int64  `json:"size_bytes"`
+	StoragePath  string `json:"storage_path"`
+	EntityType   string `json:"entity_type"`
+	EntityID     string `json:"entity_id"`
+	UploadedBy   string `json:"uploaded_by"`
+	IsPublic     bool   `json:"is_public"`
+	CreatedBy    string `json:"created_by"`
+}
+
+type FileRecordResponse struct {
+	File *domain.FileRecord `json:"file"`
+}
+
+type GetFileRecordRequest struct {
+	ID       string `json:"id"`
+	TenantID string `json:"tenant_id"`
+}
+
+type ListEntityFilesRequest struct {
+	TenantID   string `json:"tenant_id"`
+	EntityType string `json:"entity_type"`
+	EntityID   string `json:"entity_id"`
+}
+
+type ListEntityFilesResponse struct {
+	Files []*domain.FileRecord `json:"files"`
+}
+
+type DeleteFileRequest struct {
+	ID        string `json:"id"`
+	TenantID  string `json:"tenant_id"`
+	UpdatedBy string `json:"updated_by"`
+}
+
+type DeleteFileResponse struct{}
+
+type GetDownloadURLRequest struct {
+	ID       string `json:"id"`
+	TenantID string `json:"tenant_id"`
+}
+
+type GetDownloadURLResponse struct {
+	URL string `json:"url"`
+}
+
+func (h *Handler) CreateFileRecord(ctx context.Context, req *connect.Request[CreateFileRecordRequest]) (*connect.Response[FileRecordResponse], error) {
+	m := req.Msg
+	out, err := h.svc.CreateFileRecord(ctx, m.TenantID, m.OriginalName, m.StoredName,
+		m.ContentType, m.SizeBytes, m.StoragePath, m.EntityType, m.EntityID,
+		m.UploadedBy, m.IsPublic, m.CreatedBy)
 	if err != nil {
-		h.log.Errorf("CreateFileRecord: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return nil, classify(err)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(f)
+	return connect.NewResponse(&FileRecordResponse{File: out}), nil
 }
 
-func (h *Handler) getFileRecord(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		ID       string `json:"id"`
-		TenantID string `json:"tenant_id"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	f, err := h.svc.GetFileRecord(r.Context(), req.ID, req.TenantID)
+func (h *Handler) GetFileRecord(ctx context.Context, req *connect.Request[GetFileRecordRequest]) (*connect.Response[FileRecordResponse], error) {
+	out, err := h.svc.GetFileRecord(ctx, req.Msg.ID, req.Msg.TenantID)
 	if err != nil {
-		h.log.Errorf("GetFileRecord: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return nil, classify(err)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(f)
+	return connect.NewResponse(&FileRecordResponse{File: out}), nil
 }
 
-func (h *Handler) listEntityFiles(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		TenantID   string `json:"tenant_id"`
-		EntityType string `json:"entity_type"`
-		EntityID   string `json:"entity_id"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	files, err := h.svc.ListEntityFiles(r.Context(), req.TenantID, req.EntityType, req.EntityID)
+func (h *Handler) ListEntityFiles(ctx context.Context, req *connect.Request[ListEntityFilesRequest]) (*connect.Response[ListEntityFilesResponse], error) {
+	m := req.Msg
+	out, err := h.svc.ListEntityFiles(ctx, m.TenantID, m.EntityType, m.EntityID)
 	if err != nil {
-		h.log.Errorf("ListEntityFiles: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return nil, classify(err)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(files)
+	return connect.NewResponse(&ListEntityFilesResponse{Files: out}), nil
 }
 
-func (h *Handler) deleteFile(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		ID        string `json:"id"`
-		TenantID  string `json:"tenant_id"`
-		UpdatedBy string `json:"updated_by"`
+func (h *Handler) DeleteFile(ctx context.Context, req *connect.Request[DeleteFileRequest]) (*connect.Response[DeleteFileResponse], error) {
+	m := req.Msg
+	if err := h.svc.DeleteFile(ctx, m.ID, m.TenantID, m.UpdatedBy); err != nil {
+		return nil, classify(err)
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if err := h.svc.DeleteFile(r.Context(), req.ID, req.TenantID, req.UpdatedBy); err != nil {
-		h.log.Errorf("DeleteFile: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+	return connect.NewResponse(&DeleteFileResponse{}), nil
 }
 
-func (h *Handler) getDownloadURL(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		ID       string `json:"id"`
-		TenantID string `json:"tenant_id"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	url, err := h.svc.GetDownloadURL(r.Context(), req.ID, req.TenantID)
+func (h *Handler) GetDownloadURL(ctx context.Context, req *connect.Request[GetDownloadURLRequest]) (*connect.Response[GetDownloadURLResponse], error) {
+	url, err := h.svc.GetDownloadURL(ctx, req.Msg.ID, req.Msg.TenantID)
 	if err != nil {
-		h.log.Errorf("GetDownloadURL: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return nil, classify(err)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"url": url})
+	return connect.NewResponse(&GetDownloadURLResponse{URL: url}), nil
 }

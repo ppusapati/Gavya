@@ -24,10 +24,10 @@ var ErrDuplicateCode = errors.New("a farm with that code already exists")
 // Columns are listed explicitly rather than selected with *, because the scans
 // below are positional: adding a column to the table would silently misalign
 // every field after it.
-const farmCols = `id,tenant_id,name,code,address,city,state,country,capacity,manager_id,status,` +
+const farmCols = `id,tenant_id,name,code,COALESCE(address,''),COALESCE(city,''),COALESCE(state,''),COALESCE(country,''),capacity,COALESCE(manager_id,''),status,` +
 	`created_at,updated_at,created_by,updated_by,deleted_at`
 
-const farmSectionCols = `id,tenant_id,farm_id,name,section_type,capacity,current_occupancy,` +
+const farmSectionCols = `id,tenant_id,farm_id,name,COALESCE(section_type,''),capacity,current_occupancy,` +
 	`created_at,updated_at,created_by,updated_by,deleted_at`
 
 type Repository interface {

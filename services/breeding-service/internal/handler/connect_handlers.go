@@ -1,13 +1,22 @@
 package handler
 
 import (
-	"encoding/json"
+	"context"
+	"errors"
 	"net/http"
 	"time"
 
+	"connectrpc.com/connect"
+
+	"github.com/ppusapati/gavya/libs/integrity/connectjson"
 	"github.com/ppusapati/gavya/services/breeding-service/internal/domain"
+	"github.com/ppusapati/gavya/services/breeding-service/internal/repository"
 	"github.com/ppusapati/gavya/services/breeding-service/internal/service"
 )
+
+// ServiceName is the fully qualified Connect service these procedures are
+// addressed under.
+const ServiceName = "breeding.v1.BreedingService"
 
 type Handler struct {
 	svc *service.Service
@@ -18,22 +27,35 @@ func New(svc *service.Service) *Handler {
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("/healthz", h.healthz)
-	mux.HandleFunc("/breeding.v1.BreedingService/CreateBreedingCycle", h.CreateBreedingCycle)
-	mux.HandleFunc("/breeding.v1.BreedingService/RecordInsemination", h.RecordInsemination)
-	mux.HandleFunc("/breeding.v1.BreedingService/ConfirmPregnancy", h.ConfirmPregnancy)
-	mux.HandleFunc("/breeding.v1.BreedingService/RecordCalving", h.RecordCalving)
-	mux.HandleFunc("/breeding.v1.BreedingService/GetBreedingHistory", h.GetBreedingHistory)
-	mux.HandleFunc("/breeding.v1.BreedingService/ListActivePregnancies", h.ListActivePregnancies)
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	route := func(method string, handler http.HandlerFunc) {
+		mux.HandleFunc(connectjson.Procedure(ServiceName, method), handler)
+	}
+
+	route("CreateBreedingCycle", connectjson.Unary(h.CreateBreedingCycle))
+	route("RecordInsemination", connectjson.Unary(h.RecordInsemination))
+	route("ConfirmPregnancy", connectjson.Unary(h.ConfirmPregnancy))
+	route("RecordCalving", connectjson.Unary(h.RecordCalving))
+	route("GetBreedingHistory", connectjson.Unary(h.GetBreedingHistory))
+	route("ListActivePregnancies", connectjson.Unary(h.ListActivePregnancies))
 }
 
-func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+// classify maps a failure onto the code that describes it.
+//
+// Reporting everything as internal, as this service used to, leaves a caller
+// unable to tell a missing cycle from an unreachable database — and makes an
+// unrecoverable mistake look like something worth retrying.
+func classify(err error) error {
+	switch {
+	case errors.Is(err, repository.ErrNotFound):
+		return connect.NewError(connect.CodeNotFound, err)
+	case errors.Is(err, service.ErrInvalidArgument):
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	default:
+		return connect.NewError(connect.CodeInternal, err)
+	}
 }
-
-// Request/Response types
 
 type CreateBreedingCycleRequest struct {
 	TenantID  string    `json:"tenant_id"`
@@ -42,6 +64,10 @@ type CreateBreedingCycleRequest struct {
 	Status    string    `json:"status"`
 	Notes     string    `json:"notes"`
 	CreatedBy string    `json:"created_by"`
+}
+
+type BreedingCycleResponse struct {
+	Cycle *domain.BreedingCycle `json:"cycle"`
 }
 
 type RecordInseminationRequest struct {
@@ -55,6 +81,10 @@ type RecordInseminationRequest struct {
 	CreatedBy     string    `json:"created_by"`
 }
 
+type InseminationResponse struct {
+	Insemination *domain.Insemination `json:"insemination"`
+}
+
 type ConfirmPregnancyRequest struct {
 	TenantID            string    `json:"tenant_id"`
 	CattleID            string    `json:"cattle_id"`
@@ -62,6 +92,10 @@ type ConfirmPregnancyRequest struct {
 	ConfirmedAt         time.Time `json:"confirmed_at"`
 	ExpectedCalvingDate time.Time `json:"expected_calving_date"`
 	CreatedBy           string    `json:"created_by"`
+}
+
+type PregnancyResponse struct {
+	Pregnancy *domain.Pregnancy `json:"pregnancy"`
 }
 
 type RecordCalvingRequest struct {
@@ -76,142 +110,108 @@ type RecordCalvingRequest struct {
 	CreatedBy     string  `json:"created_by"`
 }
 
+type CalvingRecordResponse struct {
+	CalvingRecord *domain.CalvingRecord `json:"calving_record"`
+}
+
 type GetBreedingHistoryRequest struct {
 	TenantID string `json:"tenant_id"`
 	CattleID string `json:"cattle_id"`
+}
+
+type GetBreedingHistoryResponse struct {
+	Cycles []*domain.BreedingCycle `json:"cycles"`
 }
 
 type ListActivePregnanciesRequest struct {
 	TenantID string `json:"tenant_id"`
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+type ListActivePregnanciesResponse struct {
+	Pregnancies []*domain.Pregnancy `json:"pregnancies"`
 }
 
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
-}
-
-func (h *Handler) CreateBreedingCycle(w http.ResponseWriter, r *http.Request) {
-	var req CreateBreedingCycleRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	b := &domain.BreedingCycle{
-		TenantID:  req.TenantID,
-		CattleID:  req.CattleID,
-		HeatDate:  req.HeatDate,
-		Status:    req.Status,
-		Notes:     req.Notes,
-		CreatedBy: req.CreatedBy,
-	}
-	result, err := h.svc.CreateBreedingCycle(r.Context(), b)
+func (h *Handler) CreateBreedingCycle(ctx context.Context, req *connect.Request[CreateBreedingCycleRequest]) (*connect.Response[BreedingCycleResponse], error) {
+	m := req.Msg
+	out, err := h.svc.CreateBreedingCycle(ctx, &domain.BreedingCycle{
+		TenantID:  m.TenantID,
+		CattleID:  m.CattleID,
+		HeatDate:  m.HeatDate,
+		Status:    m.Status,
+		Notes:     m.Notes,
+		CreatedBy: m.CreatedBy,
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&BreedingCycleResponse{Cycle: out}), nil
 }
 
-func (h *Handler) RecordInsemination(w http.ResponseWriter, r *http.Request) {
-	var req RecordInseminationRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	ins := &domain.Insemination{
-		TenantID:      req.TenantID,
-		CycleID:       req.CycleID,
-		CattleID:      req.CattleID,
-		BullID:        req.BullID,
-		SemenBatchID:  req.SemenBatchID,
-		InseminatedAt: req.InseminatedAt,
-		Method:        req.Method,
-		CreatedBy:     req.CreatedBy,
-	}
-	result, err := h.svc.RecordInsemination(r.Context(), ins)
+func (h *Handler) RecordInsemination(ctx context.Context, req *connect.Request[RecordInseminationRequest]) (*connect.Response[InseminationResponse], error) {
+	m := req.Msg
+	out, err := h.svc.RecordInsemination(ctx, &domain.Insemination{
+		TenantID:      m.TenantID,
+		CycleID:       m.CycleID,
+		CattleID:      m.CattleID,
+		BullID:        m.BullID,
+		SemenBatchID:  m.SemenBatchID,
+		InseminatedAt: m.InseminatedAt,
+		Method:        m.Method,
+		CreatedBy:     m.CreatedBy,
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&InseminationResponse{Insemination: out}), nil
 }
 
-func (h *Handler) ConfirmPregnancy(w http.ResponseWriter, r *http.Request) {
-	var req ConfirmPregnancyRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	p := &domain.Pregnancy{
-		TenantID:            req.TenantID,
-		CattleID:            req.CattleID,
-		InseminationID:      req.InseminationID,
-		ConfirmedAt:         req.ConfirmedAt,
-		ExpectedCalvingDate: req.ExpectedCalvingDate,
-		CreatedBy:           req.CreatedBy,
-	}
-	result, err := h.svc.ConfirmPregnancy(r.Context(), p)
+func (h *Handler) ConfirmPregnancy(ctx context.Context, req *connect.Request[ConfirmPregnancyRequest]) (*connect.Response[PregnancyResponse], error) {
+	m := req.Msg
+	out, err := h.svc.ConfirmPregnancy(ctx, &domain.Pregnancy{
+		TenantID:            m.TenantID,
+		CattleID:            m.CattleID,
+		InseminationID:      m.InseminationID,
+		ConfirmedAt:         m.ConfirmedAt,
+		ExpectedCalvingDate: m.ExpectedCalvingDate,
+		CreatedBy:           m.CreatedBy,
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&PregnancyResponse{Pregnancy: out}), nil
 }
 
-func (h *Handler) RecordCalving(w http.ResponseWriter, r *http.Request) {
-	var req RecordCalvingRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	c := &domain.CalvingRecord{
-		TenantID:      req.TenantID,
-		PregnancyID:   req.PregnancyID,
-		CattleID:      req.CattleID,
-		CalfID:        req.CalfID,
-		CalfGender:    req.CalfGender,
-		CalfWeight:    req.CalfWeight,
-		Complications: req.Complications,
-		Status:        req.Status,
-		CreatedBy:     req.CreatedBy,
-	}
-	result, err := h.svc.RecordCalving(r.Context(), c)
+func (h *Handler) RecordCalving(ctx context.Context, req *connect.Request[RecordCalvingRequest]) (*connect.Response[CalvingRecordResponse], error) {
+	m := req.Msg
+	out, err := h.svc.RecordCalving(ctx, &domain.CalvingRecord{
+		TenantID:      m.TenantID,
+		PregnancyID:   m.PregnancyID,
+		CattleID:      m.CattleID,
+		CalfID:        m.CalfID,
+		CalfGender:    m.CalfGender,
+		CalfWeight:    m.CalfWeight,
+		Complications: m.Complications,
+		Status:        m.Status,
+		CreatedBy:     m.CreatedBy,
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&CalvingRecordResponse{CalvingRecord: out}), nil
 }
 
-func (h *Handler) GetBreedingHistory(w http.ResponseWriter, r *http.Request) {
-	var req GetBreedingHistoryRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := h.svc.GetBreedingHistory(r.Context(), req.TenantID, req.CattleID)
+func (h *Handler) GetBreedingHistory(ctx context.Context, req *connect.Request[GetBreedingHistoryRequest]) (*connect.Response[GetBreedingHistoryResponse], error) {
+	out, err := h.svc.GetBreedingHistory(ctx, req.Msg.TenantID, req.Msg.CattleID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&GetBreedingHistoryResponse{Cycles: out}), nil
 }
 
-func (h *Handler) ListActivePregnancies(w http.ResponseWriter, r *http.Request) {
-	var req ListActivePregnanciesRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := h.svc.ListActivePregnancies(r.Context(), req.TenantID)
+func (h *Handler) ListActivePregnancies(ctx context.Context, req *connect.Request[ListActivePregnanciesRequest]) (*connect.Response[ListActivePregnanciesResponse], error) {
+	out, err := h.svc.ListActivePregnancies(ctx, req.Msg.TenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&ListActivePregnanciesResponse{Pregnancies: out}), nil
 }

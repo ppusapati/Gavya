@@ -24,14 +24,14 @@ var ErrDuplicateWarehouseCode = errors.New("a warehouse with that code already e
 // Columns are listed explicitly rather than selected with *, because the scans
 // below are positional: adding a column to the table would silently misalign
 // every field after it.
-const warehouseCols = `id,tenant_id,name,code,address,manager_id,status,` +
+const warehouseCols = `id,tenant_id,name,code,COALESCE(address,''),COALESCE(manager_id,''),status,` +
 	`created_at,updated_at,created_by,updated_by,deleted_at`
 
 const inventoryItemCols = `id,tenant_id,warehouse_id,sku_id,quantity_on_hand,quantity_reserved,` +
 	`reorder_point,max_stock,last_updated_at,created_at,updated_at,created_by,updated_by`
 
-const stockMovementCols = `id,tenant_id,warehouse_id,sku_id,movement_type,quantity,reference_id,` +
-	`reference_type,notes,moved_at,moved_by,created_at,updated_at,created_by,updated_by`
+const stockMovementCols = `id,tenant_id,warehouse_id,sku_id,movement_type,quantity,COALESCE(reference_id,''),` +
+	`COALESCE(reference_type,''),COALESCE(notes,''),moved_at,moved_by,created_at,updated_at,created_by,updated_by`
 
 const batchCols = `id,tenant_id,warehouse_id,sku_id,batch_number,quantity,manufactured_at,` +
 	`expires_at,status,created_at,updated_at,created_by,updated_by,deleted_at`

@@ -20,13 +20,13 @@ var ErrNotFound = errors.New("not found")
 // Columns are listed explicitly rather than selected with *, because the scans
 // below are positional: adding a column to the table would silently misalign
 // every field after it.
-const feedTypeCols = `id,tenant_id,name,category,unit,nutritional_info,` +
+const feedTypeCols = `id,tenant_id,name,COALESCE(category,''),unit,COALESCE(nutritional_info,''),` +
 	`created_at,updated_at,created_by,updated_by,deleted_at`
 
-const nutritionPlanCols = `id,tenant_id,cattle_id,feed_type_id,daily_quantity_kg,start_date,end_date,notes,` +
+const nutritionPlanCols = `id,tenant_id,cattle_id,feed_type_id,daily_quantity_kg,start_date,end_date,COALESCE(notes,''),` +
 	`created_at,updated_at,created_by,updated_by,deleted_at`
 
-const feedConsumptionCols = `id,tenant_id,cattle_id,feed_type_id,quantity_kg,fed_at,fed_by,` +
+const feedConsumptionCols = `id,tenant_id,cattle_id,feed_type_id,quantity_kg,fed_at,COALESCE(fed_by,''),` +
 	`created_at,updated_at,created_by,updated_by`
 
 type Repository interface {

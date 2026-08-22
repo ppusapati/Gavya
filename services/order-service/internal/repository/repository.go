@@ -25,7 +25,7 @@ var ErrDuplicateOrderNumber = errors.New("an order with that number already exis
 // below are positional: adding a column to the table would silently misalign
 // every field after it.
 const orderCols = `id,tenant_id,customer_id,order_number,status,sub_total,tax_amount,total_amount,` +
-	`currency,shipping_address,notes,ordered_at,delivered_at,created_at,updated_at,created_by,` +
+	`currency,COALESCE(shipping_address,''),COALESCE(notes,''),ordered_at,delivered_at,created_at,updated_at,created_by,` +
 	`updated_by,deleted_at`
 
 const orderItemCols = `id,tenant_id,order_id,sku_id,product_id,quantity,unit_price,total_price,` +

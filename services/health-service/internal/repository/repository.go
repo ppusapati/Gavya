@@ -19,13 +19,13 @@ var ErrNotFound = errors.New("not found")
 // Columns are listed explicitly rather than selected with *, because the scans
 // below are positional: adding a column to the table would silently misalign
 // every field after it.
-const vaccinationCols = `id,tenant_id,cattle_id,vaccine_name,batch_number,administered_at,next_due_date,` +
-	`veterinarian_id,dosage,created_at,updated_at,created_by,updated_by,deleted_at`
+const vaccinationCols = `id,tenant_id,cattle_id,vaccine_name,COALESCE(batch_number,''),administered_at,next_due_date,` +
+	`COALESCE(veterinarian_id,''),COALESCE(dosage,''),created_at,updated_at,created_by,updated_by,deleted_at`
 
-const treatmentCols = `id,tenant_id,cattle_id,diagnosis_code,diagnosis,medicine_name,dosage,treated_at,` +
-	`treated_by,follow_up_date,status,created_at,updated_at,created_by,updated_by,deleted_at`
+const treatmentCols = `id,tenant_id,cattle_id,COALESCE(diagnosis_code,''),diagnosis,COALESCE(medicine_name,''),COALESCE(dosage,''),treated_at,` +
+	`COALESCE(treated_by,''),follow_up_date,status,created_at,updated_at,created_by,updated_by,deleted_at`
 
-const vetVisitCols = `id,tenant_id,cattle_id,veterinarian_id,visit_date,purpose,notes,cost,` +
+const vetVisitCols = `id,tenant_id,cattle_id,veterinarian_id,visit_date,COALESCE(purpose,''),COALESCE(notes,''),cost,` +
 	`created_at,updated_at,created_by,updated_by,deleted_at`
 
 type Repository interface {

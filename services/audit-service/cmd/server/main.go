@@ -30,7 +30,7 @@ func main() {
 
 	repo := repository.New(pool)
 	svc := service.New(repo, log)
-	h := handler.New(svc, log)
+	h := handler.New(svc)
 
 	mux := http.NewServeMux()
 	h.Register(mux)

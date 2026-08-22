@@ -1,12 +1,21 @@
 package handler
 
 import (
-	"encoding/json"
+	"context"
+	"errors"
 	"net/http"
 
+	"connectrpc.com/connect"
+
+	"github.com/ppusapati/gavya/libs/integrity/connectjson"
 	"github.com/ppusapati/gavya/services/notification-service/internal/domain"
+	"github.com/ppusapati/gavya/services/notification-service/internal/repository"
 	"github.com/ppusapati/gavya/services/notification-service/internal/service"
 )
+
+// ServiceName is the fully qualified Connect service these procedures are
+// addressed under.
+const ServiceName = "notification.v1.NotificationService"
 
 type Handler struct {
 	svc *service.Service
@@ -17,31 +26,36 @@ func New(svc *service.Service) *Handler {
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("/healthz", h.healthz)
-	mux.HandleFunc("/notification.v1.NotificationService/SendNotification", h.SendNotification)
-	mux.HandleFunc("/notification.v1.NotificationService/GetNotification", h.GetNotification)
-	mux.HandleFunc("/notification.v1.NotificationService/ListNotifications", h.ListNotifications)
-	mux.HandleFunc("/notification.v1.NotificationService/MarkAsRead", h.MarkAsRead)
-	mux.HandleFunc("/notification.v1.NotificationService/MarkAllRead", h.MarkAllRead)
-	mux.HandleFunc("/notification.v1.NotificationService/CreateTemplate", h.CreateTemplate)
-	mux.HandleFunc("/notification.v1.NotificationService/ListTemplates", h.ListTemplates)
-	mux.HandleFunc("/notification.v1.NotificationService/GetUnreadCount", h.GetUnreadCount)
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	route := func(method string, handler http.HandlerFunc) {
+		mux.HandleFunc(connectjson.Procedure(ServiceName, method), handler)
+	}
+
+	route("SendNotification", connectjson.Unary(h.SendNotification))
+	route("GetNotification", connectjson.Unary(h.GetNotification))
+	route("ListNotifications", connectjson.Unary(h.ListNotifications))
+	route("MarkAsRead", connectjson.Unary(h.MarkAsRead))
+	route("MarkAllRead", connectjson.Unary(h.MarkAllRead))
+	route("CreateTemplate", connectjson.Unary(h.CreateTemplate))
+	route("ListTemplates", connectjson.Unary(h.ListTemplates))
+	route("GetUnreadCount", connectjson.Unary(h.GetUnreadCount))
 }
 
-func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
+// classify maps a failure onto the code that describes it.
+//
+// Reporting everything as internal, as this service used to, leaves a caller
+// unable to tell a missing notification from an unreachable database — and
+// makes an unrecoverable mistake look like something worth retrying.
+func classify(err error) error {
+	switch {
+	case errors.Is(err, repository.ErrNotFound):
+		return connect.NewError(connect.CodeNotFound, err)
+	case errors.Is(err, service.ErrInvalidArgument):
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	default:
+		return connect.NewError(connect.CodeInternal, err)
+	}
 }
 
 type SendNotificationRequest struct {
@@ -57,6 +71,10 @@ type SendNotificationRequest struct {
 	CreatedBy     string `json:"created_by"`
 }
 
+type NotificationResponse struct {
+	Notification *domain.Notification `json:"notification"`
+}
+
 type IDTenantRequest struct {
 	ID       string `json:"id"`
 	TenantID string `json:"tenant_id"`
@@ -66,6 +84,10 @@ type ListNotificationsRequest struct {
 	TenantID string `json:"tenant_id"`
 	Channel  string `json:"channel"`
 	Status   string `json:"status"`
+}
+
+type ListNotificationsResponse struct {
+	Notifications []*domain.Notification `json:"notifications"`
 }
 
 type MarkReadRequest struct {
@@ -80,6 +102,10 @@ type MarkAllReadRequest struct {
 	UpdatedBy   string `json:"updated_by"`
 }
 
+type MarkAllReadResponse struct {
+	Status string `json:"status"`
+}
+
 type CreateTemplateRequest struct {
 	TenantID     string `json:"tenant_id"`
 	EventType    string `json:"event_type"`
@@ -89,8 +115,16 @@ type CreateTemplateRequest struct {
 	CreatedBy    string `json:"created_by"`
 }
 
+type TemplateResponse struct {
+	Template *domain.NotificationTemplate `json:"template"`
+}
+
 type TenantRequest struct {
 	TenantID string `json:"tenant_id"`
+}
+
+type ListTemplatesResponse struct {
+	Templates []*domain.NotificationTemplate `json:"templates"`
 }
 
 type UnreadCountRequest struct {
@@ -98,133 +132,92 @@ type UnreadCountRequest struct {
 	RecipientID string `json:"recipient_id"`
 }
 
-func (h *Handler) SendNotification(w http.ResponseWriter, r *http.Request) {
-	var req SendNotificationRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	n := &domain.Notification{
-		TenantID:      req.TenantID,
-		RecipientID:   req.RecipientID,
-		RecipientType: req.RecipientType,
-		Channel:       req.Channel,
-		Title:         req.Title,
-		Body:          req.Body,
-		Priority:      req.Priority,
-		ReferenceID:   req.ReferenceID,
-		ReferenceType: req.ReferenceType,
-		CreatedBy:     req.CreatedBy,
-	}
-	result, err := h.svc.SendNotification(r.Context(), n)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, result)
+type UnreadCountResponse struct {
+	Count int64 `json:"count"`
 }
 
-func (h *Handler) GetNotification(w http.ResponseWriter, r *http.Request) {
-	var req IDTenantRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := h.svc.GetNotification(r.Context(), req.ID, req.TenantID)
+func (h *Handler) SendNotification(ctx context.Context, req *connect.Request[SendNotificationRequest]) (*connect.Response[NotificationResponse], error) {
+	m := req.Msg
+	out, err := h.svc.SendNotification(ctx, &domain.Notification{
+		TenantID:      m.TenantID,
+		RecipientID:   m.RecipientID,
+		RecipientType: m.RecipientType,
+		Channel:       m.Channel,
+		Title:         m.Title,
+		Body:          m.Body,
+		Priority:      m.Priority,
+		ReferenceID:   m.ReferenceID,
+		ReferenceType: m.ReferenceType,
+		CreatedBy:     m.CreatedBy,
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&NotificationResponse{Notification: out}), nil
 }
 
-func (h *Handler) ListNotifications(w http.ResponseWriter, r *http.Request) {
-	var req ListNotificationsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := h.svc.ListNotifications(r.Context(), req.TenantID, req.Channel, req.Status)
+func (h *Handler) GetNotification(ctx context.Context, req *connect.Request[IDTenantRequest]) (*connect.Response[NotificationResponse], error) {
+	out, err := h.svc.GetNotification(ctx, req.Msg.ID, req.Msg.TenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&NotificationResponse{Notification: out}), nil
 }
 
-func (h *Handler) MarkAsRead(w http.ResponseWriter, r *http.Request) {
-	var req MarkReadRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := h.svc.MarkAsRead(r.Context(), req.ID, req.TenantID, req.UpdatedBy)
+func (h *Handler) ListNotifications(ctx context.Context, req *connect.Request[ListNotificationsRequest]) (*connect.Response[ListNotificationsResponse], error) {
+	m := req.Msg
+	out, err := h.svc.ListNotifications(ctx, m.TenantID, m.Channel, m.Status)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&ListNotificationsResponse{Notifications: out}), nil
 }
 
-func (h *Handler) MarkAllRead(w http.ResponseWriter, r *http.Request) {
-	var req MarkAllReadRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+func (h *Handler) MarkAsRead(ctx context.Context, req *connect.Request[MarkReadRequest]) (*connect.Response[NotificationResponse], error) {
+	m := req.Msg
+	out, err := h.svc.MarkAsRead(ctx, m.ID, m.TenantID, m.UpdatedBy)
+	if err != nil {
+		return nil, classify(err)
 	}
-	if err := h.svc.MarkAllRead(r.Context(), req.RecipientID, req.TenantID, req.UpdatedBy); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	return connect.NewResponse(&NotificationResponse{Notification: out}), nil
 }
 
-func (h *Handler) CreateTemplate(w http.ResponseWriter, r *http.Request) {
-	var req CreateTemplateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+func (h *Handler) MarkAllRead(ctx context.Context, req *connect.Request[MarkAllReadRequest]) (*connect.Response[MarkAllReadResponse], error) {
+	m := req.Msg
+	if err := h.svc.MarkAllRead(ctx, m.RecipientID, m.TenantID, m.UpdatedBy); err != nil {
+		return nil, classify(err)
 	}
-	t := &domain.NotificationTemplate{
-		TenantID:     req.TenantID,
-		EventType:    req.EventType,
-		Channel:      req.Channel,
-		Title:        req.Title,
-		BodyTemplate: req.BodyTemplate,
-		CreatedBy:    req.CreatedBy,
-	}
-	result, err := h.svc.CreateTemplate(r.Context(), t)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&MarkAllReadResponse{Status: "ok"}), nil
 }
 
-func (h *Handler) ListTemplates(w http.ResponseWriter, r *http.Request) {
-	var req TenantRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := h.svc.ListTemplates(r.Context(), req.TenantID)
+func (h *Handler) CreateTemplate(ctx context.Context, req *connect.Request[CreateTemplateRequest]) (*connect.Response[TemplateResponse], error) {
+	m := req.Msg
+	out, err := h.svc.CreateTemplate(ctx, &domain.NotificationTemplate{
+		TenantID:     m.TenantID,
+		EventType:    m.EventType,
+		Channel:      m.Channel,
+		Title:        m.Title,
+		BodyTemplate: m.BodyTemplate,
+		CreatedBy:    m.CreatedBy,
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&TemplateResponse{Template: out}), nil
 }
 
-func (h *Handler) GetUnreadCount(w http.ResponseWriter, r *http.Request) {
-	var req UnreadCountRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	count, err := h.svc.GetUnreadCount(r.Context(), req.TenantID, req.RecipientID)
+func (h *Handler) ListTemplates(ctx context.Context, req *connect.Request[TenantRequest]) (*connect.Response[ListTemplatesResponse], error) {
+	out, err := h.svc.ListTemplates(ctx, req.Msg.TenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, map[string]int64{"count": count})
+	return connect.NewResponse(&ListTemplatesResponse{Templates: out}), nil
+}
+
+func (h *Handler) GetUnreadCount(ctx context.Context, req *connect.Request[UnreadCountRequest]) (*connect.Response[UnreadCountResponse], error) {
+	out, err := h.svc.GetUnreadCount(ctx, req.Msg.TenantID, req.Msg.RecipientID)
+	if err != nil {
+		return nil, classify(err)
+	}
+	return connect.NewResponse(&UnreadCountResponse{Count: out}), nil
 }

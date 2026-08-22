@@ -2,10 +2,28 @@ package service
 
 import (
 	"context"
+	"errors"
 
 	"github.com/ppusapati/gavya/services/audit-service/internal/domain"
 	ulidpkg "p9e.in/samavaya/packages/ULID"
 )
+
+// ErrInvalidArgument marks a caller mistake. Without it the handler cannot tell
+// a rejected argument from a failed query, and would have to report both the
+// same way. This service is append-only and validates nothing today, so the
+// marker exists for the classification the other services share.
+var ErrInvalidArgument = errors.New("invalid argument")
+
+// invalidArgument carries the reason alone. The marker is matched through Is,
+// so errors.Is finds it while the message stays free of a prefix the error code
+// already conveys.
+type invalidArgument struct{ reason string }
+
+func (e *invalidArgument) Error() string { return e.reason }
+
+func (e *invalidArgument) Is(target error) bool { return target == ErrInvalidArgument }
+
+func invalid(msg string) error { return &invalidArgument{reason: msg} }
 
 func (s *Service) CreateAuditLog(ctx context.Context, tenantID, actorID, actorType, action, resourceType, resourceID, oldValue, newValue, ipAddress, userAgent, serviceName, traceID, createdBy string) (*domain.AuditLog, error) {
 	a := &domain.AuditLog{

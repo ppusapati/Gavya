@@ -1,12 +1,21 @@
 package handler
 
 import (
-	"encoding/json"
+	"context"
+	"errors"
 	"net/http"
 
+	"connectrpc.com/connect"
+
+	"github.com/ppusapati/gavya/libs/integrity/connectjson"
 	"github.com/ppusapati/gavya/services/product-catalog-service/internal/domain"
+	"github.com/ppusapati/gavya/services/product-catalog-service/internal/repository"
 	"github.com/ppusapati/gavya/services/product-catalog-service/internal/service"
 )
+
+// ServiceName is the fully qualified Connect service these procedures are
+// addressed under.
+const ServiceName = "productcatalog.v1.ProductCatalogService"
 
 type Handler struct {
 	svc *service.Service
@@ -17,34 +26,44 @@ func New(svc *service.Service) *Handler {
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("/healthz", h.healthz)
-	mux.HandleFunc("/catalog.v1.ProductCatalogService/CreateCategory", h.CreateCategory)
-	mux.HandleFunc("/catalog.v1.ProductCatalogService/ListCategories", h.ListCategories)
-	mux.HandleFunc("/catalog.v1.ProductCatalogService/CreateBrand", h.CreateBrand)
-	mux.HandleFunc("/catalog.v1.ProductCatalogService/ListBrands", h.ListBrands)
-	mux.HandleFunc("/catalog.v1.ProductCatalogService/CreateProduct", h.CreateProduct)
-	mux.HandleFunc("/catalog.v1.ProductCatalogService/GetProduct", h.GetProduct)
-	mux.HandleFunc("/catalog.v1.ProductCatalogService/ListProducts", h.ListProducts)
-	mux.HandleFunc("/catalog.v1.ProductCatalogService/CreateSKU", h.CreateSKU)
-	mux.HandleFunc("/catalog.v1.ProductCatalogService/GetSKU", h.GetSKU)
-	mux.HandleFunc("/catalog.v1.ProductCatalogService/ListProductSKUs", h.ListProductSKUs)
-	mux.HandleFunc("/catalog.v1.ProductCatalogService/UpdateSKUPrice", h.UpdateSKUPrice)
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	route := func(method string, handler http.HandlerFunc) {
+		mux.HandleFunc(connectjson.Procedure(ServiceName, method), handler)
+	}
+
+	route("CreateCategory", connectjson.Unary(h.CreateCategory))
+	route("ListCategories", connectjson.Unary(h.ListCategories))
+	route("CreateBrand", connectjson.Unary(h.CreateBrand))
+	route("ListBrands", connectjson.Unary(h.ListBrands))
+	route("CreateProduct", connectjson.Unary(h.CreateProduct))
+	route("GetProduct", connectjson.Unary(h.GetProduct))
+	route("ListProducts", connectjson.Unary(h.ListProducts))
+	route("CreateSKU", connectjson.Unary(h.CreateSKU))
+	route("GetSKU", connectjson.Unary(h.GetSKU))
+	route("ListProductSKUs", connectjson.Unary(h.ListProductSKUs))
+	route("UpdateSKUPrice", connectjson.Unary(h.UpdateSKUPrice))
 }
 
-func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
+// classify maps a failure onto the code that describes it.
+//
+// Reporting everything as internal, as this service used to, leaves a caller
+// unable to tell a missing product from an unreachable database — and makes an
+// unrecoverable mistake look like something worth retrying.
+func classify(err error) error {
+	switch {
+	case errors.Is(err, repository.ErrNotFound):
+		return connect.NewError(connect.CodeNotFound, err)
+	case errors.Is(err, repository.ErrDuplicateCategorySlug),
+		errors.Is(err, repository.ErrDuplicateBrandSlug),
+		errors.Is(err, repository.ErrDuplicateProductSlug),
+		errors.Is(err, repository.ErrDuplicateSKUCode):
+		return connect.NewError(connect.CodeAlreadyExists, err)
+	case errors.Is(err, service.ErrInvalidArgument):
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	default:
+		return connect.NewError(connect.CodeInternal, err)
+	}
 }
 
 type CreateCategoryRequest struct {
@@ -57,8 +76,16 @@ type CreateCategoryRequest struct {
 	CreatedBy   string  `json:"created_by"`
 }
 
+type CategoryResponse struct {
+	Category *domain.Category `json:"category"`
+}
+
 type TenantRequest struct {
 	TenantID string `json:"tenant_id"`
+}
+
+type ListCategoriesResponse struct {
+	Categories []*domain.Category `json:"categories"`
 }
 
 type CreateBrandRequest struct {
@@ -67,6 +94,14 @@ type CreateBrandRequest struct {
 	Slug      string `json:"slug"`
 	LogoURL   string `json:"logo_url"`
 	CreatedBy string `json:"created_by"`
+}
+
+type BrandResponse struct {
+	Brand *domain.Brand `json:"brand"`
+}
+
+type ListBrandsResponse struct {
+	Brands []*domain.Brand `json:"brands"`
 }
 
 type CreateProductRequest struct {
@@ -81,6 +116,10 @@ type CreateProductRequest struct {
 	CreatedBy   string `json:"created_by"`
 }
 
+type ProductResponse struct {
+	Product *domain.Product `json:"product"`
+}
+
 type IDTenantRequest struct {
 	ID       string `json:"id"`
 	TenantID string `json:"tenant_id"`
@@ -90,6 +129,10 @@ type ListProductsRequest struct {
 	TenantID    string `json:"tenant_id"`
 	ProductType string `json:"product_type"`
 	Status      string `json:"status"`
+}
+
+type ListProductsResponse struct {
+	Products []*domain.Product `json:"products"`
 }
 
 type CreateSKURequest struct {
@@ -105,9 +148,17 @@ type CreateSKURequest struct {
 	CreatedBy string  `json:"created_by"`
 }
 
+type SKUResponse struct {
+	SKU *domain.SKU `json:"sku"`
+}
+
 type ListProductSKUsRequest struct {
 	ProductID string `json:"product_id"`
 	TenantID  string `json:"tenant_id"`
+}
+
+type ListProductSKUsResponse struct {
+	SKUs []*domain.SKU `json:"skus"`
 }
 
 type UpdateSKUPriceRequest struct {
@@ -117,195 +168,131 @@ type UpdateSKUPriceRequest struct {
 	UpdatedBy string  `json:"updated_by"`
 }
 
-func (h *Handler) CreateCategory(w http.ResponseWriter, r *http.Request) {
-	var req CreateCategoryRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	c := &domain.Category{
-		TenantID:    req.TenantID,
-		Name:        req.Name,
-		Slug:        req.Slug,
-		ParentID:    req.ParentID,
-		Description: req.Description,
-		SortOrder:   req.SortOrder,
-		CreatedBy:   req.CreatedBy,
-	}
-	result, err := h.svc.CreateCategory(r.Context(), c)
+func (h *Handler) CreateCategory(ctx context.Context, req *connect.Request[CreateCategoryRequest]) (*connect.Response[CategoryResponse], error) {
+	m := req.Msg
+	out, err := h.svc.CreateCategory(ctx, &domain.Category{
+		TenantID:    m.TenantID,
+		Name:        m.Name,
+		Slug:        m.Slug,
+		ParentID:    m.ParentID,
+		Description: m.Description,
+		SortOrder:   m.SortOrder,
+		CreatedBy:   m.CreatedBy,
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&CategoryResponse{Category: out}), nil
 }
 
-func (h *Handler) ListCategories(w http.ResponseWriter, r *http.Request) {
-	var req TenantRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := h.svc.ListCategories(r.Context(), req.TenantID)
+func (h *Handler) ListCategories(ctx context.Context, req *connect.Request[TenantRequest]) (*connect.Response[ListCategoriesResponse], error) {
+	out, err := h.svc.ListCategories(ctx, req.Msg.TenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&ListCategoriesResponse{Categories: out}), nil
 }
 
-func (h *Handler) CreateBrand(w http.ResponseWriter, r *http.Request) {
-	var req CreateBrandRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	b := &domain.Brand{
-		TenantID:  req.TenantID,
-		Name:      req.Name,
-		Slug:      req.Slug,
-		LogoURL:   req.LogoURL,
-		CreatedBy: req.CreatedBy,
-	}
-	result, err := h.svc.CreateBrand(r.Context(), b)
+func (h *Handler) CreateBrand(ctx context.Context, req *connect.Request[CreateBrandRequest]) (*connect.Response[BrandResponse], error) {
+	m := req.Msg
+	out, err := h.svc.CreateBrand(ctx, &domain.Brand{
+		TenantID:  m.TenantID,
+		Name:      m.Name,
+		Slug:      m.Slug,
+		LogoURL:   m.LogoURL,
+		CreatedBy: m.CreatedBy,
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&BrandResponse{Brand: out}), nil
 }
 
-func (h *Handler) ListBrands(w http.ResponseWriter, r *http.Request) {
-	var req TenantRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := h.svc.ListBrands(r.Context(), req.TenantID)
+func (h *Handler) ListBrands(ctx context.Context, req *connect.Request[TenantRequest]) (*connect.Response[ListBrandsResponse], error) {
+	out, err := h.svc.ListBrands(ctx, req.Msg.TenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&ListBrandsResponse{Brands: out}), nil
 }
 
-func (h *Handler) CreateProduct(w http.ResponseWriter, r *http.Request) {
-	var req CreateProductRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	p := &domain.Product{
-		TenantID:    req.TenantID,
-		CategoryID:  req.CategoryID,
-		BrandID:     req.BrandID,
-		Name:        req.Name,
-		Slug:        req.Slug,
-		Description: req.Description,
-		ProductType: req.ProductType,
-		Status:      req.Status,
-		CreatedBy:   req.CreatedBy,
-	}
-	result, err := h.svc.CreateProduct(r.Context(), p)
+func (h *Handler) CreateProduct(ctx context.Context, req *connect.Request[CreateProductRequest]) (*connect.Response[ProductResponse], error) {
+	m := req.Msg
+	out, err := h.svc.CreateProduct(ctx, &domain.Product{
+		TenantID:    m.TenantID,
+		CategoryID:  m.CategoryID,
+		BrandID:     m.BrandID,
+		Name:        m.Name,
+		Slug:        m.Slug,
+		Description: m.Description,
+		ProductType: m.ProductType,
+		Status:      m.Status,
+		CreatedBy:   m.CreatedBy,
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&ProductResponse{Product: out}), nil
 }
 
-func (h *Handler) GetProduct(w http.ResponseWriter, r *http.Request) {
-	var req IDTenantRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := h.svc.GetProduct(r.Context(), req.ID, req.TenantID)
+func (h *Handler) GetProduct(ctx context.Context, req *connect.Request[IDTenantRequest]) (*connect.Response[ProductResponse], error) {
+	out, err := h.svc.GetProduct(ctx, req.Msg.ID, req.Msg.TenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&ProductResponse{Product: out}), nil
 }
 
-func (h *Handler) ListProducts(w http.ResponseWriter, r *http.Request) {
-	var req ListProductsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := h.svc.ListProducts(r.Context(), req.TenantID, req.ProductType, req.Status)
+func (h *Handler) ListProducts(ctx context.Context, req *connect.Request[ListProductsRequest]) (*connect.Response[ListProductsResponse], error) {
+	m := req.Msg
+	out, err := h.svc.ListProducts(ctx, m.TenantID, m.ProductType, m.Status)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&ListProductsResponse{Products: out}), nil
 }
 
-func (h *Handler) CreateSKU(w http.ResponseWriter, r *http.Request) {
-	var req CreateSKURequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	sku := &domain.SKU{
-		TenantID:  req.TenantID,
-		ProductID: req.ProductID,
-		Code:      req.Code,
-		Name:      req.Name,
-		Price:     req.Price,
-		Currency:  req.Currency,
-		Unit:      req.Unit,
-		UnitSize:  req.UnitSize,
-		Status:    req.Status,
-		CreatedBy: req.CreatedBy,
-	}
-	result, err := h.svc.CreateSKU(r.Context(), sku)
+func (h *Handler) CreateSKU(ctx context.Context, req *connect.Request[CreateSKURequest]) (*connect.Response[SKUResponse], error) {
+	m := req.Msg
+	out, err := h.svc.CreateSKU(ctx, &domain.SKU{
+		TenantID:  m.TenantID,
+		ProductID: m.ProductID,
+		Code:      m.Code,
+		Name:      m.Name,
+		Price:     m.Price,
+		Currency:  m.Currency,
+		Unit:      m.Unit,
+		UnitSize:  m.UnitSize,
+		Status:    m.Status,
+		CreatedBy: m.CreatedBy,
+	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&SKUResponse{SKU: out}), nil
 }
 
-func (h *Handler) GetSKU(w http.ResponseWriter, r *http.Request) {
-	var req IDTenantRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := h.svc.GetSKU(r.Context(), req.ID, req.TenantID)
+func (h *Handler) GetSKU(ctx context.Context, req *connect.Request[IDTenantRequest]) (*connect.Response[SKUResponse], error) {
+	out, err := h.svc.GetSKU(ctx, req.Msg.ID, req.Msg.TenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&SKUResponse{SKU: out}), nil
 }
 
-func (h *Handler) ListProductSKUs(w http.ResponseWriter, r *http.Request) {
-	var req ListProductSKUsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := h.svc.ListProductSKUs(r.Context(), req.ProductID, req.TenantID)
+func (h *Handler) ListProductSKUs(ctx context.Context, req *connect.Request[ListProductSKUsRequest]) (*connect.Response[ListProductSKUsResponse], error) {
+	out, err := h.svc.ListProductSKUs(ctx, req.Msg.ProductID, req.Msg.TenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&ListProductSKUsResponse{SKUs: out}), nil
 }
 
-func (h *Handler) UpdateSKUPrice(w http.ResponseWriter, r *http.Request) {
-	var req UpdateSKUPriceRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	result, err := h.svc.UpdateSKUPrice(r.Context(), req.ID, req.TenantID, req.Price, req.UpdatedBy)
+func (h *Handler) UpdateSKUPrice(ctx context.Context, req *connect.Request[UpdateSKUPriceRequest]) (*connect.Response[SKUResponse], error) {
+	m := req.Msg
+	out, err := h.svc.UpdateSKUPrice(ctx, m.ID, m.TenantID, m.Price, m.UpdatedBy)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, classify(err)
 	}
-	writeJSON(w, http.StatusOK, result)
+	return connect.NewResponse(&SKUResponse{SKU: out}), nil
 }

@@ -2,11 +2,27 @@ package service
 
 import (
 	"context"
-	"fmt"
+	"errors"
 
 	"github.com/ppusapati/gavya/services/reporting-service/internal/domain"
 	ulidpkg "p9e.in/samavaya/packages/ULID"
 )
+
+// ErrInvalidArgument marks a caller mistake. Without it the handler cannot tell
+// "the report is not ready yet" from "the query failed", and would have to
+// report both the same way.
+var ErrInvalidArgument = errors.New("invalid argument")
+
+// invalidArgument carries the reason alone. The marker is matched through Is,
+// so errors.Is finds it while the message stays free of a prefix the error code
+// already conveys.
+type invalidArgument struct{ reason string }
+
+func (e *invalidArgument) Error() string { return e.reason }
+
+func (e *invalidArgument) Is(target error) bool { return target == ErrInvalidArgument }
+
+func invalid(msg string) error { return &invalidArgument{reason: msg} }
 
 func (s *Service) RequestReport(ctx context.Context, tenantID, name, reportType, parameters, fileFormat, requestedBy, createdBy string) (*domain.Report, error) {
 	r := &domain.Report{
@@ -38,7 +54,7 @@ func (s *Service) GetReportDownloadURL(ctx context.Context, id, tenantID string)
 		return "", err
 	}
 	if rep.FilePath == "" {
-		return "", fmt.Errorf("report file not yet available")
+		return "", invalid("report file not yet available")
 	}
 	return rep.FilePath, nil
 }

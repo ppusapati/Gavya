@@ -24,10 +24,10 @@ var ErrDuplicateSlug = errors.New("a tenant with that slug already exists")
 // Columns are listed explicitly rather than selected with *, because the scans
 // below are positional: adding a column to the table would silently misalign
 // every field after it.
-const tenantCols = `id,name,slug,plan,status,contact_email,contact_phone,address,country,` +
+const tenantCols = `id,name,slug,plan,status,contact_email,COALESCE(contact_phone,''),COALESCE(address,''),country,` +
 	`timezone,currency,max_users,max_cattle,created_at,updated_at,created_by,updated_by,deleted_at`
 
-const settingCols = `id,tenant_id,key,value,data_type,created_at,updated_at,created_by,updated_by`
+const settingCols = `id,tenant_id,key,COALESCE(value,''),data_type,created_at,updated_at,created_by,updated_by`
 
 type Repository interface {
 	CreateTenant(ctx context.Context, t *domain.Tenant) (*domain.Tenant, error)

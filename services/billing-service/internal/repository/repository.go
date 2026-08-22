@@ -25,15 +25,15 @@ var ErrDuplicateInvoiceNumber = errors.New("an invoice with that number already 
 // Columns are listed explicitly rather than selected with *, because the scans
 // below are positional: adding a column to the table would silently misalign
 // every field after it.
-const invoiceCols = `id,tenant_id,customer_id,invoice_number,reference_id,reference_type,status,` +
-	`sub_total,tax_amount,total_amount,currency,issued_at,due_at,paid_at,notes,created_at,` +
+const invoiceCols = `id,tenant_id,customer_id,invoice_number,COALESCE(reference_id,''),COALESCE(reference_type,''),status,` +
+	`sub_total,tax_amount,total_amount,currency,issued_at,due_at,COALESCE(paid_at,'0001-01-01 00:00:00+00'::timestamptz),COALESCE(notes,''),created_at,` +
 	`updated_at,created_by,updated_by,deleted_at`
 
 const invoiceItemCols = `id,tenant_id,invoice_id,description,quantity,unit_price,total_price,` +
 	`tax_rate,created_at,updated_at,created_by,updated_by`
 
-const paymentCols = `id,tenant_id,invoice_id,amount,currency,payment_method,reference_no,paid_at,` +
-	`notes,created_at,updated_at,created_by,updated_by`
+const paymentCols = `id,tenant_id,invoice_id,amount,currency,payment_method,COALESCE(reference_no,''),paid_at,` +
+	`COALESCE(notes,''),created_at,updated_at,created_by,updated_by`
 
 type Repository interface {
 	CreateInvoice(ctx context.Context, inv *domain.Invoice) (*domain.Invoice, error)
