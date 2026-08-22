@@ -23,9 +23,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/ppusapati/gavya/libs/integrity/svcclient"
 )
@@ -101,6 +104,8 @@ func startPlatform(t *testing.T) *platform {
 	p := &platform{clients: map[string]*svcclient.Client{}, tenant: newID("tnt")}
 
 	for _, svc := range services {
+		prepareDatabase(t, svc)
+
 		bin := filepath.Join(binDir, svc.name)
 		build := exec.Command("go", "build", "-o", bin, "./cmd/server")
 		build.Dir = filepath.Join(root, "services", svc.name)
@@ -140,6 +145,85 @@ func startPlatform(t *testing.T) *platform {
 	}
 
 	return p
+}
+
+// prepared remembers which databases this process has already set up, so the
+// work happens once however many tests start a platform.
+var (
+	prepared   = map[string]bool{}
+	prepareMu  sync.Mutex
+	schemaOnce = map[string]error{}
+)
+
+// prepareDatabase creates a service's database if it is missing and applies its
+// schema.
+//
+// The harness owns this rather than expecting an operator to have run it: a
+// suite that silently assumes a hand-migrated database fails with a connection
+// error the first time someone new runs it, and passes against a schema that
+// may be several changes behind.
+func prepareDatabase(t *testing.T, svc service) {
+	t.Helper()
+	prepareMu.Lock()
+	defer prepareMu.Unlock()
+	if prepared[svc.database] {
+		if err := schemaOnce[svc.database]; err != nil {
+			t.Fatalf("prepare %s: %v", svc.database, err)
+		}
+		return
+	}
+	prepared[svc.database] = true
+
+	err := func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		// "postgres" is the maintenance database every server has; a database
+		// cannot be created from a connection to itself.
+		admin, err := pgx.Connect(ctx, dsn(t, "postgres"))
+		if err != nil {
+			return fmt.Errorf("connect to the maintenance database: %w", err)
+		}
+		defer admin.Close(ctx)
+
+		var exists bool
+		if err := admin.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname=$1)`, svc.database).Scan(&exists); err != nil {
+			return fmt.Errorf("look for %s: %w", svc.database, err)
+		}
+		if !exists {
+			// The name comes from this file, not from any input, so interpolating
+			// it is the only way to say CREATE DATABASE — which takes no
+			// parameters.
+			if _, err := admin.Exec(ctx, `CREATE DATABASE "`+svc.database+`"`); err != nil {
+				return fmt.Errorf("create %s: %w", svc.database, err)
+			}
+		}
+
+		sql, err := os.ReadFile(filepath.Join(repoRoot(t), svc.schema))
+		if err != nil {
+			return fmt.Errorf("read schema: %w", err)
+		}
+
+		conn, err := pgx.Connect(ctx, dsn(t, svc.database))
+		if err != nil {
+			return fmt.Errorf("connect to %s: %w", svc.database, err)
+		}
+		defer conn.Close(ctx)
+
+		// Every schema here is written with IF NOT EXISTS, so applying it to a
+		// database left behind by an earlier run is a no-op rather than a
+		// failure.
+		if _, err := conn.Exec(ctx, string(sql)); err != nil {
+			return fmt.Errorf("apply schema to %s: %w", svc.database, err)
+		}
+		return nil
+	}()
+
+	schemaOnce[svc.database] = err
+	if err != nil {
+		t.Fatalf("prepare %s: %v", svc.database, err)
+	}
 }
 
 func waitReady(t *testing.T, c *svcclient.Client, name string) {
