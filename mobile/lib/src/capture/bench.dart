@@ -79,6 +79,11 @@ class Bench extends ChangeNotifier {
   String? lastError;
   String? lastNotice;
 
+  /// Called when a capture could not be delivered, so whatever is watching can
+  /// start trying again. Kept as a callback rather than a dependency so the
+  /// bench stays testable without a retry loop attached.
+  void Function()? onBacklog;
+
   bool get configured => gatewayUrl.isNotEmpty && tenantId.isNotEmpty && operatorRef.isNotEmpty;
   bool get provisioned => configured && deviceId.isNotEmpty;
   bool get canCapture => provisioned && sessionOpen && !needsGenerationRoll;
@@ -211,6 +216,52 @@ class Bench extends ChangeNotifier {
     });
   }
 
+  /// Checks with the service that the session this bench thinks it is in is
+  /// still open, and brings the sequence counter up to what the server has seen.
+  ///
+  /// Without this, a bench that restarts believes whatever was on its disk. If
+  /// the session had been closed — by an operator on another device, or by the
+  /// generation being rolled — it would keep taking collections into a session
+  /// that refuses them, and nobody would find out until the next manual sync,
+  /// possibly a morning's milk later.
+  ///
+  /// Reopening is idempotent and never reopens a closed session: the service
+  /// returns the session that exists, and its status is what decides whether
+  /// this bench may go on collecting.
+  Future<void> rejoinSession() async {
+    if (!provisioned || externalSessionId.isEmpty) return;
+
+    final CaptureSession session;
+    try {
+      session = await _api.openSession(
+        deviceId: deviceId,
+        externalSessionId: externalSessionId,
+        operatorRef: operatorRef,
+        actor: operatorRef,
+      );
+    } on ApiException {
+      // No answer is not evidence the session is gone. The bench keeps what it
+      // knows and asks again later; its records are safe either way.
+      return;
+    }
+
+    final wasOpen = sessionOpen;
+    sessionId = session.id;
+    sessionOpen = session.isOpen;
+    generation = session.generation;
+    await _store.write(_kSessionId, sessionId);
+    await _store.write(_kGeneration, generation.toString());
+    await outbox.alignTo(session);
+
+    if (wasOpen && !sessionOpen) {
+      // This one is worth interrupting for: the bench cannot collect, and an
+      // operator who does not know that is about to lose their next hour.
+      lastError = 'Session ${session.externalSessionId} has been closed. '
+          'Open a new one before collecting anything else.';
+    }
+    notifyListeners();
+  }
+
   Future<void> closeSession() async {
     await _guard(() async {
       if (outbox.pending.isNotEmpty) {
@@ -247,19 +298,28 @@ class Bench extends ChangeNotifier {
     // A failure here is not the operator's problem: the record is safe and the
     // next sync will carry it.
     await _deliverOne(entry, quiet: true);
+    if (outbox.pending.isNotEmpty) onBacklog?.call();
     return entry;
   }
 
   /// Delivers everything the bench is holding.
-  Future<void> sync() async {
+  ///
+  /// A quiet sync is one nobody asked for — the app noticing it has signal, or
+  /// retrying after a failure. It reports nothing on its own, because an
+  /// operator with their hands in the milk does not need a message every time
+  /// the network comes and goes. What it does still do is move the records.
+  Future<bool> sync({bool quiet = false}) async {
     final queue = outbox.pending;
     if (queue.isEmpty) {
-      lastNotice = 'Nothing to send.';
-      notifyListeners();
-      return;
+      if (!quiet) {
+        lastNotice = 'Nothing to send.';
+        notifyListeners();
+      }
+      return true;
     }
 
-    await _guard(() async {
+    var delivered = false;
+    await _guard(quiet: quiet, () async {
       const chunk = 100;
       var accepted = 0, replayed = 0, quarantined = 0;
 
@@ -294,13 +354,19 @@ class Bench extends ChangeNotifier {
         }
       }
 
+      delivered = true;
       final parts = <String>[
         if (accepted > 0) '$accepted sent',
         if (replayed > 0) '$replayed already had',
         if (quarantined > 0) '$quarantined held for review',
       ];
-      lastNotice = parts.isEmpty ? 'Nothing was accepted.' : '${parts.join(', ')}.';
+      final summary = parts.isEmpty ? 'Nothing was accepted.' : '${parts.join(', ')}.';
+      // A quarantined record is the one outcome worth interrupting for, even
+      // when nobody asked for this sync: it means something the bench recorded
+      // is not being counted.
+      if (!quiet || quarantined > 0) lastNotice = summary;
     });
+    return delivered;
   }
 
   Future<void> dismissHeld(String localId) async {
@@ -323,7 +389,7 @@ class Bench extends ChangeNotifier {
     }
   }
 
-  Future<void> _guard(Future<void> Function() body) async {
+  Future<void> _guard(Future<void> Function() body, {bool quiet = false}) async {
     busy = true;
     lastError = null;
     lastNotice = null;
@@ -331,9 +397,12 @@ class Bench extends ChangeNotifier {
     try {
       await body();
     } on ApiException catch (e) {
-      lastError = e.humane;
+      // An unreachable service during a sync nobody asked for is the normal
+      // state between one patch of signal and the next. Saying so every time
+      // would train an operator to ignore the app's messages.
+      if (!quiet) lastError = e.humane;
     } catch (e) {
-      lastError = e.toString();
+      if (!quiet) lastError = e.toString();
     } finally {
       busy = false;
       notifyListeners();

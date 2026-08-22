@@ -42,6 +42,24 @@ the existing device — and then refuses to record anything until a new generati
 is opened, with a reason. Without that, every record it sent would collide with
 what it sent before and be held rather than counted.
 
+## It syncs by itself
+
+An offline queue that only empties when someone taps a button is not an offline
+queue. The app retries on its own whenever there is something waiting: on
+capture, on returning to the foreground, and on a backoff that doubles from five
+seconds to five minutes and resets the moment an attempt succeeds. It stops
+entirely when the outbox is empty, so an idle bench costs nothing.
+
+Automatic attempts stay quiet. Losing signal at a bench is the normal state, not
+news, and an app that announced every reconnection would train an operator to
+ignore it. The one exception is a record the service quarantined — that is
+something the bench recorded which is not being counted, and it interrupts.
+
+Returning to the foreground also re-checks the session. A bench that restarts
+believes whatever is on its disk; if the session had been closed meanwhile it
+would keep collecting into one that refuses records, and nobody would find out
+until the next sync.
+
 ## Screens
 
 | Tab | |

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'src/capture/bench.dart';
 import 'src/capture/store.dart';
+import 'src/capture/syncer.dart';
 import 'src/ui/app.dart';
 
 /// The Gavya bench capture utility.
@@ -18,5 +19,10 @@ Future<void> main() async {
   final bench = Bench(store);
   await bench.bootstrap();
 
-  runApp(BenchApp(bench: bench));
+  // The outbox drains on its own. Nothing about a bench's day guarantees anyone
+  // will remember to press a button when the signal comes back.
+  final syncer = Syncer(bench);
+  bench.onBacklog = syncer.nudge;
+
+  runApp(BenchApp(bench: bench, syncer: syncer));
 }

@@ -1,15 +1,22 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../capture/bench.dart';
+import '../capture/syncer.dart';
 import 'capture_screen.dart';
 import 'outbox_screen.dart';
 import 'setup_screen.dart';
 import 'theme.dart';
 
 class BenchApp extends StatelessWidget {
-  const BenchApp({super.key, required this.bench});
+  const BenchApp({super.key, required this.bench, this.syncer});
 
   final Bench bench;
+
+  /// Omitted in tests that are not exercising the sync loop, so a widget test
+  /// does not start a retry timer that outlives it.
+  final Syncer? syncer;
 
   @override
   Widget build(BuildContext context) {
@@ -17,33 +24,54 @@ class BenchApp extends StatelessWidget {
       title: 'Gavya bench',
       theme: benchTheme(Brightness.light),
       darkTheme: benchTheme(Brightness.dark),
-      home: BenchHome(bench: bench),
+      home: BenchHome(bench: bench, syncer: syncer),
     );
   }
 }
 
 class BenchHome extends StatefulWidget {
-  const BenchHome({super.key, required this.bench});
+  const BenchHome({super.key, required this.bench, this.syncer});
 
   final Bench bench;
+  final Syncer? syncer;
 
   @override
   State<BenchHome> createState() => _BenchHomeState();
 }
 
-class _BenchHomeState extends State<BenchHome> {
+class _BenchHomeState extends State<BenchHome> with WidgetsBindingObserver {
   int _tab = 0;
 
   @override
   void initState() {
     super.initState();
     widget.bench.addListener(_onBenchChanged);
+    if (widget.syncer != null) {
+      WidgetsBinding.instance.addObserver(this);
+      // Coming back to a bench after a night away: check the session is still
+      // one this device may collect into, then move whatever is waiting.
+      unawaited(widget.bench.rejoinSession());
+      widget.syncer!.nudge();
+    }
   }
 
   @override
   void dispose() {
+    if (widget.syncer != null) {
+      WidgetsBinding.instance.removeObserver(this);
+      widget.syncer!.stop();
+    }
     widget.bench.removeListener(_onBenchChanged);
     super.dispose();
+  }
+
+  /// Returning to the foreground is the app's best evidence that the situation
+  /// has changed — the operator has usually walked somewhere on purpose.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed || widget.syncer == null) return;
+    unawaited(widget.bench.rejoinSession());
+    widget.syncer!.nudge();
   }
 
   /// Messages are shown once and then cleared, so a notice from one action does
