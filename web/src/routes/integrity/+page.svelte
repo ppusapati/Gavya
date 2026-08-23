@@ -2,6 +2,7 @@
 	import { page } from '$app/state';
 	import type { Classification, DivergenceStatus, ListDivergencesResponse } from '$lib/api';
 	import { classificationTone, instant, label, shortId, statusTone } from '$lib/display';
+	import { formatMinorUnits } from '$lib/money';
 	import { settings } from '$lib/settings.svelte';
 	import { Task } from '$lib/task.svelte';
 	import Await from '$lib/ui/Await.svelte';
@@ -151,8 +152,7 @@
 						<tr>
 							<td class="mono">{d.producer_ref}</td>
 							<td class="num" class:against={d.delta_minor_units < 0}>
-								{d.delta}
-								<span class="cur">{d.currency}</span>
+								{formatMinorUnits(d.delta_minor_units, d.amount_scale, d.currency)}
 							</td>
 							<td>
 								<Chip tone={classificationTone(d.classification)} title={d.rationale}>
@@ -197,11 +197,6 @@
 		font-size: 0.82rem;
 	}
 
-	.cur {
-		font-size: 0.72rem;
-		color: var(--muted);
-		margin-left: 0.3rem;
-	}
 
 	/* A negative delta means the incumbent paid less than the recomputation says
 	   it should have, which is the direction a producer would dispute. */

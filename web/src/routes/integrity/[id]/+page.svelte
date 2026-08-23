@@ -2,11 +2,11 @@
 	import { page } from '$app/state';
 	import {
 		ApiError,
-		formatMinorUnits,
 		type DivergenceStatus,
 		type Evidence,
 		type GetDivergenceResponse
 	} from '$lib/api';
+	import { formatMinorUnits, formatMinorUnitsPlain } from '$lib/money';
 	import { classificationTone, instant, label, statusTone } from '$lib/display';
 	import { settings } from '$lib/settings.svelte';
 	import { Task } from '$lib/task.svelte';
@@ -93,8 +93,9 @@
 			<div class="panel">
 				<div class="headline">
 					<div>
-						<span class="delta" class:against={d.delta_minor_units < 0}>{d.delta}</span>
-						<span class="cur">{d.currency}</span>
+						<span class="delta" class:against={d.delta_minor_units < 0}>
+							{formatMinorUnits(d.delta_minor_units, d.amount_scale, d.currency)}
+						</span>
 						<p class="muted direction">
 							{#if d.delta_minor_units < 0}
 								The incumbent settled for less than the platform's recomputation.
@@ -150,10 +151,10 @@
 								{#each d.evidence as e, i (e.kind + i)}
 									<tr>
 										<td>{label(e.kind)}</td>
-										<td class="num">{formatMinorUnits(e.external_minor_units, d.amount_scale)}</td>
-										<td class="num">{formatMinorUnits(e.shadow_minor_units, d.amount_scale)}</td>
+										<td class="num">{formatMinorUnitsPlain(e.external_minor_units, d.amount_scale)}</td>
+										<td class="num">{formatMinorUnitsPlain(e.shadow_minor_units, d.amount_scale)}</td>
 										<td class="num" class:nonzero={e.delta_minor_units !== 0}>
-											{formatMinorUnits(e.delta_minor_units, d.amount_scale)}
+											{formatMinorUnitsPlain(e.delta_minor_units, d.amount_scale)}
 										</td>
 										<td class="muted">{side(e)}</td>
 									</tr>
@@ -254,12 +255,6 @@
 		color: var(--critical);
 	}
 
-	.cur {
-		font-family: var(--mono);
-		font-size: 0.9rem;
-		color: var(--muted);
-		margin-left: 0.35rem;
-	}
 
 	.direction {
 		margin: 0.35rem 0 0;

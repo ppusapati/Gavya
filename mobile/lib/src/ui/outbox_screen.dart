@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../capture/bench.dart';
+import '../capture/money.dart';
 import '../capture/outbox.dart';
 import 'theme.dart';
 
@@ -110,7 +111,8 @@ class _EntryCard extends StatelessWidget {
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    '${payload['producer_ref'] ?? '—'} · ${payload['quantity_litres'] ?? '—'} L',
+                    '${payload['producer_ref'] ?? '—'} · '
+                    '${formatQuantity((payload['quantity_litres'] as String?) ?? '—', 'L')}',
                     style: Theme.of(context).textTheme.bodyMedium,
                     overflow: TextOverflow.ellipsis,
                   ),

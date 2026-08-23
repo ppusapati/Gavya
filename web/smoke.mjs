@@ -194,7 +194,19 @@ if (rows !== 1) problems.push(`integrity queue rendered ${rows} rows, expected 1
 
 await page.goto('http://localhost:4173/integrity/01JGAVYADIVERGENCE0000001A', { waitUntil: 'networkidle' });
 const detail = await page.locator('main').innerText();
-for (const must of ['-451.20', 'Unexplained', 'Advisory', 'divergence-0.3.1', 'Record a decision']) {
+// The headline delta carries its currency, because that is the figure a
+// reviewer decides on. The evidence rows stay bare, because repeating the
+// symbol on every cell of a comparison table is noise — both are asserted so
+// neither can drift into the other.
+for (const must of [
+	'-\u20B9451.20',
+	'1200.00',
+	'1651.20',
+	'Unexplained',
+	'Advisory',
+	'divergence-0.3.1',
+	'Record a decision'
+]) {
 	if (!detail.includes(must)) problems.push(`detail page is missing ${JSON.stringify(must)}`);
 }
 if (!detail.includes('settled for less')) problems.push('detail page did not state the direction of the difference');

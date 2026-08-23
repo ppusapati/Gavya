@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { formatMinorUnits, type ClassSummary, type SummariseResponse } from '$lib/api';
+	import type { ClassSummary, SummariseResponse } from '$lib/api';
+	import { formatMinorUnits } from '$lib/money';
 	import { classificationTone, label } from '$lib/display';
 	import { settings } from '$lib/settings.svelte';
 	import { Task } from '$lib/task.svelte';
@@ -50,8 +51,10 @@
 	);
 	const adjudicated = $derived(rows.reduce((n, r) => n + r.count, 0));
 
+	// The scale comes from the row rather than from the currency table, because
+	// the stored scale is what the figure actually means.
 	function amount(r: ClassSummary): string {
-		return `${formatMinorUnits(r.total_abs_minor_units, r.amount_scale)} ${r.currency}`;
+		return formatMinorUnits(r.total_abs_minor_units, r.amount_scale, r.currency);
 	}
 </script>
 

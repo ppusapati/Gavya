@@ -4,15 +4,6 @@ import * as T from './types';
 export { ApiClient, ApiError };
 export * from './types';
 
-/** Formats minor units for display, e.g. 5000 at scale 2 in INR -> "50.00". */
-export function formatMinorUnits(minorUnits: number, scale: number): string {
-	const negative = minorUnits < 0;
-	const digits = Math.abs(minorUnits).toString().padStart(scale + 1, '0');
-	const whole = digits.slice(0, digits.length - scale);
-	const frac = scale > 0 ? '.' + digits.slice(digits.length - scale) : '';
-	return `${negative ? '-' : ''}${whole}${frac}`;
-}
-
 /**
  * Facade over the procedures the workspaces actually use.
  *
