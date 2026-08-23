@@ -17,6 +17,15 @@ metadata:
 data:
   SERVICE_NAME: observation-service
   SERVER_ADDR: ":8092"
+  # The measurement-control law this deployment operates under. There is no
+  # default and the service will not start without it: an eligibility verdict
+  # cites a statute, and citing the wrong one tells an operator their instrument
+  # failed a law that does not reach them.
+  #
+  # One of IN_LEGAL_METROLOGY, EU_MID, US_NIST_HB44, KE_WEIGHTS_MEASURES, or
+  # NONE. NONE is a deliberate answer — every observation is eligible and the
+  # reason says the check did not apply — not a way to skip the question.
+  MEASUREMENT_REGIME: "IN_LEGAL_METROLOGY"
   # Both ML endpoints are left unset by default. The service records every
   # observation without them; it simply states no confidence and flags nothing.
   UNCERTAINTY_ML_URL: ""

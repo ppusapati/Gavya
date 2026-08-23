@@ -17,6 +17,7 @@ import (
 	"p9e.in/samavaya/packages/p9log"
 
 	"github.com/ppusapati/gavya/services/observation-service/internal/config"
+	"github.com/ppusapati/gavya/services/observation-service/internal/domain"
 	"github.com/ppusapati/gavya/services/observation-service/internal/handler"
 	"github.com/ppusapati/gavya/services/observation-service/internal/repository"
 	"github.com/ppusapati/gavya/services/observation-service/internal/service"
@@ -61,7 +62,17 @@ func main() {
 	}
 
 	repo := repository.New(pool)
-	svc := service.New(repo, log, uncertainty, anomaly)
+	// The measurement-control regime is required, and the service refuses to
+	// start without one. Defaulting it would mean a deployment in a country
+	// nobody configured issuing eligibility verdicts that cite the wrong law —
+	// and looking, to every reader, exactly like one that had been configured.
+	regime, err := domain.LookupRegime(cfg.MeasurementRegime)
+	if err != nil {
+		log.Fatalf("MEASUREMENT_REGIME: %v", err)
+	}
+	log.Infof("eligibility assessed under %s (%s)", regime.Name, regime.ID)
+
+	svc := service.New(repo, log, uncertainty, anomaly, regime)
 	h := handler.New(svc)
 
 	mux := http.NewServeMux()

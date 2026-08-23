@@ -306,6 +306,11 @@ services:
       SERVICE_NAME: observation-service
       SERVER_ADDR: ":8092"
       DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+      # Which measurement-control law this deployment operates under. Required:
+      # the service refuses to start without it, because an eligibility verdict
+      # cites a statute and the wrong one is worse than none. One of
+      # IN_LEGAL_METROLOGY, EU_MID, US_NIST_HB44, KE_WEIGHTS_MEASURES, or NONE.
+      MEASUREMENT_REGIME: "${MEASUREMENT_REGIME:-IN_LEGAL_METROLOGY}"
       UNCERTAINTY_ML_URL: "http://uncertainty-service:9102"
       ANOMALY_ML_URL: "http://anomaly-service:9101"
     depends_on:

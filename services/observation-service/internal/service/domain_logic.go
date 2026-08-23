@@ -132,7 +132,7 @@ func (s *Service) RecordObservation(ctx context.Context, in RecordObservationInp
 // legal-metrology rule to it.
 func (s *Service) assessEligibility(ctx context.Context, tenantID, instrumentID string, at time.Time, quantity domain.QuantityKind) (domain.Eligibility, error) {
 	if instrumentID == "" {
-		return domain.AssessEligibility(nil, at, quantity), nil
+		return domain.AssessEligibility(s.regime, nil, at, quantity), nil
 	}
 	cert, err := s.repo.GetActiveCertificate(ctx, tenantID, instrumentID, at)
 	if err != nil && !errors.Is(err, repository.ErrNotFound) {
@@ -141,7 +141,7 @@ func (s *Service) assessEligibility(ctx context.Context, tenantID, instrumentID 
 	if errors.Is(err, repository.ErrNotFound) {
 		cert = nil
 	}
-	return domain.AssessEligibility(cert, at, quantity), nil
+	return domain.AssessEligibility(s.regime, cert, at, quantity), nil
 }
 
 // attachUncertainty asks the Rust uncertainty service for the measurement

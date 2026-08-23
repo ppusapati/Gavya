@@ -211,7 +211,7 @@ func TestAssessEligibility(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := AssessEligibility(c.cert, c.observedAt, c.quantity)
+			got := AssessEligibility(RegimeIndiaLegalMetrology, c.cert, c.observedAt, c.quantity)
 			if got.Verdict != c.want {
 				t.Errorf("verdict = %s, want %s (reason: %s)", got.Verdict, c.want, got.Reason)
 			}
@@ -234,12 +234,12 @@ func TestAssessEligibilityIsZoneIndependent(t *testing.T) {
 	ist := time.FixedZone("IST", 5*3600+1800)
 	// 2027-01-01T05:29:59+05:30 is 2026-12-31T23:59:59Z, still inside.
 	inside := time.Date(2027, 1, 1, 5, 29, 59, 0, ist)
-	if got := AssessEligibility(certificate(), inside, QuantityVolumeLitres); got.Verdict != EligibilityEligible {
+	if got := AssessEligibility(RegimeIndiaLegalMetrology, certificate(), inside, QuantityVolumeLitres); got.Verdict != EligibilityEligible {
 		t.Errorf("%s: verdict = %s, want ELIGIBLE (%s)", inside, got.Verdict, got.Reason)
 	}
 	// 2027-01-01T05:30:00+05:30 is exactly the expiry instant.
 	atExpiry := time.Date(2027, 1, 1, 5, 30, 0, 0, ist)
-	if got := AssessEligibility(certificate(), atExpiry, QuantityVolumeLitres); got.Verdict != EligibilityNotEligible {
+	if got := AssessEligibility(RegimeIndiaLegalMetrology, certificate(), atExpiry, QuantityVolumeLitres); got.Verdict != EligibilityNotEligible {
 		t.Errorf("%s: verdict = %s, want NOT_ELIGIBLE (%s)", atExpiry, got.Verdict, got.Reason)
 	}
 }
@@ -247,9 +247,9 @@ func TestAssessEligibilityIsZoneIndependent(t *testing.T) {
 func TestAssessEligibilityIsDeterministic(t *testing.T) {
 	cert := certificate()
 	at := time.Date(2026, 6, 15, 5, 30, 0, 0, time.UTC)
-	first := AssessEligibility(cert, at, QuantityFatPercent)
+	first := AssessEligibility(RegimeIndiaLegalMetrology, cert, at, QuantityFatPercent)
 	for i := 0; i < 100; i++ {
-		again := AssessEligibility(cert, at, QuantityFatPercent)
+		again := AssessEligibility(RegimeIndiaLegalMetrology, cert, at, QuantityFatPercent)
 		if again != first {
 			t.Fatalf("call %d returned %+v, want the identical %+v", i, again, first)
 		}
@@ -273,7 +273,7 @@ func TestEveryVerdictIsInTheVocabularyAndExplained(t *testing.T) {
 	for _, q := range quantities {
 		for _, at := range instants {
 			for _, cert := range certs {
-				got := AssessEligibility(cert, at, q)
+				got := AssessEligibility(RegimeIndiaLegalMetrology, cert, at, q)
 				switch got.Verdict {
 				case EligibilityEligible, EligibilityNotEligible, EligibilityUnknown:
 				default:

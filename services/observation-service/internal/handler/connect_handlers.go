@@ -379,7 +379,7 @@ func (h *Handler) GetActiveCertificate(ctx context.Context, req *connect.Request
 	}
 	out := &GetActiveCertificateResponse{Certificate: toCertificateProto(c)}
 	if m.Quantity != "" {
-		verdict := domain.AssessEligibility(c, at, domain.QuantityKind(m.Quantity))
+		verdict := domain.AssessEligibility(h.svc.Regime(), c, at, domain.QuantityKind(m.Quantity))
 		out.Eligibility = &EligibilityProto{
 			Verdict:       string(verdict.Verdict),
 			Reason:        verdict.Reason,

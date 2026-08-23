@@ -63,6 +63,16 @@ const (
 	QuantityAdulterationIndex QuantityKind = "ADULTERATION_INDEX"
 )
 
+// AllQuantityKinds is the closed vocabulary, in one place, so a regime can be
+// defined by what it excludes rather than by relisting everything it covers.
+func AllQuantityKinds() []QuantityKind {
+	return []QuantityKind{
+		QuantityVolumeLitres, QuantityMassKG, QuantityFatPercent, QuantitySNFPercent,
+		QuantityLactosePercent, QuantityProteinPercent, QuantityTemperatureC,
+		QuantitySomaticCellCount, QuantityAdulterationIndex,
+	}
+}
+
 func (q QuantityKind) Valid() bool {
 	switch q {
 	case QuantityVolumeLitres, QuantityMassKG, QuantityFatPercent, QuantitySNFPercent,
@@ -75,8 +85,11 @@ func (q QuantityKind) Valid() bool {
 }
 
 // IsTradeCritical reports whether this quantity enters the price a producer is
-// paid. Only these are subject to legal metrology: an instrument that does not
-// determine money is not a trade instrument under the Act.
+// paid.
+//
+// Whether a paying quantity is *regulated* is a regime's decision, not this
+// type's — see Regime.Regulates. This stays because "does money rest on it" is
+// a fact about the quantity itself, and every regime starts from it.
 func (q QuantityKind) IsTradeCritical() bool {
 	switch q {
 	case QuantityTemperatureC, QuantitySomaticCellCount, QuantityAdulterationIndex:

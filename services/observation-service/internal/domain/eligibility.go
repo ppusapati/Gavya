@@ -17,13 +17,19 @@ type Eligibility struct {
 }
 
 // AssessEligibility decides whether an observation was taken on an instrument
-// verified under the Legal Metrology Act at the instant it measured.
+// verified, under the deployment's own measurement-control regime, at the
+// instant it measured.
 //
-// It is pure and total: the same certificate, instant and quantity always yield
-// the same verdict, so a payment can be re-justified from the stored inputs
-// alone. An ineligible verdict never rejects the observation — it records which
-// payments rested on an unverified instrument.
-func AssessEligibility(cert *VerificationCertificate, observedAt time.Time, quantity QuantityKind) Eligibility {
+// It is pure and total: the same regime, certificate, instant and quantity
+// always yield the same verdict, so a payment can be re-justified from the
+// stored inputs alone. An ineligible verdict never rejects the observation — it
+// records which payments rested on an unverified instrument.
+//
+// The regime is a parameter rather than a constant because the verdict cites a
+// law, and telling a Kenyan co-operative its milk meter was unverified under
+// the Indian Legal Metrology Act would be citing a statute that does not reach
+// them.
+func AssessEligibility(regime Regime, cert *VerificationCertificate, observedAt time.Time, quantity QuantityKind) Eligibility {
 	if !quantity.Valid() {
 		return Eligibility{
 			Verdict: EligibilityUnknown,
@@ -31,12 +37,20 @@ func AssessEligibility(cert *VerificationCertificate, observedAt time.Time, quan
 		}
 	}
 
-	// A quantity that does not enter the price is outside the Act entirely, so
-	// no certificate is required and none is looked for.
-	if !quantity.IsTradeCritical() {
+	// A quantity this regime does not regulate needs no certificate, so none is
+	// looked for. Under RegimeNone that is every quantity, and the reason says
+	// so plainly rather than leaving a reader to wonder whether the check ran.
+	if !regime.Regulates(quantity) {
+		if regime.ID == RegimeNone.ID {
+			return Eligibility{
+				Verdict: EligibilityEligible,
+				Reason:  "this deployment operates under " + regime.Name + ", so no verification is required",
+			}
+		}
 		return Eligibility{
 			Verdict: EligibilityEligible,
-			Reason:  fmt.Sprintf("%s does not determine payment and is outside legal metrology", quantity),
+			Reason: fmt.Sprintf("%s does not determine payment and is outside %s",
+				quantity, regime.Name),
 		}
 	}
 
