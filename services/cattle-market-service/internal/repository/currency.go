@@ -23,6 +23,30 @@ var ErrCurrencyMismatch = errors.New("this tenant does not record money in that 
 // nothing has fixed which currency it uses.
 var ErrCurrencyUnset = errors.New("this tenant has no currency recorded yet")
 
+// pinCurrencyTx is PinTenantMoney inside a caller's transaction, so a sale and
+// its currency pin commit together.
+func pinCurrencyTx(ctx context.Context, tx pgx.Tx, tenantID, code string, scale int32) error {
+	var have string
+	var haveScale int32
+	err := tx.QueryRow(ctx,
+		`INSERT INTO tenant_currency (tenant_id, currency, currency_scale)
+		 VALUES ($1, $2, $3)
+		 ON CONFLICT (tenant_id) DO UPDATE SET tenant_id = EXCLUDED.tenant_id
+		 RETURNING currency, currency_scale`,
+		tenantID, code, scale).Scan(&have, &haveScale)
+	if err != nil {
+		return fmt.Errorf("pin currency: %w", err)
+	}
+	if have != code {
+		return fmt.Errorf("%w: it records in %s, not %s", ErrCurrencyMismatch, have, code)
+	}
+	if haveScale != scale {
+		return fmt.Errorf("%w: %s is recorded here at %d decimal places, not %d",
+			ErrCurrencyMismatch, have, haveScale, scale)
+	}
+	return nil
+}
+
 // PinTenantMoney fixes a tenant's currency on first use and refuses any other
 // afterwards.
 //

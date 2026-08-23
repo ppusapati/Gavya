@@ -2,13 +2,26 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ppusapati/gavya/services/cattle-market-service/internal/domain"
 )
+
+// ErrNotFound lets a caller tell a missing record from a failed query. Without
+// it every outcome reaches the handler as an opaque error and is reported as
+// internal, so a client cannot distinguish "no such listing" from "the database
+// is unreachable" — and is told to retry a call that will never succeed.
+var ErrNotFound = errors.New("not found")
+
+// ErrListingNotActive is a listing that has already been sold, withdrawn or
+// expired. It is named so the caller learns the listing's state refused the
+// request rather than that the service failed.
+var ErrListingNotActive = errors.New("this listing is not open")
 
 // Repository defines the data access interface for cattle-market-service.
 type Repository interface {
@@ -23,15 +36,32 @@ type Repository interface {
 	UpdateListingStatus(ctx context.Context, id, tenantID, status, updatedBy string) (*domain.CattleListing, error)
 
 	CreateBid(ctx context.Context, b *domain.CattleBid) (*domain.CattleBid, error)
-	ListListingBids(ctx context.Context, listingID string) ([]*domain.CattleBid, error)
-	UpdateBidStatus(ctx context.Context, id, status, updatedBy string) (*domain.CattleBid, error)
+	ListListingBids(ctx context.Context, listingID, tenantID string) ([]*domain.CattleBid, error)
+	UpdateBidStatus(ctx context.Context, id, tenantID, status, updatedBy string) (*domain.CattleBid, error)
 
-	CreateSale(ctx context.Context, s *domain.CattleSale) (*domain.CattleSale, error)
 	GetSale(ctx context.Context, id, tenantID string) (*domain.CattleSale, error)
-
-	CreateOwnership(ctx context.Context, o *domain.CattleOwnership) (*domain.CattleOwnership, error)
+	// AcceptBidAndCloseListing accepts a bid and closes its listing together.
+	AcceptBidAndCloseListing(ctx context.Context, bidID, tenantID, updatedBy string) (*domain.CattleBid, *domain.CattleListing, error)
+	// RecordSaleAndTransfer writes a sale and the ownership it transfers
+	// together, so an animal cannot be paid for without changing hands.
+	RecordSaleAndTransfer(ctx context.Context, sale *domain.CattleSale, o *domain.CattleOwnership, price string, money Money) (*domain.CattleSale, *domain.CattleOwnership, error)
 	ListCattleOwnership(ctx context.Context, tenantID, cattleID string) ([]*domain.CattleOwnership, error)
 }
+
+// Columns are listed once and named, because the scans below are positional:
+// adding a column to a table would otherwise silently misalign every field
+// after it in one query and not another.
+const listingCols = `id, tenant_id, cattle_id, seller_id, title, description, asking_price, currency,
+       listing_type, status, expires_at, created_at, updated_at, created_by, updated_by, deleted_at`
+
+const bidCols = `id, tenant_id, listing_id, bidder_id, bid_amount, currency, status, message,
+       created_at, updated_at, created_by, updated_by, deleted_at`
+
+const saleCols = `id, tenant_id, listing_id, seller_id, buyer_id, cattle_id, sale_price, currency,
+       sale_date, transfer_date, status, created_at, updated_at, created_by, updated_by, deleted_at`
+
+const ownershipCols = `id, tenant_id, cattle_id, owner_id, acquired_at, released_at, acquisition_type, sale_id,
+       created_at, updated_at, created_by, updated_by`
 
 type repo struct {
 	db *pgxpool.Pool
@@ -127,15 +157,15 @@ RETURNING id, tenant_id, listing_id, bidder_id, bid_amount, currency, status, me
 	return scanBid(row)
 }
 
-func (r *repo) ListListingBids(ctx context.Context, listingID string) ([]*domain.CattleBid, error) {
+func (r *repo) ListListingBids(ctx context.Context, listingID, tenantID string) ([]*domain.CattleBid, error) {
 	const q = `
 SELECT id, tenant_id, listing_id, bidder_id, bid_amount, currency, status, message,
        created_at, updated_at, created_by, updated_by, deleted_at
 FROM cattle_bids
-WHERE listing_id = $1 AND deleted_at IS NULL
+WHERE listing_id = $1 AND tenant_id = $2 AND deleted_at IS NULL
 ORDER BY bid_amount DESC`
 
-	rows, err := r.db.Query(ctx, q, listingID)
+	rows, err := r.db.Query(ctx, q, listingID, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("list listing bids: %w", err)
 	}
@@ -152,15 +182,15 @@ ORDER BY bid_amount DESC`
 	return result, rows.Err()
 }
 
-func (r *repo) UpdateBidStatus(ctx context.Context, id, status, updatedBy string) (*domain.CattleBid, error) {
+func (r *repo) UpdateBidStatus(ctx context.Context, id, tenantID, status, updatedBy string) (*domain.CattleBid, error) {
 	const q = `
 UPDATE cattle_bids
-SET status = $2, updated_by = $3, updated_at = NOW()
-WHERE id = $1 AND deleted_at IS NULL
+SET status = $3, updated_by = $4, updated_at = NOW()
+WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
 RETURNING id, tenant_id, listing_id, bidder_id, bid_amount, currency, status, message,
           created_at, updated_at, created_by, updated_by, deleted_at`
 
-	row := r.db.QueryRow(ctx, q, id, status, updatedBy)
+	row := r.db.QueryRow(ctx, q, id, tenantID, status, updatedBy)
 	return scanBid(row)
 }
 
@@ -248,6 +278,9 @@ func scanListing(s scanner) (*domain.CattleListing, error) {
 		&l.CreatedAt, &l.UpdatedAt, &l.CreatedBy, &l.UpdatedBy, &l.DeletedAt,
 	)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
 		return nil, fmt.Errorf("scan listing: %w", err)
 	}
 	return l, nil
@@ -260,6 +293,9 @@ func scanBid(s scanner) (*domain.CattleBid, error) {
 		&b.Status, &b.Message, &b.CreatedAt, &b.UpdatedAt, &b.CreatedBy, &b.UpdatedBy, &b.DeletedAt,
 	)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
 		return nil, fmt.Errorf("scan bid: %w", err)
 	}
 	return b, nil
@@ -273,6 +309,9 @@ func scanSale(s scanner) (*domain.CattleSale, error) {
 		&sale.CreatedAt, &sale.UpdatedAt, &sale.CreatedBy, &sale.UpdatedBy, &sale.DeletedAt,
 	)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
 		return nil, fmt.Errorf("scan sale: %w", err)
 	}
 	return sale, nil
@@ -285,6 +324,9 @@ func scanOwnership(s scanner) (*domain.CattleOwnership, error) {
 		&o.AcquisitionType, &o.SaleID, &o.CreatedAt, &o.UpdatedAt, &o.CreatedBy, &o.UpdatedBy,
 	)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
 		return nil, fmt.Errorf("scan ownership: %w", err)
 	}
 	return o, nil

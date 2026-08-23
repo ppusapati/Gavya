@@ -2,12 +2,14 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"connectrpc.com/connect"
 
 	"github.com/ppusapati/gavya/libs/integrity/connectjson"
 	"github.com/ppusapati/gavya/services/cattle-market-service/internal/domain"
+	"github.com/ppusapati/gavya/services/cattle-market-service/internal/repository"
 	"github.com/ppusapati/gavya/services/cattle-market-service/internal/service"
 )
 
@@ -138,11 +140,33 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	route("GetOwnershipHistory", connectjson.Unary(h.GetOwnershipHistory))
 }
 
+// classify turns a service failure into the Connect code that describes it.
+//
+// Every failure used to arrive as Internal, which tells a client to retry —
+// so a missing listing, a malformed request and an unreachable database were
+// indistinguishable, and only one of them was worth trying again.
+func classify(err error) error {
+	switch {
+	case errors.Is(err, repository.ErrNotFound):
+		return connect.NewError(connect.CodeNotFound, err)
+	case errors.Is(err, repository.ErrListingNotActive):
+		// The request was well formed and the listing's state refused it.
+		// Retrying changes nothing until the listing does.
+		return connect.NewError(connect.CodeFailedPrecondition, err)
+	case errors.Is(err, repository.ErrCurrencyMismatch):
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	case errors.Is(err, service.ErrInvalidArgument):
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	default:
+		return connect.NewError(connect.CodeInternal, err)
+	}
+}
+
 func (h *Handler) CreateListing(ctx context.Context, req *connect.Request[CreateListingRequest]) (*connect.Response[CreateListingResponse], error) {
 	m := req.Msg
 	l, err := h.svc.CreateListing(ctx, &domain.CattleListing{TenantID: m.TenantID, CattleID: m.CattleID, SellerID: m.SellerID, Title: m.Title, Description: m.Description, AskingPrice: m.AskingPrice, Currency: m.Currency, ListingType: m.ListingType, CreatedBy: m.CreatedBy})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, classify(err)
 	}
 	return connect.NewResponse(&CreateListingResponse{Listing: toListingProto(l)}), nil
 }
@@ -150,7 +174,7 @@ func (h *Handler) CreateListing(ctx context.Context, req *connect.Request[Create
 func (h *Handler) GetListing(ctx context.Context, req *connect.Request[GetListingRequest]) (*connect.Response[GetListingResponse], error) {
 	l, err := h.svc.GetListing(ctx, req.Msg.ID, req.Msg.TenantID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, err)
+		return nil, classify(err)
 	}
 	return connect.NewResponse(&GetListingResponse{Listing: toListingProto(l)}), nil
 }
@@ -158,7 +182,7 @@ func (h *Handler) GetListing(ctx context.Context, req *connect.Request[GetListin
 func (h *Handler) ListActiveListings(ctx context.Context, req *connect.Request[ListActiveRequest]) (*connect.Response[ListActiveResponse], error) {
 	list, err := h.svc.ListActiveListings(ctx, req.Msg.TenantID, int(req.Msg.Limit), int(req.Msg.Offset))
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, classify(err)
 	}
 	protos := make([]*ListingProto, 0, len(list))
 	for _, l := range list {
@@ -171,7 +195,7 @@ func (h *Handler) PlaceBid(ctx context.Context, req *connect.Request[PlaceBidReq
 	m := req.Msg
 	b, err := h.svc.PlaceBid(ctx, &domain.CattleBid{TenantID: m.TenantID, ListingID: m.ListingID, BidderID: m.BidderID, BidAmount: m.BidAmount, Message: m.Message, CreatedBy: m.CreatedBy})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, classify(err)
 	}
 	return connect.NewResponse(&PlaceBidResponse{Bid: toBidProto(b)}), nil
 }
@@ -179,15 +203,15 @@ func (h *Handler) PlaceBid(ctx context.Context, req *connect.Request[PlaceBidReq
 func (h *Handler) AcceptBid(ctx context.Context, req *connect.Request[BidActionRequest]) (*connect.Response[BidActionResponse], error) {
 	b, err := h.svc.AcceptBid(ctx, req.Msg.ID, req.Msg.TenantID, req.Msg.UpdatedBy)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, classify(err)
 	}
 	return connect.NewResponse(&BidActionResponse{Bid: toBidProto(b)}), nil
 }
 
 func (h *Handler) RejectBid(ctx context.Context, req *connect.Request[BidActionRequest]) (*connect.Response[BidActionResponse], error) {
-	b, err := h.svc.RejectBid(ctx, req.Msg.ID, req.Msg.UpdatedBy)
+	b, err := h.svc.RejectBid(ctx, req.Msg.ID, req.Msg.TenantID, req.Msg.UpdatedBy)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, classify(err)
 	}
 	return connect.NewResponse(&BidActionResponse{Bid: toBidProto(b)}), nil
 }
@@ -206,7 +230,7 @@ func (h *Handler) RecordSale(ctx context.Context, req *connect.Request[RecordSal
 		CreatedBy: m.CreatedBy,
 	}, m.BuyerID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, classify(err)
 	}
 	return connect.NewResponse(&RecordSaleResponse{Sale: toSaleProto(sale)}), nil
 }
@@ -214,7 +238,7 @@ func (h *Handler) RecordSale(ctx context.Context, req *connect.Request[RecordSal
 func (h *Handler) GetOwnershipHistory(ctx context.Context, req *connect.Request[OwnershipRequest]) (*connect.Response[OwnershipResponse], error) {
 	list, err := h.svc.GetOwnershipHistory(ctx, req.Msg.TenantID, req.Msg.CattleID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, classify(err)
 	}
 	protos := make([]*OwnershipProto, 0, len(list))
 	for _, o := range list {

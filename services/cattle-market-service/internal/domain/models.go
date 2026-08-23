@@ -70,3 +70,16 @@ type CattleOwnership struct {
 	CreatedBy       string
 	UpdatedBy       string
 }
+
+// Listing and bid states, named so a comparison against a literal cannot drift
+// from what the service writes.
+const (
+	ListingActive    = "active"
+	ListingSold      = "sold"
+	ListingWithdrawn = "withdrawn"
+	ListingExpired   = "expired"
+
+	BidPending  = "pending"
+	BidAccepted = "accepted"
+	BidRejected = "rejected"
+)
