@@ -25,10 +25,15 @@ const vaccinationCols = `id,tenant_id,cattle_id,vaccine_name,COALESCE(batch_numb
 const treatmentCols = `id,tenant_id,cattle_id,COALESCE(diagnosis_code,''),diagnosis,COALESCE(medicine_name,''),COALESCE(dosage,''),treated_at,` +
 	`COALESCE(treated_by,''),follow_up_date,status,created_at,updated_at,created_by,updated_by,deleted_at`
 
-const vetVisitCols = `id,tenant_id,cattle_id,veterinarian_id,visit_date,COALESCE(purpose,''),COALESCE(notes,''),cost,` +
+const vetVisitCols = `id,tenant_id,cattle_id,veterinarian_id,visit_date,COALESCE(purpose,''),COALESCE(notes,''),cost,currency,` +
 	`created_at,updated_at,created_by,updated_by,deleted_at`
 
 type Repository interface {
+	// PinTenantMoney fixes the currency this tenant records money in.
+	PinTenantMoney(ctx context.Context, tenantID string, money Money) error
+	// TenantMoney reports it.
+	TenantMoney(ctx context.Context, tenantID string) (Money, error)
+
 	CreateVaccination(ctx context.Context, v *domain.Vaccination) (*domain.Vaccination, error)
 	GetVaccination(ctx context.Context, id, tenantID string) (*domain.Vaccination, error)
 	ListVaccinationHistory(ctx context.Context, tenantID, cattleID string) ([]*domain.Vaccination, error)
@@ -164,10 +169,10 @@ func (r *repo) UpdateTreatmentStatus(ctx context.Context, id, tenantID, status, 
 
 func (r *repo) CreateVetVisit(ctx context.Context, v *domain.VetVisit) (*domain.VetVisit, error) {
 	row := r.pool.QueryRow(ctx,
-		`INSERT INTO vet_visits (id,tenant_id,cattle_id,veterinarian_id,visit_date,purpose,notes,cost,created_by,updated_by)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING `+vetVisitCols,
+		`INSERT INTO vet_visits (id,tenant_id,cattle_id,veterinarian_id,visit_date,purpose,notes,cost,currency,created_by,updated_by)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING `+vetVisitCols,
 		v.ID, v.TenantID, v.CattleID, v.VeterinarianID, v.VisitDate, v.Purpose, v.Notes,
-		v.Cost, v.CreatedBy, v.UpdatedBy,
+		v.Cost, v.Currency, v.CreatedBy, v.UpdatedBy,
 	)
 	return scanVetVisit(row)
 }
@@ -231,7 +236,7 @@ func scanTreatment(s scanner) (*domain.Treatment, error) {
 func scanVetVisit(s scanner) (*domain.VetVisit, error) {
 	v := &domain.VetVisit{}
 	err := s.Scan(&v.ID, &v.TenantID, &v.CattleID, &v.VeterinarianID, &v.VisitDate,
-		&v.Purpose, &v.Notes, &v.Cost, &v.CreatedAt, &v.UpdatedAt, &v.CreatedBy, &v.UpdatedBy, &v.DeletedAt)
+		&v.Purpose, &v.Notes, &v.Cost, &v.Currency, &v.CreatedAt, &v.UpdatedAt, &v.CreatedBy, &v.UpdatedBy, &v.DeletedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound

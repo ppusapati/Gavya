@@ -47,6 +47,11 @@ const skuCols = `id,tenant_id,product_id,code,name,price,currency,unit,COALESCE(
 	`created_at,updated_at,created_by,updated_by,deleted_at`
 
 type Repository interface {
+	// PinTenantMoney fixes the currency this tenant records money in.
+	PinTenantMoney(ctx context.Context, tenantID string, money Money) error
+	// TenantMoney reports it.
+	TenantMoney(ctx context.Context, tenantID string) (Money, error)
+
 	CreateCategory(ctx context.Context, c *domain.Category) (*domain.Category, error)
 	GetCategory(ctx context.Context, id, tenantID string) (*domain.Category, error)
 	ListCategories(ctx context.Context, tenantID string) ([]*domain.Category, error)

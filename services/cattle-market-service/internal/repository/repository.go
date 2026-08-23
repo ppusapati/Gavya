@@ -12,6 +12,11 @@ import (
 
 // Repository defines the data access interface for cattle-market-service.
 type Repository interface {
+	// PinTenantMoney fixes the currency this tenant records money in.
+	PinTenantMoney(ctx context.Context, tenantID string, money Money) error
+	// TenantMoney reports it.
+	TenantMoney(ctx context.Context, tenantID string) (Money, error)
+
 	CreateListing(ctx context.Context, l *domain.CattleListing) (*domain.CattleListing, error)
 	GetListing(ctx context.Context, id, tenantID string) (*domain.CattleListing, error)
 	ListActiveListings(ctx context.Context, tenantID string, limit, offset int) ([]*domain.CattleListing, error)

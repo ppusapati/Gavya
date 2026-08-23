@@ -95,8 +95,6 @@ func (r *repo) UpdateInvoiceStatus(ctx context.Context, id, tenantID, status, up
 	return scanInvoice(row)
 }
 
-
-
 func (r *repo) ListOutstandingInvoices(ctx context.Context, tenantID string) ([]*domain.Invoice, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT `+invoiceCols+` FROM invoices WHERE tenant_id=$1 AND status IN ('sent','overdue') AND deleted_at IS NULL ORDER BY due_at`,
@@ -117,7 +115,6 @@ func (r *repo) ListOutstandingInvoices(ctx context.Context, tenantID string) ([]
 	return result, rows.Err()
 }
 
-
 func (r *repo) ListInvoiceItems(ctx context.Context, invoiceID, tenantID string) ([]*domain.InvoiceItem, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT `+invoiceItemCols+` FROM invoice_items WHERE invoice_id=$1 AND tenant_id=$2 ORDER BY created_at`,
@@ -137,9 +134,6 @@ func (r *repo) ListInvoiceItems(ctx context.Context, invoiceID, tenantID string)
 	}
 	return result, rows.Err()
 }
-
-
-
 
 func scanInvoice(s scanner) (*domain.Invoice, error) {
 	inv := &domain.Invoice{}

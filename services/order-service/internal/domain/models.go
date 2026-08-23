@@ -3,15 +3,15 @@ package domain
 import "time"
 
 type Order struct {
-	ID              string
-	TenantID        string
-	CustomerID      string
-	OrderNumber     string
-	Status          string // draft/confirmed/processing/shipped/delivered/cancelled/returned
-	SubTotal        float64
-	TaxAmount       float64
-	TotalAmount     float64
-	Currency        string
+	ID          string
+	TenantID    string
+	CustomerID  string
+	OrderNumber string
+	Status      string // draft/confirmed/processing/shipped/delivered/cancelled/returned
+	SubTotal    float64
+	TaxAmount   float64
+	TotalAmount float64
+	Currency    string
 	// TaxInclusive says whether the line prices already contain the tax. Europe,
 	// the UK and Indian retail generally quote inclusive; the United States
 	// quotes exclusive. Getting it backwards mis-charges every line.
@@ -38,12 +38,12 @@ type OrderItem struct {
 	TotalPrice float64
 	// TaxRate is a percentage, per line. A catalogue that mixes exempt and rated
 	// goods cannot be taxed at one rate, and a dairy catalogue mixes them.
-	TaxRate    float64
-	Status     string // pending/confirmed/shipped/delivered/returned
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
-	CreatedBy  string
-	UpdatedBy  string
+	TaxRate   float64
+	Status    string // pending/confirmed/shipped/delivered/returned
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	CreatedBy string
+	UpdatedBy string
 }
 
 type Invoice struct {

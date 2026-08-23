@@ -32,7 +32,9 @@ type VetVisit struct {
 	VisitDate              time.Time
 	Purpose, Notes         string
 	Cost                   float64
-	CreatedAt, UpdatedAt   time.Time
-	CreatedBy, UpdatedBy   string
-	DeletedAt              *time.Time
+	// Currency says what Cost is. A money record that does not is a number.
+	Currency             string
+	CreatedAt, UpdatedAt time.Time
+	CreatedBy, UpdatedBy string
+	DeletedAt            *time.Time
 }

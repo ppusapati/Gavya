@@ -5,8 +5,10 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/ppusapati/gavya/libs/integrity/currency"
 	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/services/product-catalog-service/internal/domain"
+	"github.com/ppusapati/gavya/services/product-catalog-service/internal/repository"
 	ulidpkg "p9e.in/samavaya/packages/ULID"
 )
 
@@ -126,11 +128,6 @@ func (s *Service) ListProducts(ctx context.Context, tenantID, productType, statu
 }
 
 func (s *Service) CreateSKU(ctx context.Context, sku *domain.SKU) (*domain.SKU, error) {
-	// price is stored as NUMERIC(12,2). A finer value would be rounded
-	// into the column without anyone being told, so it is refused instead.
-	if _, err := exact.NonNegativeDecimal(sku.Price, 2, 12); err != nil {
-		return nil, invalid(exact.Field("price", err).Error())
-	}
 	// unit_size is stored as NUMERIC(10,3). A finer value would be rounded
 	// into the column without anyone being told, so it is refused instead.
 	if _, err := exact.NonNegativeDecimal(sku.UnitSize, 3, 10); err != nil {
@@ -145,10 +142,28 @@ func (s *Service) CreateSKU(ctx context.Context, sku *domain.SKU) (*domain.SKU, 
 	if sku.Code == "" {
 		return nil, invalid("code is required")
 	}
-	sku.ID = ulidpkg.New().String()
-	if sku.Currency == "" {
-		sku.Currency = "INR"
+	// The currency is stated, not assumed. There is no default: a price silently
+	// recorded in rupees outside India is a price nobody can act on. The first
+	// amount a tenant records fixes the currency it records in.
+	code, err := currency.Normalise(sku.Currency)
+	if err != nil {
+		return nil, invalid("currency: " + err.Error())
 	}
+	scale, err := currency.Scale(code)
+	if err != nil {
+		return nil, invalid("currency: " + err.Error())
+	}
+	if err := s.repo.PinTenantMoney(ctx, sku.TenantID, repository.Money{Code: code, Scale: scale}); err != nil {
+		return nil, err
+	}
+	sku.Currency = code
+	// Amounts are held to that currency's own precision: a yen price has no
+	// decimals, a dinar price has three.
+	if _, err := exact.NonNegativeDecimal(sku.Price, scale, 18); err != nil {
+		return nil, invalid(exact.Field("price", err).Error())
+	}
+
+	sku.ID = ulidpkg.New().String()
 	if sku.Status == "" {
 		sku.Status = "active"
 	}

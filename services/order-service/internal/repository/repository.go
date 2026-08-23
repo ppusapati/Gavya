@@ -113,8 +113,6 @@ func (r *repo) UpdateOrderStatus(ctx context.Context, id, tenantID, status, upda
 	return scanOrder(row)
 }
 
-
-
 func (r *repo) ListOrderItems(ctx context.Context, orderID, tenantID string) ([]*domain.OrderItem, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT `+orderItemCols+` FROM order_items WHERE order_id=$1 AND tenant_id=$2 ORDER BY created_at`,
@@ -134,7 +132,6 @@ func (r *repo) ListOrderItems(ctx context.Context, orderID, tenantID string) ([]
 	}
 	return result, rows.Err()
 }
-
 
 func (r *repo) CreateInvoice(ctx context.Context, inv *domain.Invoice) (*domain.Invoice, error) {
 	row := r.pool.QueryRow(ctx,

@@ -82,11 +82,11 @@ const taxRate = "18.000"
 var rupees = Money{Code: "INR", Scale: 2}
 
 type fixture struct {
-	repo     Repository
-	tenant   string
-	invoice  string
-	money    Money
-	taxIncl  bool
+	repo    Repository
+	tenant  string
+	invoice string
+	money   Money
+	taxIncl bool
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -132,8 +132,8 @@ func (f *fixture) addAt(t *testing.T, quantity, unitPrice float64, rate string) 
 	}
 	actor := newTestID("usr")
 	return f.repo.AddItemAndRetotal(context.Background(), &domain.InvoiceItem{
-		ID:        newTestID("itm"),
-		TenantID:  f.tenant,
+		ID:          newTestID("itm"),
+		TenantID:    f.tenant,
 		InvoiceID:   f.invoice,
 		Description: "Toned milk, 1L pouch",
 		CreatedBy:   actor,

@@ -20,14 +20,14 @@ type Invoice struct {
 	// undercharges every line.
 	TaxInclusive bool
 	IssuedAt     time.Time
-	DueAt         time.Time
-	PaidAt        *time.Time
-	Notes         string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
-	CreatedBy     string
-	UpdatedBy     string
-	DeletedAt     *time.Time
+	DueAt        time.Time
+	PaidAt       *time.Time
+	Notes        string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	CreatedBy    string
+	UpdatedBy    string
+	DeletedAt    *time.Time
 }
 
 type InvoiceItem struct {

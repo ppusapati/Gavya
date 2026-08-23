@@ -66,8 +66,8 @@ func classify(err error) error {
 }
 
 type CreateOrderRequest struct {
-	TenantID        string    `json:"tenant_id"`
-	CustomerID      string    `json:"customer_id"`
+	TenantID   string `json:"tenant_id"`
+	CustomerID string `json:"customer_id"`
 	// Currency is required. There is no default: an order priced in an assumed
 	// currency is an order nobody can fulfil.
 	Currency string `json:"currency"`
@@ -93,7 +93,7 @@ type AddOrderItemRequest struct {
 	UnitPrice float64 `json:"unit_price"`
 	// TaxRate is a percentage for this line: 0 for an exempt good, 12 for one
 	// rated at twelve per cent.
-	TaxRate float64 `json:"tax_rate"`
+	TaxRate   float64 `json:"tax_rate"`
 	CreatedBy string  `json:"created_by"`
 }
 

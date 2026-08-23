@@ -137,3 +137,39 @@ BEGIN
     END IF;
 END
 $$;
+
+-- ---------------------------------------------------------------------------
+-- Tax backfill
+--
+-- Every invoice written before this change was taxed at a hardcoded 18%, and
+-- the per-line rate did not exist or was ignored. Left alone, recomputing one
+-- of those invoices would now find every rate at zero and quietly restate a
+-- figure a customer has already been given.
+--
+-- So the historical rate is written onto the lines that actually carried it:
+-- those belonging to a invoice whose tax_amount is above zero, which is the
+-- evidence that tax was charged. A invoice that was never taxed keeps its zero,
+-- and anything created from now on states its own rate.
+--
+-- This runs once. The marker row is what stops a second run from overwriting
+-- rates an operator has since corrected by hand.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    name       TEXT PRIMARY KEY,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE name = 'tax_rate_backfill_18pc') THEN
+        UPDATE invoice_items i
+        SET    tax_rate = 18.000
+        FROM   invoices d
+        WHERE  d.id = i.invoice_id
+          AND  d.tax_amount > 0
+          AND  i.tax_rate = 0;
+
+        INSERT INTO schema_migrations (name) VALUES ('tax_rate_backfill_18pc');
+    END IF;
+END
+$$;

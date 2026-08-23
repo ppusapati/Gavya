@@ -108,6 +108,8 @@ type ScheduleVetVisitRequest struct {
 	Notes          string    `json:"notes"`
 	Cost           float64   `json:"cost"`
 	CreatedBy      string    `json:"created_by"`
+	// Currency is required: a cost that does not say what it is in is a number.
+	Currency string `json:"currency"`
 }
 
 type VetVisitResponse struct {
@@ -190,7 +192,7 @@ func (h *Handler) ScheduleVetVisit(ctx context.Context, req *connect.Request[Sch
 		Notes:          m.Notes,
 		Cost:           m.Cost,
 		CreatedBy:      m.CreatedBy,
-	})
+		Currency:       m.Currency})
 	if err != nil {
 		return nil, classify(err)
 	}

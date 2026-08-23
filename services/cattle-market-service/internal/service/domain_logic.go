@@ -7,19 +7,16 @@ import (
 
 	ulidpkg "p9e.in/samavaya/packages/ULID"
 
+	"github.com/ppusapati/gavya/libs/integrity/currency"
 	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/services/cattle-market-service/internal/domain"
+	"github.com/ppusapati/gavya/services/cattle-market-service/internal/repository"
 )
 
 // ─── CattleListing ────────────────────────────────────────────────────────────
 
 // CreateListing validates input, assigns a ULID, and persists a new listing.
 func (s *Service) CreateListing(ctx context.Context, l *domain.CattleListing) (*domain.CattleListing, error) {
-	// asking_price is stored as NUMERIC(12,2). A finer value would be rounded
-	// into the column without anyone being told, so it is refused instead.
-	if _, err := exact.NonNegativeDecimal(l.AskingPrice, 2, 12); err != nil {
-		return nil, exact.Field("asking_price", err)
-	}
 	if l.TenantID == "" {
 		return nil, fmt.Errorf("tenant_id is required")
 	}
@@ -42,12 +39,30 @@ func (s *Service) CreateListing(ctx context.Context, l *domain.CattleListing) (*
 		return nil, fmt.Errorf("created_by is required")
 	}
 
+	// The currency is stated, not assumed. There is no default: a price silently
+	// recorded in rupees outside India is a price nobody can act on. The first
+	// amount a tenant records fixes the currency it records in.
+	code, err := currency.Normalise(l.Currency)
+	if err != nil {
+		return nil, fmt.Errorf("currency: %s", err)
+	}
+	scale, err := currency.Scale(code)
+	if err != nil {
+		return nil, fmt.Errorf("currency: %s", err)
+	}
+	if err := s.repo.PinTenantMoney(ctx, l.TenantID, repository.Money{Code: code, Scale: scale}); err != nil {
+		return nil, err
+	}
+	l.Currency = code
+	// Amounts are held to that currency's own precision: a yen price has no
+	// decimals, a dinar price has three.
+	if _, err := exact.NonNegativeDecimal(l.AskingPrice, scale, 18); err != nil {
+		return nil, fmt.Errorf("%s", exact.Field("asking_price", err))
+	}
+
 	l.ID = ulidpkg.New().String()
 	if l.Status == "" {
 		l.Status = "active"
-	}
-	if l.Currency == "" {
-		l.Currency = "INR"
 	}
 	l.UpdatedBy = l.CreatedBy
 	l.CreatedAt = time.Now()
@@ -91,11 +106,6 @@ func (s *Service) ListActiveListings(ctx context.Context, tenantID string, limit
 
 // PlaceBid validates the listing is active, validates bid amount, and persists a bid.
 func (s *Service) PlaceBid(ctx context.Context, b *domain.CattleBid) (*domain.CattleBid, error) {
-	// bid_amount is stored as NUMERIC(12,2). A finer value would be rounded
-	// into the column without anyone being told, so it is refused instead.
-	if _, err := exact.NonNegativeDecimal(b.BidAmount, 2, 12); err != nil {
-		return nil, exact.Field("bid_amount", err)
-	}
 	if b.TenantID == "" {
 		return nil, fmt.Errorf("tenant_id is required")
 	}
@@ -120,12 +130,37 @@ func (s *Service) PlaceBid(ctx context.Context, b *domain.CattleBid) (*domain.Ca
 		return nil, fmt.Errorf("listing is not active (status=%s)", listing.Status)
 	}
 
+	// The currency is stated, not assumed. There is no default: a price silently
+	// recorded in rupees outside India is a price nobody can act on. The first
+	// amount a tenant records fixes the currency it records in.
+	code, err := currency.Normalise(b.Currency)
+	if err != nil {
+		return nil, fmt.Errorf("currency: %s", err)
+	}
+	scale, err := currency.Scale(code)
+	if err != nil {
+		return nil, fmt.Errorf("currency: %s", err)
+	}
+	if err := s.repo.PinTenantMoney(ctx, b.TenantID, repository.Money{Code: code, Scale: scale}); err != nil {
+		return nil, err
+	}
+	b.Currency = code
+	// A bid in a different currency from the listing cannot be compared against
+	// the asking price, and ranking it against other bids would be ranking two
+	// different kinds of money.
+	if listing.Currency != code {
+		return nil, fmt.Errorf("this listing is priced in %s; a bid in %s cannot be compared with it",
+			listing.Currency, code)
+	}
+	// Amounts are held to that currency's own precision: a yen price has no
+	// decimals, a dinar price has three.
+	if _, err := exact.NonNegativeDecimal(b.BidAmount, scale, 18); err != nil {
+		return nil, fmt.Errorf("%s", exact.Field("bid_amount", err))
+	}
+
 	b.ID = ulidpkg.New().String()
 	if b.Status == "" {
 		b.Status = "pending"
-	}
-	if b.Currency == "" {
-		b.Currency = "INR"
 	}
 	b.UpdatedBy = b.CreatedBy
 	b.CreatedAt = time.Now()
@@ -184,11 +219,6 @@ func (s *Service) ListListingBids(ctx context.Context, listingID string) ([]*dom
 
 // RecordSale validates the listing exists, creates a sale record, and creates an ownership transfer.
 func (s *Service) RecordSale(ctx context.Context, sale *domain.CattleSale, newOwnerID string) (*domain.CattleSale, *domain.CattleOwnership, error) {
-	// sale_price is stored as NUMERIC(12,2). A finer value would be rounded
-	// into the column without anyone being told, so it is refused instead.
-	if _, err := exact.NonNegativeDecimal(sale.SalePrice, 2, 12); err != nil {
-		return nil, nil, exact.Field("sale_price", err)
-	}
 	if sale.TenantID == "" {
 		return nil, nil, fmt.Errorf("tenant_id is required")
 	}
@@ -210,14 +240,32 @@ func (s *Service) RecordSale(ctx context.Context, sale *domain.CattleSale, newOw
 		return nil, nil, fmt.Errorf("listing not found: %w", err)
 	}
 
+	// The currency is stated, not assumed. There is no default: a price silently
+	// recorded in rupees outside India is a price nobody can act on. The first
+	// amount a tenant records fixes the currency it records in.
+	code, err := currency.Normalise(sale.Currency)
+	if err != nil {
+		return nil, nil, fmt.Errorf("currency: %s", err)
+	}
+	scale, err := currency.Scale(code)
+	if err != nil {
+		return nil, nil, fmt.Errorf("currency: %s", err)
+	}
+	if err := s.repo.PinTenantMoney(ctx, sale.TenantID, repository.Money{Code: code, Scale: scale}); err != nil {
+		return nil, nil, err
+	}
+	sale.Currency = code
+	// Amounts are held to that currency's own precision: a yen price has no
+	// decimals, a dinar price has three.
+	if _, err := exact.NonNegativeDecimal(sale.SalePrice, scale, 18); err != nil {
+		return nil, nil, fmt.Errorf("%s", exact.Field("sale_price", err))
+	}
+
 	sale.ID = ulidpkg.New().String()
 	sale.CattleID = listing.CattleID
 	sale.SellerID = listing.SellerID
 	if sale.Status == "" {
 		sale.Status = "pending"
-	}
-	if sale.Currency == "" {
-		sale.Currency = "INR"
 	}
 	sale.SaleDate = time.Now()
 	sale.UpdatedBy = sale.CreatedBy

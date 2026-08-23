@@ -5,8 +5,10 @@ import (
 	"errors"
 	"time"
 
+	"github.com/ppusapati/gavya/libs/integrity/currency"
 	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/services/health-service/internal/domain"
+	"github.com/ppusapati/gavya/services/health-service/internal/repository"
 	ulidpkg "p9e.in/samavaya/packages/ULID"
 )
 
@@ -92,11 +94,6 @@ func (s *Service) GetTreatmentHistory(ctx context.Context, tenantID, cattleID st
 }
 
 func (s *Service) ScheduleVetVisit(ctx context.Context, v *domain.VetVisit) (*domain.VetVisit, error) {
-	// cost is stored as NUMERIC(10,2). A finer value would be rounded
-	// into the column without anyone being told, so it is refused instead.
-	if _, err := exact.NonNegativeDecimal(v.Cost, 2, 10); err != nil {
-		return nil, invalid(exact.Field("cost", err).Error())
-	}
 	if v.TenantID == "" {
 		return nil, invalid("tenant_id is required")
 	}
@@ -106,6 +103,26 @@ func (s *Service) ScheduleVetVisit(ctx context.Context, v *domain.VetVisit) (*do
 	if v.VeterinarianID == "" {
 		return nil, invalid("veterinarian_id is required")
 	}
+	// The currency is stated, not assumed, and the first amount a tenant records
+	// fixes what it records in.
+	code, err := currency.Normalise(v.Currency)
+	if err != nil {
+		return nil, invalid("currency: " + err.Error())
+	}
+	scale, err := currency.Scale(code)
+	if err != nil {
+		return nil, invalid("currency: " + err.Error())
+	}
+	if err := s.repo.PinTenantMoney(ctx, v.TenantID, repository.Money{Code: code, Scale: scale}); err != nil {
+		return nil, err
+	}
+	v.Currency = code
+	// A cost finer than the currency records would be rounded into the column
+	// without anyone being told, so it is refused instead.
+	if _, err := exact.NonNegativeDecimal(v.Cost, scale, 18); err != nil {
+		return nil, invalid(exact.Field("cost", err).Error())
+	}
+
 	v.ID = ulidpkg.New().String()
 	if v.VisitDate.IsZero() {
 		v.VisitDate = time.Now()

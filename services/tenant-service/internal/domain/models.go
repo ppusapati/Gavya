@@ -10,11 +10,11 @@ type Tenant struct {
 	// has: 2 for a rupee, 0 for a yen, 3 for a dinar. It is stored beside the
 	// code rather than derived on read, so an amount already recorded cannot
 	// change meaning if the currency table is ever corrected.
-	CurrencyScale int32
-	MaxUsers, MaxCattle                  int
-	CreatedAt, UpdatedAt                 time.Time
-	CreatedBy, UpdatedBy                 string
-	DeletedAt                            *time.Time
+	CurrencyScale        int32
+	MaxUsers, MaxCattle  int
+	CreatedAt, UpdatedAt time.Time
+	CreatedBy, UpdatedBy string
+	DeletedAt            *time.Time
 }
 
 type TenantSetting struct {

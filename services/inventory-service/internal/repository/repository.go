@@ -111,8 +111,6 @@ func (r *repo) GetInventoryItem(ctx context.Context, warehouseID, skuID, tenantI
 	return scanInventoryItem(row)
 }
 
-
-
 func (r *repo) ListStockMovements(ctx context.Context, tenantID, warehouseID string, limit, offset int) ([]*domain.StockMovement, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT `+stockMovementCols+` FROM stock_movements WHERE tenant_id=$1 AND warehouse_id=$2 ORDER BY moved_at DESC LIMIT $3 OFFSET $4`,

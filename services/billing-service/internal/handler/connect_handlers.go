@@ -66,18 +66,18 @@ func classify(err error) error {
 }
 
 type CreateInvoiceRequest struct {
-	TenantID      string    `json:"tenant_id"`
-	CustomerID    string    `json:"customer_id"`
-	ReferenceID   string    `json:"reference_id"`
-	ReferenceType string    `json:"reference_type"`
+	TenantID      string `json:"tenant_id"`
+	CustomerID    string `json:"customer_id"`
+	ReferenceID   string `json:"reference_id"`
+	ReferenceType string `json:"reference_type"`
 	// Currency is required. There is no default: an invoice whose currency was
 	// assumed would be an invoice nobody can be asked to pay.
 	Currency string `json:"currency"`
 	// TaxInclusive says whether the line prices already contain the tax.
 	TaxInclusive bool      `json:"tax_inclusive"`
 	IssuedAt     time.Time `json:"issued_at"`
-	Notes         string    `json:"notes"`
-	CreatedBy     string    `json:"created_by"`
+	Notes        string    `json:"notes"`
+	CreatedBy    string    `json:"created_by"`
 }
 
 type AddInvoiceItemRequest struct {
