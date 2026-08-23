@@ -52,6 +52,8 @@ func classify(err error) error {
 		return connect.NewError(connect.CodeNotFound, err)
 	case errors.Is(err, repository.ErrDuplicateInvoiceNumber):
 		return connect.NewError(connect.CodeAlreadyExists, err)
+	case errors.Is(err, repository.ErrCurrencyMismatch):
+		return connect.NewError(connect.CodeInvalidArgument, err)
 	case errors.Is(err, repository.ErrNotPayable):
 		return connect.NewError(connect.CodeFailedPrecondition, err)
 	case errors.Is(err, repository.ErrNotDraft):

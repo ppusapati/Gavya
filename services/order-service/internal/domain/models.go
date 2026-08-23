@@ -12,6 +12,10 @@ type Order struct {
 	TaxAmount       float64
 	TotalAmount     float64
 	Currency        string
+	// TaxInclusive says whether the line prices already contain the tax. Europe,
+	// the UK and Indian retail generally quote inclusive; the United States
+	// quotes exclusive. Getting it backwards mis-charges every line.
+	TaxInclusive    bool
 	ShippingAddress string
 	Notes           string
 	OrderedAt       time.Time
@@ -32,6 +36,9 @@ type OrderItem struct {
 	Quantity   float64
 	UnitPrice  float64
 	TotalPrice float64
+	// TaxRate is a percentage, per line. A catalogue that mixes exempt and rated
+	// goods cannot be taxed at one rate, and a dairy catalogue mixes them.
+	TaxRate    float64
 	Status     string // pending/confirmed/shipped/delivered/returned
 	CreatedAt  time.Time
 	UpdatedAt  time.Time

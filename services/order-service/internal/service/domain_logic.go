@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/ppusapati/gavya/libs/integrity/currency"
 	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/services/order-service/internal/domain"
 	"github.com/ppusapati/gavya/services/order-service/internal/repository"
@@ -41,9 +42,21 @@ func (s *Service) CreateOrder(ctx context.Context, o *domain.Order) (*domain.Ord
 	o.SubTotal = 0
 	o.TaxAmount = 0
 	o.TotalAmount = 0
-	if o.Currency == "" {
-		o.Currency = "INR"
+	// An order states the currency it is in, and the first one for a tenant
+	// fixes it. There is no default: an order silently priced in rupees outside
+	// India is an order nobody can fulfil.
+	code, err := currency.Normalise(o.Currency)
+	if err != nil {
+		return nil, invalid("currency: " + err.Error())
 	}
+	scale, err := currency.Scale(code)
+	if err != nil {
+		return nil, invalid("currency: " + err.Error())
+	}
+	if err := s.repo.PinTenantMoney(ctx, o.TenantID, repository.Money{Code: code, Scale: scale}); err != nil {
+		return nil, err
+	}
+	o.Currency = code
 	if o.OrderedAt.IsZero() {
 		o.OrderedAt = time.Now()
 	}
@@ -61,14 +74,19 @@ func (s *Service) GetOrder(ctx context.Context, id, tenantID string) (*domain.Or
 	return s.repo.GetOrder(ctx, id, tenantID)
 }
 
-// DefaultTaxRate is the rate applied to every order.
+// moneyFor reports the currency this tenant records money in.
 //
-// It is a placeholder, not a tax model: one rate for every line of every order
-// cannot be right for a catalogue that mixes exempt and rated goods. It is kept
-// here, named and in one place, so that it is visible as a decision rather than
-// buried as a literal in an expression — and so that replacing it with a real
-// per-line rate changes one thing.
-const DefaultTaxRate = "0.18"
+// It comes from the tenant's own pinned currency rather than from the request,
+// and is read locally rather than from tenant-service, so adding a line does
+// not stop working when another service is unreachable.
+func (s *Service) moneyFor(ctx context.Context, tenantID string) (repository.Money, error) {
+	money, err := s.repo.TenantMoney(ctx, tenantID)
+	if errors.Is(err, repository.ErrNotFound) {
+		return repository.Money{}, invalid(
+			"this tenant has not recorded any money yet; its first order must state a currency")
+	}
+	return money, err
+}
 
 // AddOrderItem adds a line and brings the order's totals back in step with its
 // contents.
@@ -89,13 +107,27 @@ func (s *Service) AddOrderItem(ctx context.Context, item *domain.OrderItem) (*re
 	// The wire carries these as JSON numbers, so they arrive as float64. They are
 	// converted to the exact decimals the columns hold, and a value finer than
 	// that is refused rather than rounded on the way in without telling anyone.
+	money, err := s.moneyFor(ctx, item.TenantID)
+	if err != nil {
+		return nil, err
+	}
+
 	quantity, err := exact.NonNegativeDecimal(item.Quantity, 3, 10)
 	if err != nil {
 		return nil, invalid(exact.Field("quantity", err).Error())
 	}
-	unitPrice, err := exact.NonNegativeDecimal(item.UnitPrice, 2, 12)
+	// Prices are held to the currency's own precision: a yen price has no
+	// decimals, a dinar price has three.
+	unitPrice, err := exact.NonNegativeDecimal(item.UnitPrice, money.Scale, 18)
 	if err != nil {
 		return nil, invalid(exact.Field("unit_price", err).Error())
+	}
+	taxRate, err := exact.NonNegativeDecimal(item.TaxRate, 3, 6)
+	if err != nil {
+		return nil, invalid(exact.Field("tax_rate", err).Error())
+	}
+	if item.TaxRate >= 1000 {
+		return nil, invalid("tax_rate must be a percentage, and 1000% is not one")
 	}
 
 	item.ID = ulidpkg.New().String()
@@ -107,7 +139,7 @@ func (s *Service) AddOrderItem(ctx context.Context, item *domain.OrderItem) (*re
 	}
 	item.UpdatedBy = item.CreatedBy
 
-	return s.repo.AddItemAndRetotal(ctx, item, quantity, unitPrice, DefaultTaxRate)
+	return s.repo.AddItemAndRetotal(ctx, item, quantity, unitPrice, taxRate, money)
 }
 
 func (s *Service) ConfirmOrder(ctx context.Context, id, tenantID, updatedBy string) (*domain.Order, error) {

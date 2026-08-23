@@ -75,23 +75,41 @@ func newTestID(prefix string) string {
 	return body + "0000000000000000000000000"[:26-len(body)]
 }
 
-const taxRate = "0.18"
+// Rates are percentages now, per line, so 18 means eighteen per cent.
+const taxRate = "18.000"
+
+// INR at two decimals, unless a test says otherwise.
+var rupees = Money{Code: "INR", Scale: 2}
 
 type fixture struct {
-	repo   Repository
-	tenant string
-	order  string
+	repo    Repository
+	tenant  string
+	order   string
+	money   Money
+	taxIncl bool
 }
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
+	return newFixtureIn(t, rupees, false)
+}
+
+func newFixtureIn(t *testing.T, money Money, taxInclusive bool) *fixture {
+	t.Helper()
 	pool := testPool(t)
-	f := &fixture{repo: New(pool), tenant: newTestID("tnt"), order: newTestID("ord")}
+	f := &fixture{
+		repo:    New(pool),
+		tenant:  newTestID("tnt"),
+		order:   newTestID("ord"),
+		money:   money,
+		taxIncl: taxInclusive,
+	}
 
 	if _, err := pool.Exec(context.Background(),
-		`INSERT INTO orders (id,tenant_id,customer_id,order_number,status,created_by,updated_by)
-		 VALUES ($1,$2,$3,$4,'draft',$5,$5)`,
-		f.order, f.tenant, newTestID("cst"), newTestID("num"), newTestID("usr")); err != nil {
+		`INSERT INTO orders (id,tenant_id,customer_id,order_number,status,currency,tax_inclusive,created_by,updated_by)
+		 VALUES ($1,$2,$3,$4,'draft',$5,$6,$7,$7)`,
+		f.order, f.tenant, newTestID("cst"), newTestID("num"),
+		money.Code, taxInclusive, newTestID("usr")); err != nil {
 		t.Fatalf("create order: %v", err)
 	}
 	return f
@@ -99,11 +117,16 @@ func newFixture(t *testing.T) *fixture {
 
 func (f *fixture) add(t *testing.T, quantity, unitPrice float64) (*ItemOutcome, error) {
 	t.Helper()
+	return f.addAt(t, quantity, unitPrice, taxRate)
+}
+
+func (f *fixture) addAt(t *testing.T, quantity, unitPrice float64, rate string) (*ItemOutcome, error) {
+	t.Helper()
 	q, err := exact.NonNegativeDecimal(quantity, 3, 10)
 	if err != nil {
 		t.Fatalf("quantity %v: %v", quantity, err)
 	}
-	p, err := exact.NonNegativeDecimal(unitPrice, 2, 12)
+	p, err := exact.NonNegativeDecimal(unitPrice, f.money.Scale, 18)
 	if err != nil {
 		t.Fatalf("unit price %v: %v", unitPrice, err)
 	}
@@ -117,7 +140,7 @@ func (f *fixture) add(t *testing.T, quantity, unitPrice float64) (*ItemOutcome, 
 		Status:    "pending",
 		CreatedBy: actor,
 		UpdatedBy: actor,
-	}, q, p, taxRate)
+	}, q, p, rate, f.money)
 }
 
 func (f *fixture) setStatus(t *testing.T, status string) {
@@ -289,7 +312,7 @@ func TestAFailedLineLeavesTheOrderUntouched(t *testing.T) {
 		Status:    "pending",
 		CreatedBy: actor,
 		UpdatedBy: actor,
-	}, "1.000", "99.00", taxRate)
+	}, "1.000", "99.00", taxRate, f.money)
 	if err == nil {
 		t.Fatal("a duplicate line was accepted")
 	}
@@ -300,5 +323,85 @@ func TestAFailedLineLeavesTheOrderUntouched(t *testing.T) {
 	}
 	if out.Order.SubTotal != 55 {
 		t.Errorf("sub total = %v, want 55 — the failed line changed the order", out.Order.SubTotal)
+	}
+}
+
+/* ---- multi-currency and tax ---- */
+
+func TestAYenOrderRoundsToWholeYen(t *testing.T) {
+	f := newFixtureIn(t, Money{Code: "JPY", Scale: 0}, false)
+
+	out, err := f.add(t, 3, 1250)
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if out.Item.TotalPrice != 3750 {
+		t.Errorf("line total = %v, want 3750", out.Item.TotalPrice)
+	}
+	if out.Order.TotalAmount != 4425 {
+		t.Errorf("total = %v, want 4425", out.Order.TotalAmount)
+	}
+}
+
+// Rounded at two decimals this line would be 1.01, and a tenth of a fils would
+// have been invented rather than earned.
+func TestADinarOrderLineRoundsAtThreeDecimals(t *testing.T) {
+	f := newFixtureIn(t, Money{Code: "KWD", Scale: 3}, false)
+
+	out, err := f.addAt(t, 3, 0.335, "0.000")
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if out.Item.TotalPrice != 1.005 {
+		t.Errorf("line total = %v, want 1.005", out.Item.TotalPrice)
+	}
+}
+
+func TestATenantCannotOrderInASecondCurrency(t *testing.T) {
+	f := newFixture(t)
+	if _, err := f.add(t, 1, 100); err != nil {
+		t.Fatal(err)
+	}
+
+	f.money = Money{Code: "USD", Scale: 2}
+	if _, err := f.add(t, 1, 100); !errors.Is(err, ErrCurrencyMismatch) {
+		t.Fatalf("err = %v, want ErrCurrencyMismatch", err)
+	}
+}
+
+func TestEachOrderLineIsTaxedAtItsOwnRate(t *testing.T) {
+	f := newFixture(t)
+
+	if _, err := f.addAt(t, 1, 100, "0.000"); err != nil { // exempt
+		t.Fatal(err)
+	}
+	out, err := f.addAt(t, 1, 100, "12.000")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if out.Order.SubTotal != 200 {
+		t.Errorf("sub total = %v, want 200", out.Order.SubTotal)
+	}
+	if out.Order.TaxAmount != 12 {
+		t.Errorf("tax = %v, want 12 — only the rated line should be taxed", out.Order.TaxAmount)
+	}
+}
+
+func TestTaxInclusiveOrdersExtractRatherThanAdd(t *testing.T) {
+	f := newFixtureIn(t, rupees, true)
+
+	out, err := f.addAt(t, 1, 120, "20.000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Order.TotalAmount != 120 {
+		t.Errorf("total = %v, want 120 — the quoted price is what is charged", out.Order.TotalAmount)
+	}
+	if out.Order.TaxAmount != 20 {
+		t.Errorf("tax = %v, want 20", out.Order.TaxAmount)
+	}
+	if out.Order.SubTotal != 100 {
+		t.Errorf("net = %v, want 100", out.Order.SubTotal)
 	}
 }

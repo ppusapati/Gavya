@@ -25,10 +25,10 @@ var ErrDuplicateOrderNumber = errors.New("an order with that number already exis
 // below are positional: adding a column to the table would silently misalign
 // every field after it.
 const orderCols = `id,tenant_id,customer_id,order_number,status,sub_total,tax_amount,total_amount,` +
-	`currency,COALESCE(shipping_address,''),COALESCE(notes,''),ordered_at,delivered_at,created_at,updated_at,created_by,` +
+	`currency,tax_inclusive,COALESCE(shipping_address,''),COALESCE(notes,''),ordered_at,delivered_at,created_at,updated_at,created_by,` +
 	`updated_by,deleted_at`
 
-const orderItemCols = `id,tenant_id,order_id,sku_id,product_id,quantity,unit_price,total_price,` +
+const orderItemCols = `id,tenant_id,order_id,sku_id,product_id,quantity,unit_price,total_price,tax_rate,` +
 	`status,created_at,updated_at,created_by,updated_by`
 
 const invoiceCols = `id,tenant_id,order_id,invoice_number,status,sub_total,tax_amount,total_amount,` +
@@ -41,7 +41,11 @@ type Repository interface {
 	UpdateOrderStatus(ctx context.Context, id, tenantID, status, updatedBy string) (*domain.Order, error)
 	// AddItemAndRetotal writes a line and its order's totals together, so an
 	// order can never disagree with the sum of its own lines.
-	AddItemAndRetotal(ctx context.Context, item *domain.OrderItem, quantity, unitPrice, taxRate string) (*ItemOutcome, error)
+	// TenantMoney reports the currency this tenant records money in.
+	TenantMoney(ctx context.Context, tenantID string) (Money, error)
+	// PinTenantMoney fixes that currency, or confirms the one already fixed.
+	PinTenantMoney(ctx context.Context, tenantID string, money Money) error
+	AddItemAndRetotal(ctx context.Context, item *domain.OrderItem, quantity, unitPrice, taxRate string, money Money) (*ItemOutcome, error)
 	ListOrderItems(ctx context.Context, orderID, tenantID string) ([]*domain.OrderItem, error)
 	CreateInvoice(ctx context.Context, inv *domain.Invoice) (*domain.Invoice, error)
 	GetInvoice(ctx context.Context, id, tenantID string) (*domain.Invoice, error)
@@ -153,7 +157,7 @@ func (r *repo) GetInvoice(ctx context.Context, id, tenantID string) (*domain.Inv
 func scanOrder(s scanner) (*domain.Order, error) {
 	o := &domain.Order{}
 	err := s.Scan(&o.ID, &o.TenantID, &o.CustomerID, &o.OrderNumber, &o.Status,
-		&o.SubTotal, &o.TaxAmount, &o.TotalAmount, &o.Currency, &o.ShippingAddress, &o.Notes,
+		&o.SubTotal, &o.TaxAmount, &o.TotalAmount, &o.Currency, &o.TaxInclusive, &o.ShippingAddress, &o.Notes,
 		&o.OrderedAt, &o.DeliveredAt, &o.CreatedAt, &o.UpdatedAt, &o.CreatedBy, &o.UpdatedBy, &o.DeletedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -167,7 +171,7 @@ func scanOrder(s scanner) (*domain.Order, error) {
 func scanOrderItem(s scanner) (*domain.OrderItem, error) {
 	item := &domain.OrderItem{}
 	err := s.Scan(&item.ID, &item.TenantID, &item.OrderID, &item.SKUID, &item.ProductID,
-		&item.Quantity, &item.UnitPrice, &item.TotalPrice, &item.Status,
+		&item.Quantity, &item.UnitPrice, &item.TotalPrice, &item.TaxRate, &item.Status,
 		&item.CreatedAt, &item.UpdatedAt, &item.CreatedBy, &item.UpdatedBy)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

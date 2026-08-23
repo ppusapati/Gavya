@@ -52,6 +52,8 @@ func classify(err error) error {
 		return connect.NewError(connect.CodeNotFound, err)
 	case errors.Is(err, repository.ErrDuplicateOrderNumber):
 		return connect.NewError(connect.CodeAlreadyExists, err)
+	case errors.Is(err, repository.ErrCurrencyMismatch):
+		return connect.NewError(connect.CodeInvalidArgument, err)
 	case errors.Is(err, repository.ErrNotDraft):
 		// The request was well formed; the order's state refused it. Retrying
 		// changes nothing until the order changes.
@@ -66,7 +68,11 @@ func classify(err error) error {
 type CreateOrderRequest struct {
 	TenantID        string    `json:"tenant_id"`
 	CustomerID      string    `json:"customer_id"`
-	Currency        string    `json:"currency"`
+	// Currency is required. There is no default: an order priced in an assumed
+	// currency is an order nobody can fulfil.
+	Currency string `json:"currency"`
+	// TaxInclusive says whether the line prices already contain the tax.
+	TaxInclusive    bool      `json:"tax_inclusive"`
 	ShippingAddress string    `json:"shipping_address"`
 	Notes           string    `json:"notes"`
 	OrderedAt       time.Time `json:"ordered_at"`
@@ -85,6 +91,9 @@ type AddOrderItemRequest struct {
 	ProductID string  `json:"product_id"`
 	Quantity  float64 `json:"quantity"`
 	UnitPrice float64 `json:"unit_price"`
+	// TaxRate is a percentage for this line: 0 for an exempt good, 12 for one
+	// rated at twelve per cent.
+	TaxRate float64 `json:"tax_rate"`
 	CreatedBy string  `json:"created_by"`
 }
 
@@ -122,6 +131,7 @@ func (h *Handler) CreateOrder(ctx context.Context, req *connect.Request[CreateOr
 		TenantID:        m.TenantID,
 		CustomerID:      m.CustomerID,
 		Currency:        m.Currency,
+		TaxInclusive:    m.TaxInclusive,
 		ShippingAddress: m.ShippingAddress,
 		Notes:           m.Notes,
 		OrderedAt:       m.OrderedAt,
@@ -150,6 +160,7 @@ func (h *Handler) AddOrderItem(ctx context.Context, req *connect.Request[AddOrde
 		ProductID: m.ProductID,
 		Quantity:  m.Quantity,
 		UnitPrice: m.UnitPrice,
+		TaxRate:   m.TaxRate,
 		CreatedBy: m.CreatedBy,
 	})
 	if err != nil {
