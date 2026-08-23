@@ -25,7 +25,7 @@ var ErrDuplicateInvoiceNumber = errors.New("an invoice with that number already 
 // below are positional: adding a column to the table would silently misalign
 // every field after it.
 const invoiceCols = `id,tenant_id,customer_id,invoice_number,COALESCE(reference_id,''),COALESCE(reference_type,''),status,` +
-	`sub_total,tax_amount,total_amount,currency,issued_at,due_at,COALESCE(paid_at,'0001-01-01 00:00:00+00'::timestamptz),COALESCE(notes,''),created_at,` +
+	`sub_total,tax_amount,total_amount,currency,tax_inclusive,issued_at,due_at,COALESCE(paid_at,'0001-01-01 00:00:00+00'::timestamptz),COALESCE(notes,''),created_at,` +
 	`updated_at,created_by,updated_by,deleted_at`
 
 const invoiceItemCols = `id,tenant_id,invoice_id,description,quantity,unit_price,total_price,` +
@@ -38,14 +38,18 @@ type Repository interface {
 	CreateInvoice(ctx context.Context, inv *domain.Invoice) (*domain.Invoice, error)
 	GetInvoice(ctx context.Context, id, tenantID string) (*domain.Invoice, error)
 	UpdateInvoiceStatus(ctx context.Context, id, tenantID, status, updatedBy string) (*domain.Invoice, error)
+	// TenantMoney reports the currency this tenant records money in.
+	TenantMoney(ctx context.Context, tenantID string) (Money, error)
+	// PinTenantMoney fixes that currency, or confirms the one already fixed.
+	PinTenantMoney(ctx context.Context, tenantID string, money Money) error
 	// AddItemAndRetotal writes a line and its invoice's totals together, so an
 	// invoice can never disagree with the sum of its own lines.
-	AddItemAndRetotal(ctx context.Context, item *domain.InvoiceItem, quantity, unitPrice, taxRate string) (*ItemOutcome, error)
+	AddItemAndRetotal(ctx context.Context, item *domain.InvoiceItem, quantity, unitPrice, taxRate string, money Money) (*ItemOutcome, error)
 	ListOutstandingInvoices(ctx context.Context, tenantID string) ([]*domain.Invoice, error)
 	ListInvoiceItems(ctx context.Context, invoiceID, tenantID string) ([]*domain.InvoiceItem, error)
 	// RecordPaymentAndSettle writes a payment and settles the invoice together,
 	// so an invoice's status cannot disagree with the money against it.
-	RecordPaymentAndSettle(ctx context.Context, p *domain.Payment, amount string) (*PaymentOutcome, error)
+	RecordPaymentAndSettle(ctx context.Context, p *domain.Payment, amount string, money Money) (*PaymentOutcome, error)
 }
 
 type repo struct {
@@ -62,10 +66,10 @@ type scanner interface {
 
 func (r *repo) CreateInvoice(ctx context.Context, inv *domain.Invoice) (*domain.Invoice, error) {
 	row := r.pool.QueryRow(ctx,
-		`INSERT INTO invoices (id,tenant_id,customer_id,invoice_number,reference_id,reference_type,status,sub_total,tax_amount,total_amount,currency,issued_at,due_at,notes,created_by,updated_by)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING `+invoiceCols,
+		`INSERT INTO invoices (id,tenant_id,customer_id,invoice_number,reference_id,reference_type,status,sub_total,tax_amount,total_amount,currency,tax_inclusive,issued_at,due_at,notes,created_by,updated_by)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING `+invoiceCols,
 		inv.ID, inv.TenantID, inv.CustomerID, inv.InvoiceNumber, inv.ReferenceID, inv.ReferenceType,
-		inv.Status, inv.SubTotal, inv.TaxAmount, inv.TotalAmount, inv.Currency,
+		inv.Status, inv.SubTotal, inv.TaxAmount, inv.TotalAmount, inv.Currency, inv.TaxInclusive,
 		inv.IssuedAt, inv.DueAt, inv.Notes, inv.CreatedBy, inv.UpdatedBy,
 	)
 	out, err := scanInvoice(row)
@@ -140,7 +144,7 @@ func (r *repo) ListInvoiceItems(ctx context.Context, invoiceID, tenantID string)
 func scanInvoice(s scanner) (*domain.Invoice, error) {
 	inv := &domain.Invoice{}
 	err := s.Scan(&inv.ID, &inv.TenantID, &inv.CustomerID, &inv.InvoiceNumber, &inv.ReferenceID,
-		&inv.ReferenceType, &inv.Status, &inv.SubTotal, &inv.TaxAmount, &inv.TotalAmount, &inv.Currency,
+		&inv.ReferenceType, &inv.Status, &inv.SubTotal, &inv.TaxAmount, &inv.TotalAmount, &inv.Currency, &inv.TaxInclusive,
 		&inv.IssuedAt, &inv.DueAt, &inv.PaidAt, &inv.Notes,
 		&inv.CreatedAt, &inv.UpdatedAt, &inv.CreatedBy, &inv.UpdatedBy, &inv.DeletedAt)
 	if err != nil {

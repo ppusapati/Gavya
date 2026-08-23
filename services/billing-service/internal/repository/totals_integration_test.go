@@ -75,23 +75,41 @@ func newTestID(prefix string) string {
 	return body + "0000000000000000000000000"[:26-len(body)]
 }
 
-const taxRate = "0.18"
+// Rates are percentages now, per line, so 18 means eighteen per cent.
+const taxRate = "18.000"
+
+// INR at two decimals, unless a test says otherwise.
+var rupees = Money{Code: "INR", Scale: 2}
 
 type fixture struct {
-	repo   Repository
-	tenant string
-	invoice string
+	repo     Repository
+	tenant   string
+	invoice  string
+	money    Money
+	taxIncl  bool
 }
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
+	return newFixtureIn(t, rupees, false)
+}
+
+func newFixtureIn(t *testing.T, money Money, taxInclusive bool) *fixture {
+	t.Helper()
 	pool := testPool(t)
-	f := &fixture{repo: New(pool), tenant: newTestID("tnt"), invoice: newTestID("inv")}
+	f := &fixture{
+		repo:    New(pool),
+		tenant:  newTestID("tnt"),
+		invoice: newTestID("inv"),
+		money:   money,
+		taxIncl: taxInclusive,
+	}
 
 	if _, err := pool.Exec(context.Background(),
-		`INSERT INTO invoices (id,tenant_id,customer_id,invoice_number,status,issued_at,due_at,created_by,updated_by)
-		 VALUES ($1,$2,$3,$4,'draft',NOW(),NOW() + INTERVAL '30 days',$5,$5)`,
-		f.invoice, f.tenant, newTestID("cst"), newTestID("num"), newTestID("usr")); err != nil {
+		`INSERT INTO invoices (id,tenant_id,customer_id,invoice_number,status,currency,tax_inclusive,issued_at,due_at,created_by,updated_by)
+		 VALUES ($1,$2,$3,$4,'draft',$5,$6,NOW(),NOW() + INTERVAL '30 days',$7,$7)`,
+		f.invoice, f.tenant, newTestID("cst"), newTestID("num"),
+		money.Code, taxInclusive, newTestID("usr")); err != nil {
 		t.Fatalf("create invoice: %v", err)
 	}
 	return f
@@ -99,11 +117,16 @@ func newFixture(t *testing.T) *fixture {
 
 func (f *fixture) add(t *testing.T, quantity, unitPrice float64) (*ItemOutcome, error) {
 	t.Helper()
+	return f.addAt(t, quantity, unitPrice, taxRate)
+}
+
+func (f *fixture) addAt(t *testing.T, quantity, unitPrice float64, rate string) (*ItemOutcome, error) {
+	t.Helper()
 	q, err := exact.NonNegativeDecimal(quantity, 3, 10)
 	if err != nil {
 		t.Fatalf("quantity %v: %v", quantity, err)
 	}
-	p, err := exact.NonNegativeDecimal(unitPrice, 2, 12)
+	p, err := exact.NonNegativeDecimal(unitPrice, f.money.Scale, 18)
 	if err != nil {
 		t.Fatalf("unit price %v: %v", unitPrice, err)
 	}
@@ -115,7 +138,7 @@ func (f *fixture) add(t *testing.T, quantity, unitPrice float64) (*ItemOutcome, 
 		Description: "Toned milk, 1L pouch",
 		CreatedBy:   actor,
 		UpdatedBy:   actor,
-	}, q, p, taxRate)
+	}, q, p, rate, f.money)
 }
 
 func (f *fixture) setStatus(t *testing.T, status string) {
@@ -285,7 +308,7 @@ func TestAFailedLineLeavesTheInvoiceUntouched(t *testing.T) {
 		Description: "duplicate",
 		CreatedBy:   actor,
 		UpdatedBy:   actor,
-	}, "1.000", "99.00", taxRate)
+	}, "1.000", "99.00", taxRate, f.money)
 	if err == nil {
 		t.Fatal("a duplicate line was accepted")
 	}
@@ -315,7 +338,7 @@ func (f *fixture) pay(t *testing.T, amount float64) (*PaymentOutcome, error) {
 		PaidAt:        time.Now(),
 		CreatedBy:     actor,
 		UpdatedBy:     actor,
-	}, a)
+	}, a, f.money)
 }
 
 func TestAPartPaymentLeavesTheInvoiceUnsettled(t *testing.T) {
@@ -412,5 +435,187 @@ func TestAlreadySettledInvoicesKeepTheirPaidInstant(t *testing.T) {
 	}
 	if !out.Invoice.PaidAt.Equal(*settled.PaidAt) {
 		t.Errorf("paid instant moved from %v to %v", settled.PaidAt, out.Invoice.PaidAt)
+	}
+}
+
+/* ---- multi-currency ---- */
+
+// A yen has no minor unit. Rounding a yen line to two decimals would produce a
+// figure no Japanese invoice could show, and storing ¥100 as 100.00 misstates
+// what the number is.
+func TestAYenInvoiceRoundsToWholeYen(t *testing.T) {
+	f := newFixtureIn(t, Money{Code: "JPY", Scale: 0}, false)
+
+	out, err := f.add(t, 3, 1250) // 3 × ¥1,250
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if out.Item.TotalPrice != 3750 {
+		t.Errorf("line total = %v, want 3750", out.Item.TotalPrice)
+	}
+	// 3750 × 18% = 675 exactly, with no minor unit to round into.
+	if out.Invoice.TaxAmount != 675 {
+		t.Errorf("tax = %v, want 675", out.Invoice.TaxAmount)
+	}
+	if out.Invoice.TotalAmount != 4425 {
+		t.Errorf("total = %v, want 4425", out.Invoice.TotalAmount)
+	}
+}
+
+// A dinar has three. Rounding to two would discard a fils, which is real money.
+func TestADinarInvoiceKeepsItsThirdDecimal(t *testing.T) {
+	f := newFixtureIn(t, Money{Code: "KWD", Scale: 3}, false)
+
+	out, err := f.add(t, 2, 1.375) // 2 × KD 1.375
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if out.Item.TotalPrice != 2.750 {
+		t.Errorf("line total = %v, want 2.750", out.Item.TotalPrice)
+	}
+	// 2.750 × 18% = 0.495 exactly — a figure that rounding to two decimals
+	// would have turned into 0.50 and quietly overcharged by five fils.
+	if out.Invoice.TaxAmount != 0.495 {
+		t.Errorf("tax = %v, want 0.495", out.Invoice.TaxAmount)
+	}
+}
+
+// A tenant records money in one currency. A second one arriving is refused by
+// the database rather than sitting alongside the first, indistinguishable in
+// every total that adds them up.
+func TestATenantCannotRecordASecondCurrency(t *testing.T) {
+	f := newFixture(t)
+	if _, err := f.add(t, 1, 100); err != nil {
+		t.Fatal(err)
+	}
+
+	f.money = Money{Code: "USD", Scale: 2}
+	if _, err := f.add(t, 1, 100); !errors.Is(err, ErrCurrencyMismatch) {
+		t.Fatalf("err = %v, want ErrCurrencyMismatch", err)
+	}
+}
+
+// The code and the scale have to agree. The same digits at a different scale
+// are a different amount of money.
+func TestACurrencyAtTheWrongScaleIsRefused(t *testing.T) {
+	f := newFixture(t)
+	if _, err := f.add(t, 1, 100); err != nil {
+		t.Fatal(err)
+	}
+
+	f.money = Money{Code: "INR", Scale: 3}
+	if _, err := f.add(t, 1, 100); !errors.Is(err, ErrCurrencyMismatch) {
+		t.Fatalf("err = %v, want ErrCurrencyMismatch", err)
+	}
+}
+
+func TestAPaymentInADifferentCurrencyFromItsInvoiceIsRefused(t *testing.T) {
+	f := newFixture(t)
+	if _, err := f.add(t, 1, 100); err != nil {
+		t.Fatal(err)
+	}
+
+	f.money = Money{Code: "EUR", Scale: 2}
+	if _, err := f.pay(t, 118); !errors.Is(err, ErrCurrencyMismatch) {
+		t.Fatalf("err = %v, want ErrCurrencyMismatch", err)
+	}
+}
+
+/* ---- tax ---- */
+
+// The rate belongs to the line. An invoice that mixes exempt and rated goods —
+// which a dairy catalogue does routinely — cannot be taxed at one rate.
+func TestEachLineIsTaxedAtItsOwnRate(t *testing.T) {
+	f := newFixture(t)
+
+	if _, err := f.addAt(t, 1, 100, "0.000"); err != nil { // exempt: fresh milk
+		t.Fatal(err)
+	}
+	out, err := f.addAt(t, 1, 100, "12.000") // rated: ghee
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if out.Invoice.SubTotal != 200 {
+		t.Errorf("sub total = %v, want 200", out.Invoice.SubTotal)
+	}
+	if out.Invoice.TaxAmount != 12 {
+		t.Errorf("tax = %v, want 12 — only the rated line should be taxed", out.Invoice.TaxAmount)
+	}
+	if out.Invoice.TotalAmount != 212 {
+		t.Errorf("total = %v, want 212", out.Invoice.TotalAmount)
+	}
+}
+
+// Much of the world quotes a price that already contains the tax. The tax is
+// then extracted from the price rather than added to it, and getting that
+// backwards overcharges every customer.
+func TestTaxInclusivePricingExtractsRatherThanAdds(t *testing.T) {
+	f := newFixtureIn(t, rupees, true)
+
+	// £120 quoted inclusive of 20% VAT is £100 net and £20 tax.
+	out, err := f.addAt(t, 1, 120, "20.000")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if out.Invoice.TotalAmount != 120 {
+		t.Errorf("total = %v, want 120 — the quoted price is what is charged", out.Invoice.TotalAmount)
+	}
+	if out.Invoice.TaxAmount != 20 {
+		t.Errorf("tax = %v, want 20", out.Invoice.TaxAmount)
+	}
+	if out.Invoice.SubTotal != 100 {
+		t.Errorf("net = %v, want 100", out.Invoice.SubTotal)
+	}
+}
+
+// The same figures the other way round, so the two models cannot be confused.
+func TestTaxExclusivePricingAddsRatherThanExtracts(t *testing.T) {
+	f := newFixtureIn(t, rupees, false)
+
+	out, err := f.addAt(t, 1, 120, "20.000")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if out.Invoice.SubTotal != 120 {
+		t.Errorf("net = %v, want 120", out.Invoice.SubTotal)
+	}
+	if out.Invoice.TaxAmount != 24 {
+		t.Errorf("tax = %v, want 24", out.Invoice.TaxAmount)
+	}
+	if out.Invoice.TotalAmount != 144 {
+		t.Errorf("total = %v, want 144", out.Invoice.TotalAmount)
+	}
+}
+
+func TestAZeroRatedInvoiceCarriesNoTax(t *testing.T) {
+	f := newFixture(t)
+
+	out, err := f.addAt(t, 2, 45.50, "0.000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Invoice.TaxAmount != 0 {
+		t.Errorf("tax = %v, want 0", out.Invoice.TaxAmount)
+	}
+	if out.Invoice.TotalAmount != out.Invoice.SubTotal {
+		t.Errorf("total %v differs from net %v with no tax", out.Invoice.TotalAmount, out.Invoice.SubTotal)
+	}
+}
+
+// The line total is rounded at the currency's scale, not at two. A dinar line
+// whose product lands on the third decimal proves it: rounded at two it would
+// be 1.01, and the tenth of a fils would have been invented rather than earned.
+func TestADinarLineTotalRoundsAtThreeDecimals(t *testing.T) {
+	f := newFixtureIn(t, Money{Code: "KWD", Scale: 3}, false)
+
+	out, err := f.addAt(t, 3, 0.335, "0.000")
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if out.Item.TotalPrice != 1.005 {
+		t.Errorf("line total = %v, want 1.005 (3 × 0.335, rounded at three decimals)", out.Item.TotalPrice)
 	}
 }

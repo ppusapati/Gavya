@@ -68,8 +68,12 @@ type CreateInvoiceRequest struct {
 	CustomerID    string    `json:"customer_id"`
 	ReferenceID   string    `json:"reference_id"`
 	ReferenceType string    `json:"reference_type"`
-	Currency      string    `json:"currency"`
-	IssuedAt      time.Time `json:"issued_at"`
+	// Currency is required. There is no default: an invoice whose currency was
+	// assumed would be an invoice nobody can be asked to pay.
+	Currency string `json:"currency"`
+	// TaxInclusive says whether the line prices already contain the tax.
+	TaxInclusive bool      `json:"tax_inclusive"`
+	IssuedAt     time.Time `json:"issued_at"`
 	Notes         string    `json:"notes"`
 	CreatedBy     string    `json:"created_by"`
 }
@@ -137,6 +141,7 @@ func (h *Handler) CreateInvoice(ctx context.Context, req *connect.Request[Create
 		ReferenceID:   m.ReferenceID,
 		ReferenceType: m.ReferenceType,
 		Currency:      m.Currency,
+		TaxInclusive:  m.TaxInclusive,
 		IssuedAt:      m.IssuedAt,
 		Notes:         m.Notes,
 		CreatedBy:     m.CreatedBy,

@@ -43,7 +43,18 @@ type ItemOutcome struct {
 //
 // The arithmetic now happens in the database, in the columns' own type, under
 // the lock that the write holds.
-func (r *repo) AddItemAndRetotal(ctx context.Context, item *domain.InvoiceItem, quantity, unitPrice, taxRate string) (*ItemOutcome, error) {
+// Money describes the currency an amount is in. It travels with every write so
+// the repository never has to assume one, and so a tenant's records cannot end
+// up in two currencies that later get added together.
+type Money struct {
+	Code string
+	// Scale is how many digits after the point this currency has: 2 for a rupee,
+	// 0 for a yen, 3 for a dinar. Every rounding step below uses it rather than
+	// a hardcoded 2, which is what lets one schema serve every country.
+	Scale int32
+}
+
+func (r *repo) AddItemAndRetotal(ctx context.Context, item *domain.InvoiceItem, quantity, unitPrice, taxRate string, money Money) (*ItemOutcome, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin: %w", err)
@@ -51,9 +62,11 @@ func (r *repo) AddItemAndRetotal(ctx context.Context, item *domain.InvoiceItem, 
 	defer tx.Rollback(ctx)
 
 	var status string
+	var taxInclusive bool
 	if err := tx.QueryRow(ctx,
-		`SELECT status FROM invoices WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL FOR UPDATE`,
-		item.InvoiceID, item.TenantID).Scan(&status); err != nil {
+		`SELECT status, tax_inclusive FROM invoices
+		 WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL FOR UPDATE`,
+		item.InvoiceID, item.TenantID).Scan(&status, &taxInclusive); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -62,36 +75,51 @@ func (r *repo) AddItemAndRetotal(ctx context.Context, item *domain.InvoiceItem, 
 	if status != domain.InvoiceDraft {
 		return nil, fmt.Errorf("%w: this one is %s", ErrNotDraft, status)
 	}
+	if err := pinCurrency(ctx, tx, item.TenantID, money.Code, money.Scale); err != nil {
+		return nil, err
+	}
 
 	// Rounded once, at the end. Rounding the inputs first would give a different
 	// figure, and the two would be indistinguishable after the fact.
 	newItem, err := scanInvoiceItem(tx.QueryRow(ctx,
 		`INSERT INTO invoice_items (id,tenant_id,invoice_id,description,quantity,unit_price,total_price,tax_rate,created_by,updated_by)
-		 VALUES ($1,$2,$3,$4,$5::numeric,$6::numeric,ROUND($5::numeric * $6::numeric, 2),$7::numeric,$8,$9)
+		 VALUES ($1,$2,$3,$4,$5::numeric,$6::numeric,ROUND($5::numeric * $6::numeric, $10),$7::numeric,$8,$9)
 		 RETURNING `+invoiceItemCols,
 		item.ID, item.TenantID, item.InvoiceID, item.Description,
-		quantity, unitPrice, item.TaxRate, item.CreatedBy, item.UpdatedBy))
+		quantity, unitPrice, taxRate, item.CreatedBy, item.UpdatedBy, money.Scale))
 	if err != nil {
 		return nil, fmt.Errorf("add item: %w", err)
 	}
 
 	// Recomputed from the lines rather than adjusted by the new one, so the
 	// invoice cannot drift away from what it is billing for.
+	// Tax is worked out per line, from that line's own rate, and rounded there —
+	// which is how it appears on a printed invoice and what a tax authority
+	// expects to be able to check line by line.
+	//
+	// Where the price is quoted tax-inclusive the tax is extracted from it
+	// rather than added to it: gross * rate / (100 + rate). Getting that
+	// backwards overcharges every customer in half the world.
 	invoice, err := scanInvoice(tx.QueryRow(ctx,
 		`WITH lines AS (
-		     SELECT COALESCE(SUM(total_price), 0) AS lines_total
+		     SELECT
+		       COALESCE(SUM(total_price), 0) AS gross,
+		       COALESCE(SUM(
+		         CASE WHEN $3 THEN ROUND(total_price * tax_rate / (100 + tax_rate), $4)
+		              ELSE ROUND(total_price * tax_rate / 100, $4) END
+		       ), 0) AS tax
 		     FROM invoice_items WHERE invoice_id=$1 AND tenant_id=$2
 		 )
 		 UPDATE invoices SET
-		     sub_total    = lines.lines_total,
-		     tax_amount   = ROUND(lines.lines_total * $3::numeric, 2),
-		     total_amount = lines.lines_total + ROUND(lines.lines_total * $3::numeric, 2),
-		     updated_by   = $4,
+		     sub_total    = CASE WHEN $3 THEN lines.gross - lines.tax ELSE lines.gross END,
+		     tax_amount   = lines.tax,
+		     total_amount = CASE WHEN $3 THEN lines.gross ELSE lines.gross + lines.tax END,
+		     updated_by   = $5,
 		     updated_at   = NOW()
 		 FROM lines
 		 WHERE invoices.id=$1 AND invoices.tenant_id=$2 AND invoices.deleted_at IS NULL
 		 RETURNING `+invoiceCols,
-		item.InvoiceID, item.TenantID, taxRate, item.UpdatedBy))
+		item.InvoiceID, item.TenantID, taxInclusive, money.Scale, item.UpdatedBy))
 	if err != nil {
 		return nil, fmt.Errorf("retotal invoice: %w", err)
 	}
@@ -123,7 +151,7 @@ type PaymentOutcome struct {
 //   - The comparison ran on two float64 values read out of NUMERIC columns.
 //     Whether a payment covers an invoice is now decided by the database, in
 //     the columns' own type.
-func (r *repo) RecordPaymentAndSettle(ctx context.Context, p *domain.Payment, amount string) (*PaymentOutcome, error) {
+func (r *repo) RecordPaymentAndSettle(ctx context.Context, p *domain.Payment, amount string, money Money) (*PaymentOutcome, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin: %w", err)
@@ -131,10 +159,11 @@ func (r *repo) RecordPaymentAndSettle(ctx context.Context, p *domain.Payment, am
 	defer tx.Rollback(ctx)
 
 	// Locked so that two payments cannot each decide the invoice is short.
-	var status string
+	var status, invoiceCurrency string
 	if err := tx.QueryRow(ctx,
-		`SELECT status FROM invoices WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL FOR UPDATE`,
-		p.InvoiceID, p.TenantID).Scan(&status); err != nil {
+		`SELECT status, currency FROM invoices
+		 WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL FOR UPDATE`,
+		p.InvoiceID, p.TenantID).Scan(&status, &invoiceCurrency); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -142,6 +171,16 @@ func (r *repo) RecordPaymentAndSettle(ctx context.Context, p *domain.Payment, am
 	}
 	if status == InvoiceCancelledStatus {
 		return nil, fmt.Errorf("%w: this one is cancelled", ErrNotPayable)
+	}
+	if err := pinCurrency(ctx, tx, p.TenantID, money.Code, money.Scale); err != nil {
+		return nil, err
+	}
+	// A payment in a different currency from its invoice cannot be compared
+	// against the amount owed, and adding it to the total paid would be adding
+	// two different kinds of money together.
+	if invoiceCurrency != money.Code {
+		return nil, fmt.Errorf("%w: this invoice is in %s, the payment is in %s",
+			ErrCurrencyMismatch, invoiceCurrency, money.Code)
 	}
 
 	payment, err := scanPayment(tx.QueryRow(ctx,

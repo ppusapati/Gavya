@@ -14,7 +14,12 @@ type Invoice struct {
 	TaxAmount     float64
 	TotalAmount   float64
 	Currency      string
-	IssuedAt      time.Time
+	// TaxInclusive says whether the prices on this invoice already contain the
+	// tax. Europe, the UK and Indian retail generally quote inclusive; the
+	// United States quotes exclusive. Getting it backwards overcharges or
+	// undercharges every line.
+	TaxInclusive bool
+	IssuedAt     time.Time
 	DueAt         time.Time
 	PaidAt        *time.Time
 	Notes         string
