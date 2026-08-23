@@ -25,7 +25,7 @@ var ErrDuplicateSlug = errors.New("a tenant with that slug already exists")
 // below are positional: adding a column to the table would silently misalign
 // every field after it.
 const tenantCols = `id,name,slug,plan,status,contact_email,COALESCE(contact_phone,''),COALESCE(address,''),country,` +
-	`timezone,currency,max_users,max_cattle,created_at,updated_at,created_by,updated_by,deleted_at`
+	`timezone,currency,currency_scale,max_users,max_cattle,created_at,updated_at,created_by,updated_by,deleted_at`
 
 const settingCols = `id,tenant_id,key,COALESCE(value,''),data_type,created_at,updated_at,created_by,updated_by`
 
@@ -54,11 +54,11 @@ type scanner interface {
 
 func (r *repo) CreateTenant(ctx context.Context, t *domain.Tenant) (*domain.Tenant, error) {
 	row := r.pool.QueryRow(ctx,
-		`INSERT INTO tenants (id,name,slug,plan,status,contact_email,contact_phone,address,country,timezone,currency,max_users,max_cattle,created_by,updated_by)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+		`INSERT INTO tenants (id,name,slug,plan,status,contact_email,contact_phone,address,country,timezone,currency,currency_scale,max_users,max_cattle,created_by,updated_by)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 		 RETURNING `+tenantCols,
 		t.ID, t.Name, t.Slug, t.Plan, t.Status, t.ContactEmail, t.ContactPhone,
-		t.Address, t.Country, t.Timezone, t.Currency, t.MaxUsers, t.MaxCattle,
+		t.Address, t.Country, t.Timezone, t.Currency, t.CurrencyScale, t.MaxUsers, t.MaxCattle,
 		t.CreatedBy, t.UpdatedBy,
 	)
 	out, err := scanTenant(row)
@@ -160,7 +160,7 @@ func (r *repo) ListTenantSettings(ctx context.Context, tenantID string) ([]*doma
 func scanTenant(s scanner) (*domain.Tenant, error) {
 	t := &domain.Tenant{}
 	err := s.Scan(&t.ID, &t.Name, &t.Slug, &t.Plan, &t.Status, &t.ContactEmail, &t.ContactPhone,
-		&t.Address, &t.Country, &t.Timezone, &t.Currency, &t.MaxUsers, &t.MaxCattle,
+		&t.Address, &t.Country, &t.Timezone, &t.Currency, &t.CurrencyScale, &t.MaxUsers, &t.MaxCattle,
 		&t.CreatedAt, &t.UpdatedAt, &t.CreatedBy, &t.UpdatedBy, &t.DeletedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

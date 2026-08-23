@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/ppusapati/gavya/libs/integrity/currency"
 	"github.com/ppusapati/gavya/services/tenant-service/internal/domain"
 	ulidpkg "p9e.in/samavaya/packages/ULID"
 )
@@ -54,9 +55,20 @@ func (s *Service) CreateTenant(ctx context.Context, t *domain.Tenant) (*domain.T
 	if t.Timezone == "" {
 		t.Timezone = "UTC"
 	}
-	if t.Currency == "" {
-		t.Currency = "INR"
+	// A tenant's currency is chosen once, at creation, and everything recorded
+	// against it afterwards is read in that currency. There is no default: a
+	// deployment in Kenya or Japan that silently got rupees would be wrong in a
+	// way nothing downstream could detect.
+	code, err := currency.Normalise(t.Currency)
+	if err != nil {
+		return nil, invalid("currency: " + err.Error())
 	}
+	scale, err := currency.Scale(code)
+	if err != nil {
+		return nil, invalid("currency: " + err.Error())
+	}
+	t.Currency = code
+	t.CurrencyScale = scale
 	if t.MaxUsers == 0 {
 		t.MaxUsers = 5
 	}
@@ -81,10 +93,31 @@ func (s *Service) ListTenants(ctx context.Context) ([]*domain.Tenant, error) {
 	return s.repo.ListTenants(ctx)
 }
 
+// UpdateTenant changes what can be changed. The currency is not on that list:
+// once money has been recorded against a tenant, changing the currency would
+// silently reinterpret every amount already written — the same figures, now
+// claiming to be a different kind of money. A tenant that needs a different
+// currency needs a different tenant.
 func (s *Service) UpdateTenant(ctx context.Context, t *domain.Tenant) (*domain.Tenant, error) {
 	if t.ID == "" {
 		return nil, invalid("id is required")
 	}
+	existing, err := s.repo.GetTenant(ctx, t.ID)
+	if err != nil {
+		return nil, err
+	}
+	if t.Currency != "" {
+		code, err := currency.Normalise(t.Currency)
+		if err != nil {
+			return nil, invalid("currency: " + err.Error())
+		}
+		if code != existing.Currency {
+			return nil, invalid("a tenant's currency cannot be changed once it is set; " +
+				"this one records money in " + existing.Currency)
+		}
+	}
+	t.Currency = existing.Currency
+	t.CurrencyScale = existing.CurrencyScale
 	if t.UpdatedBy == "" {
 		t.UpdatedBy = "system"
 	}
