@@ -531,3 +531,16 @@ func TestTheConversionKeepsTheReferentialActions(t *testing.T) {
 		t.Errorf("%d foreign keys cascade on delete, want the 1 the schema declares", cascades)
 	}
 }
+
+// applySQL applies one file to a connection. Shared so a test that needs an
+// extra schema on top of the isolated database does not have to reopen it.
+func applySQL(t *testing.T, conn *pgx.Conn, root, rel string) {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(root, rel))
+	if err != nil {
+		t.Fatalf("read %s: %v", rel, err)
+	}
+	if _, err := conn.Exec(context.Background(), string(b)); err != nil {
+		t.Fatalf("apply %s: %v", rel, err)
+	}
+}

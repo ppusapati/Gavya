@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -37,6 +38,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	route("ListAuditLogs", connectjson.Unary(h.ListAuditLogs))
 	route("ListAuditLogsByResource", connectjson.Unary(h.ListAuditLogsByResource))
 	route("ListAuditLogsByActor", connectjson.Unary(h.ListAuditLogsByActor))
+	route("SealAuditChain", connectjson.Unary(h.SealAuditChain))
+	route("VerifyAuditChain", connectjson.Unary(h.VerifyAuditChain))
 }
 
 // classify maps a failure onto the code that describes it.
@@ -142,4 +145,82 @@ func (h *Handler) ListAuditLogsByActor(ctx context.Context, req *connect.Request
 		return nil, classify(err)
 	}
 	return connect.NewResponse(&ListAuditLogsResponse{AuditLogs: out}), nil
+}
+
+// -------------------------------------------------------------------------
+// The trail about the trail
+// -------------------------------------------------------------------------
+
+type SealAuditChainRequest struct {
+	TenantID string `json:"tenant_id"`
+	// Limit bounds one run, so a tenant with a long backlog is caught up over
+	// several passes rather than in one transaction that holds the sealer's lock
+	// for minutes.
+	Limit int `json:"limit,omitempty"`
+}
+
+type SealAuditChainResponse struct {
+	Sealed      int64  `json:"sealed"`
+	LastSeq     int64  `json:"last_seq"`
+	LastHash    string `json:"last_hash"`
+	AnchoredAt  int64  `json:"anchored_at_seq,omitempty"`
+	AnchorTaken bool   `json:"anchor_taken"`
+	AnchorHash  string `json:"anchor_hash,omitempty"`
+}
+
+// SealAuditChain links a tenant's new rows into its chain and anchors the head.
+func (h *Handler) SealAuditChain(ctx context.Context, req *connect.Request[SealAuditChainRequest]) (*connect.Response[SealAuditChainResponse], error) {
+	sealed, anchor, err := h.svc.SealAndAnchor(ctx, req.Msg.TenantID, req.Msg.Limit)
+	if err != nil {
+		return nil, classify(err)
+	}
+	out := &SealAuditChainResponse{
+		Sealed: sealed.Sealed, LastSeq: sealed.LastSeq, LastHash: sealed.LastHash,
+		AnchorTaken: anchor.Taken, AnchorHash: anchor.RowHash,
+	}
+	if anchor.Seq != nil {
+		out.AnchoredAt = *anchor.Seq
+	}
+	return connect.NewResponse(out), nil
+}
+
+type VerifyAuditChainRequest struct {
+	TenantID string `json:"tenant_id"`
+}
+
+type VerifyAuditChainResponse struct {
+	Intact      bool   `json:"intact"`
+	RowsChecked int64  `json:"rows_checked"`
+	BrokenAtSeq int64  `json:"broken_at_seq,omitempty"`
+	BrokenID    string `json:"broken_id,omitempty"`
+	Detail      string `json:"detail,omitempty"`
+
+	// Reported alongside the verdict rather than separately, because "intact"
+	// on its own invites the reading that everything is accounted for, when what
+	// it means is that everything sealed is accounted for.
+	TotalRows        int64  `json:"total_rows"`
+	SealedRows       int64  `json:"sealed_rows"`
+	UnsealedRows     int64  `json:"unsealed_rows"`
+	UnsealedForSecs  int64  `json:"unsealed_for_seconds,omitempty"`
+	OldestUnsealedAt string `json:"oldest_unsealed_at,omitempty"`
+}
+
+// VerifyAuditChain recomputes a tenant's chain and reports what it found.
+func (h *Handler) VerifyAuditChain(ctx context.Context, req *connect.Request[VerifyAuditChainRequest]) (*connect.Response[VerifyAuditChainResponse], error) {
+	r, err := h.svc.VerifyChain(ctx, req.Msg.TenantID)
+	if err != nil {
+		return nil, classify(err)
+	}
+	out := &VerifyAuditChainResponse{
+		Intact: r.Intact, RowsChecked: r.RowsChecked, BrokenID: r.BrokenID, Detail: r.Detail,
+		TotalRows: r.TotalRows, SealedRows: r.SealedRows, UnsealedRows: r.UnsealedRows,
+	}
+	if r.BrokenAt != nil {
+		out.BrokenAtSeq = *r.BrokenAt
+	}
+	if r.OldestUnsealedAt != nil {
+		out.OldestUnsealedAt = r.OldestUnsealedAt.UTC().Format(time.RFC3339)
+		out.UnsealedForSecs = int64(r.UnsealedFor(time.Now()).Seconds())
+	}
+	return connect.NewResponse(out), nil
 }

@@ -7,7 +7,11 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ppusapati/gavya/libs/integrity/audit"
+
 	"github.com/ppusapati/gavya/services/milk-service/internal/domain"
+
+	ulidpkg "p9e.in/samavaya/packages/ulid"
 )
 
 type Repository interface {
@@ -61,11 +65,63 @@ func (r *repo) UpdateSessionStatus(ctx context.Context, id, tenantID, status, up
 	return scanSession(r.db.QueryRow(ctx, q, id, tenantID, status, updatedBy))
 }
 
+// CreateRecord writes a collection and the record of who wrote it, together.
+//
+// One transaction, deliberately. Recording the milk and then telling the audit
+// service about it leaves every failure between the two — a restart, a dropped
+// connection, the audit service down for a minute — as a collection that
+// happened and was never attributed. Nothing reports that, because from here the
+// write succeeded.
+//
+// A milk collection is the change this platform exists to be trusted about, so
+// it is the one where an unattributed row matters most: the whole argument for
+// recomputing a settlement is that the inputs can be traced to who entered them.
 func (r *repo) CreateRecord(ctx context.Context, rec *domain.MilkRecord) (*domain.MilkRecord, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Rollback after a successful commit is a no-op, so this needs no condition
+	// and covers every path out, including a panic.
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
 	const q = `INSERT INTO milk_records (id,tenant_id,session_id,cattle_id,quantity_liters,recorded_at,recorded_by,created_by,updated_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id,tenant_id,session_id,cattle_id,quantity_liters,recorded_at,recorded_by,created_at,updated_at,created_by,updated_by,deleted_at`
-	row := r.db.QueryRow(ctx, q, rec.ID, rec.TenantID, rec.SessionID, rec.CattleID, rec.QuantityLiters, rec.RecordedAt, rec.RecordedBy, rec.CreatedBy, rec.UpdatedBy)
-	return scanRecord(row)
+	out, err := scanRecord(tx.QueryRow(ctx, q, rec.ID, rec.TenantID, rec.SessionID, rec.CattleID, rec.QuantityLiters, rec.RecordedAt, rec.RecordedBy, rec.CreatedBy, rec.UpdatedBy))
+	if err != nil {
+		return nil, err
+	}
+
+	if err := audit.Write(ctx, tx, ids{}, audit.Entry{
+		Action:       "record_milk",
+		ResourceType: "milk_record",
+		ResourceID:   out.ID,
+		// No before: a collection is created, not changed.
+		After: map[string]any{
+			"session_id":      out.SessionID,
+			"cattle_id":       out.CattleID,
+			"quantity_liters": out.QuantityLiters,
+			"recorded_at":     out.RecordedAt,
+			"recorded_by":     out.RecordedBy,
+		},
+		ServiceName: "milk-service",
+	}); err != nil {
+		// Returned, not logged and swallowed. Swallowing it would commit the
+		// collection with no record of who entered it, which is the arrangement
+		// the transaction is here to make impossible.
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
+
+// ids gives the audit record its identifier, from the same generator every other
+// row in this platform uses.
+type ids struct{}
+
+func (ids) New() string { return ulidpkg.New().String() }
 
 func (r *repo) GetRecord(ctx context.Context, id, tenantID string) (*domain.MilkRecord, error) {
 	const q = `SELECT id,tenant_id,session_id,cattle_id,quantity_liters,recorded_at,recorded_by,created_at,updated_at,created_by,updated_by,deleted_at FROM milk_records WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL`

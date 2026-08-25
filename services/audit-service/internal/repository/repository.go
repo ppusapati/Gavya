@@ -28,6 +28,9 @@ type Repository interface {
 	ListAuditLogs(ctx context.Context, tenantID string) ([]*domain.AuditLog, error)
 	ListAuditLogsByResource(ctx context.Context, tenantID, resourceType, resourceID string) ([]*domain.AuditLog, error)
 	ListAuditLogsByActor(ctx context.Context, tenantID, actorID string) ([]*domain.AuditLog, error)
+
+	// The trail about the trail: sealing, verifying and anchoring the chain.
+	ChainRepository
 }
 
 type repo struct {

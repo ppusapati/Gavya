@@ -61,6 +61,32 @@ for extra in /repo/services/*/internal/db/isolation.sql; do
     "${psql[@]}" --file "$extra"
 done
 
+# Append-only enforcement and the hash chain. After the grants, because it
+# revokes some of them back: the application may add to the audit trail and may
+# not edit it.
+echo "gavya: making the audit trail append-only and tamper-evident"
+"${psql[@]}" --file /repo/services/audit-service/internal/db/tamper_evidence.sql
+
+# The step above creates a table of its own, after the sweep has already run, so
+# it would come up with no policy. Sweeping again covers it — and the sweep only
+# touches row-level security, not grants, so the revokes just made survive it.
+# Ordering the other way round instead would put the grants after the revokes and
+# hand the application back the ability to edit the trail.
+echo "gavya: re-sweeping for tables created since"
+"${psql[@]}" --command "SELECT gavya_apply_tenant_isolation();" > /dev/null
+
+# Refuse to finish with an audit table the application can rewrite. A trail that
+# can be edited is not evidence, and coming up without saying so is how nobody
+# finds out until an auditor asks.
+audit_writable=$("${psql[@]}" --tuples-only --no-align --command "
+    SELECT count(*) FROM information_schema.role_table_grants
+    WHERE grantee = 'gavya_app' AND table_name = 'audit_logs'
+      AND privilege_type IN ('UPDATE', 'DELETE')")
+if [ "$audit_writable" != "0" ]; then
+    echo "gavya: the application role can still modify audit_logs" >&2
+    exit 1
+fi
+
 # The password is set here rather than in the SQL file, so a credential never
 # enters the repository.
 "${psql[@]}" --command \

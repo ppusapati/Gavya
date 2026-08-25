@@ -27,8 +27,13 @@ import (
 	"github.com/ppusapati/gavya/libs/integrity/tenantctx"
 )
 
-// TenantHeader carries a tenant established by something that verified it.
-const TenantHeader = "X-Gavya-Tenant"
+// Headers the gateway sets from a verified session. A service reads these and
+// does not read the request body for the same facts.
+const (
+	TenantHeader          = "X-Gavya-Tenant"
+	UserHeader            = "X-Gavya-User"
+	ServiceIdentityHeader = "X-Gavya-Service-Identity"
+)
 
 // MaxRequestBytes bounds a single request. Generous for a settlement batch,
 // small enough that a misbehaving peer cannot exhaust memory.
@@ -74,6 +79,7 @@ func Unary[Req any, Resp any](
 			writeError(w, err)
 			return
 		}
+		ctx = withActor(ctx, r.Header)
 
 		resp, err := fn(ctx, req)
 		if err != nil {
@@ -241,4 +247,34 @@ func tenantFieldOf(t reflect.Type) (int, bool) {
 	}
 	tenantFields.Store(t, found)
 	return found, found >= 0
+}
+
+// withActor puts who is acting on the context, from the headers the gateway set
+// after verifying the session.
+//
+// Only from the headers. There is no fallback to a field in the request body,
+// which several of these procedures have — a created_by or an actor the client
+// fills in. Reading that would let a caller write somebody else's name into the
+// audit trail, and an audit trail that records the name the actor chose is a
+// record of nothing.
+//
+// A request that arrives with no actor is left without one. The audit layer
+// refuses to write a record it cannot attribute, which is the right place for
+// that refusal: a procedure that changes nothing has no reason to insist on
+// knowing who called it.
+func withActor(ctx context.Context, h http.Header) context.Context {
+	a := tenantctx.Actor{
+		ID:        strings.TrimSpace(h.Get(UserHeader)),
+		ServiceID: strings.TrimSpace(h.Get(ServiceIdentityHeader)),
+	}
+	if !a.Known() {
+		return ctx
+	}
+	// Both set means something upstream is confused about what is calling, and
+	// guessing which to believe would put an arbitrary name on every change that
+	// followed.
+	if a.ID != "" && a.ServiceID != "" {
+		return ctx
+	}
+	return tenantctx.WithActor(ctx, a)
 }
