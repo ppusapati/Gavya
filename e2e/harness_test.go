@@ -57,6 +57,11 @@ var services = []service{
 		// actually required.
 		env: []string{"MEASUREMENT_REGIME=IN_LEGAL_METROLOGY"},
 	},
+	// Pooling is where milk becomes money. Its absence from this harness was
+	// why the path from a collection to an amount a producer is paid had never
+	// run end to end — every part of it was unit-tested and none of it had been
+	// joined up.
+	{name: "pooling-service", database: "e2e_pooling", schema: "services/pooling-service/internal/db/schema.sql"},
 }
 
 // platform is a running set of services, addressed by name.
@@ -261,6 +266,7 @@ func (p *platform) ingestion() *svcclient.Client { return p.clients["ingestion-s
 func (p *platform) observation() *svcclient.Client {
 	return p.clients["observation-service"]
 }
+func (p *platform) pooling() *svcclient.Client { return p.clients["pooling-service"] }
 
 func (p *platform) opts() svcclient.CallOptions {
 	return svcclient.CallOptions{TenantID: p.tenant, RequestID: newID("req")}
