@@ -48,7 +48,7 @@ var knownAbsent = map[string]string{
 // A build on Linux catches this, but only once something imports the broken
 // package. This says which import is wrong and why, before that.
 func TestSharedImportsResolveOnACaseSensitiveFilesystem(t *testing.T) {
-	root := repoRoot(t)
+	root := workspaceRoot(t)
 	pkgDir := filepath.Join(root, "pkg")
 	if _, err := os.Stat(pkgDir); err != nil {
 		t.Skipf("no pkg directory at %s", pkgDir)
@@ -154,7 +154,7 @@ func TestSharedImportsResolveOnACaseSensitiveFilesystem(t *testing.T) {
 		"break the module build", checked, sharedModule, len(real), len(stillAbsent))
 }
 
-func repoRoot(t *testing.T) string {
+func workspaceRoot(t *testing.T) string {
 	t.Helper()
 	dir, err := os.Getwd()
 	if err != nil {
