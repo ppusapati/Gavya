@@ -2,6 +2,7 @@ FROM golang:1.26-alpine AS builder
 WORKDIR /workspace
 COPY services/tenant-service/go.mod services/tenant-service/go.sum* ./services/tenant-service/
 COPY pkg/ ./pkg/
+COPY libs/ ./libs/
 WORKDIR /workspace/services/tenant-service
 RUN go mod download
 COPY services/tenant-service/ .

@@ -1,11 +1,14 @@
 FROM golang:1.26-alpine AS builder
-WORKDIR /app
-COPY go.mod go.sum ./
+WORKDIR /workspace
+COPY pkg/ ./pkg/
+COPY libs/ ./libs/
+COPY services/audit-service/go.mod services/audit-service/go.sum* ./services/audit-service/
+WORKDIR /workspace/services/audit-service
 RUN go mod download
-COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o audit-service ./cmd/server
+COPY services/audit-service/ .
+RUN CGO_ENABLED=0 go build -o /bin/server ./cmd/server
 
 FROM gcr.io/distroless/static-debian12
-COPY --from=builder /app/audit-service /audit-service
-EXPOSE 8097
-ENTRYPOINT ["/audit-service"]
+COPY --from=builder /bin/server /server
+EXPOSE 8100
+ENTRYPOINT ["/server"]

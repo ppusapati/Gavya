@@ -1,11 +1,14 @@
 FROM golang:1.26-alpine AS builder
-WORKDIR /app
-COPY go.mod go.sum ./
+WORKDIR /workspace
+COPY pkg/ ./pkg/
+COPY libs/ ./libs/
+COPY services/file-service/go.mod services/file-service/go.sum* ./services/file-service/
+WORKDIR /workspace/services/file-service
 RUN go mod download
-COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o file-service ./cmd/server
+COPY services/file-service/ .
+RUN CGO_ENABLED=0 go build -o /bin/server ./cmd/server
 
 FROM gcr.io/distroless/static-debian12
-COPY --from=builder /app/file-service /file-service
-EXPOSE 8095
-ENTRYPOINT ["/file-service"]
+COPY --from=builder /bin/server /server
+EXPOSE 8101
+ENTRYPOINT ["/server"]
