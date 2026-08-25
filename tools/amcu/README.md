@@ -1,3 +1,17 @@
+# Reality-acquisition tools
+
+Two tools for the phase before anything is built on top of somebody else's data:
+one for the files an AMCU exports, one for the wire an analyser speaks.
+
+- **`amcu-profile`** — reads a real collection export and reports what is in it,
+  what is wrong with it, and how it maps onto the platform.
+- **`bench-capture`** — records what an analyser or controller actually sends and
+  afterwards helps work out what it meant.
+
+Neither writes to the platform. They read, and print what they found.
+
+---
+
 # amcu-profile
 
 Reads a real collection export and reports what is in it, what is wrong with it,
@@ -115,3 +129,102 @@ profile is refused until those are settled:
 
 A default for any of these would be a silent decision about somebody's milk
 payment.
+
+---
+
+# bench-capture
+
+Records what an instrument sends, byte for byte, and afterwards says where the
+readings live in those bytes.
+
+The specification asks for "a representative analyser/controller interface
+captured and mapped". Capturing has to come first and has to be dumb: at the
+moment somebody is stood at a bench with a milk analyser, nobody knows the
+protocol, and anything that parses while it records drops the bytes it did not
+expect — which are the interesting ones.
+
+```sh
+go build -o bench-capture ./cmd/bench-capture
+
+# a serial analyser — configure the port first, see below
+stty -F /dev/ttyUSB0 9600 cs8 -cstopb -parity raw -echo
+bench-capture --from /dev/ttyUSB0 --out bench.jsonl
+
+bench-capture --listen :9100 --out bench.jsonl          # it pushes over TCP
+bench-capture --dial 192.168.1.50:4001 --out bench.jsonl # it waits to be called
+
+bench-capture --analyse bench.jsonl                      # afterwards
+```
+
+The port is configured with `stty` rather than in the tool. That keeps it free of
+a serial library and its cgo, which means a bench laptop needs nothing installed
+and the binary is the one already built for the platform.
+
+## Marking
+
+While recording, type what is happening and press enter.
+
+```
+  ← noted: known weight 5.00 L
+14:27:04.458  17 bytes
+  0000  53 54 2c 47 53 2c 2b 20  20 35 2e 30 30 20 4c 0d  |ST,GS,+  5.00 L.|
+```
+
+Those notes are the whole value of the recording. Bytes with nothing known
+beside them are a puzzle; bytes recorded next to a known five-litre weight are a
+Rosetta stone. Mark two different values of the same thing — five litres, then
+twelve and a half — and the analysis can tell a field from a coincidence.
+
+## What the analysis says
+
+**How the messages were separated**, and on what evidence. A terminator every
+chunk ends with is the instrument telling you where its messages end. Failing
+that, the terminator is looked for in the stream, because a forty-byte line at
+9600 baud usually arrives in two reads and has no terminator at either boundary.
+Failing that, a uniform write size, then silence.
+
+A recording that stops mid-message — which is how every bench session ends — has
+its last stub discarded and says so. Kept, that stub would either hide a field or
+shorten it, reporting a four-byte weight as one byte, and a parser written to
+that would work until the reading reached double figures.
+
+**What never changes and what does.** A constant run of text is a header, an
+address or a unit marker. The reading lives among the varying offsets.
+
+**Where the values you noted appear.** ASCII decimal, packed BCD and scaled
+binary integers are searched, in both byte orders. A value is only reported when
+it sits at the same offset in *every* frame recorded under that note — a match in
+one frame is a coincidence.
+
+Where two noted values land at different offsets but end at the same one, that is
+one right-aligned field and it is reported as one, not two:
+
+```
+  12.5  from note "known weight 12.50 L"
+      at offset 8, 5 bytes, as ASCII decimal
+  5     from note "known weight 5.00 L"
+      at offset 9, 4 bytes, as ASCII decimal
+
+Notes
+  the values found at offsets 8 and 9 all end at offset 12, so that is one
+  right-aligned field occupying offsets 8–12, not several fields
+```
+
+Nothing is claimed to be decoded. Instrument protocols are various enough that a
+confident wrong answer costs more than a set of observations, so the tool reports
+what it saw and leaves the conclusion to a person.
+
+## The recording
+
+One JSON object per line, flushed as it happens, because a bench session ends
+when somebody unplugs something and a buffered recording loses the minute that
+mattered.
+
+```json
+{"t":"2026-08-25T14:27:03.858Z","mark":"known weight 5.00 L"}
+{"t":"2026-08-25T14:27:04.457Z","hex":"53542c47532c2b2020352e3030204c0d0a","len":17}
+```
+
+Hex rather than base64: reading the file with your eyes is a supported use. Read
+boundaries are preserved as they arrived, because where the writes fell is itself
+evidence.
