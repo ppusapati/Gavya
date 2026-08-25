@@ -16,6 +16,15 @@ import (
 // database is unreachable".
 var ErrNotFound = errors.New("not found")
 
+// ErrCycleNotOpen is a breeding cycle that has moved past the point where an
+// insemination can be recorded against it.
+var ErrCycleNotOpen = errors.New("this breeding cycle is no longer open")
+
+// ErrPregnancyClosed is a pregnancy that has already delivered. Recording a
+// second calving against it would put more calves in the herd than there were
+// animals to bear them.
+var ErrPregnancyClosed = errors.New("this pregnancy has already ended")
+
 // Columns are listed explicitly rather than selected with *, because the scans
 // below are positional: adding a column to the table would silently misalign
 // every field after it.
@@ -32,6 +41,14 @@ const calvingRecordCols = `id,tenant_id,pregnancy_id,cattle_id,calf_id,calving_d
 	`complications,status,created_at,updated_at,created_by,updated_by,deleted_at`
 
 type Repository interface {
+	// RecordInseminationInCycle writes an insemination and advances its cycle
+	// together, so a cycle can never disagree with the records against it.
+	RecordInseminationInCycle(ctx context.Context, ins *domain.Insemination) (*domain.Insemination, *domain.BreedingCycle, error)
+	// ConfirmPregnancyForCycle writes a pregnancy and advances its cycle.
+	ConfirmPregnancyForCycle(ctx context.Context, p *domain.Pregnancy) (*domain.Pregnancy, *domain.BreedingCycle, error)
+	// RecordCalvingAndClosePregnancy writes a calving and closes its pregnancy.
+	RecordCalvingAndClosePregnancy(ctx context.Context, c *domain.CalvingRecord) (*domain.CalvingRecord, *domain.Pregnancy, error)
+
 	CreateBreedingCycle(ctx context.Context, b *domain.BreedingCycle) (*domain.BreedingCycle, error)
 	GetBreedingCycle(ctx context.Context, id, tenantID string) (*domain.BreedingCycle, error)
 	ListCattleBreedingCycles(ctx context.Context, tenantID, cattleID string) ([]*domain.BreedingCycle, error)

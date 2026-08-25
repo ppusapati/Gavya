@@ -50,6 +50,10 @@ func classify(err error) error {
 	switch {
 	case errors.Is(err, repository.ErrNotFound):
 		return connect.NewError(connect.CodeNotFound, err)
+	case errors.Is(err, repository.ErrCycleNotOpen), errors.Is(err, repository.ErrPregnancyClosed):
+		// The request was well formed and the animal's state refused it. Retrying
+		// changes nothing until the animal's state does.
+		return connect.NewError(connect.CodeFailedPrecondition, err)
 	case errors.Is(err, service.ErrInvalidArgument):
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	default:
