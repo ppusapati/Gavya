@@ -9,7 +9,7 @@ import (
 	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/services/product-catalog-service/internal/domain"
 	"github.com/ppusapati/gavya/services/product-catalog-service/internal/repository"
-	ulidpkg "p9e.in/samavaya/packages/ULID"
+	ulidpkg "p9e.in/samavaya/packages/ulid"
 )
 
 // ErrInvalidArgument marks a caller mistake. Without it the handler cannot tell

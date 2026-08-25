@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	ulidpkg "p9e.in/samavaya/packages/ULID"
+	ulidpkg "p9e.in/samavaya/packages/ulid"
 
 	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/services/milk-service/internal/domain"

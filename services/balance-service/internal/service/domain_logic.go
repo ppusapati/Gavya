@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/ppusapati/gavya/libs/integrity/mlclient"
-	ulidpkg "p9e.in/samavaya/packages/ULID"
+	ulidpkg "p9e.in/samavaya/packages/ulid"
 
 	"github.com/ppusapati/gavya/services/balance-service/internal/domain"
 	"github.com/ppusapati/gavya/services/balance-service/internal/repository"

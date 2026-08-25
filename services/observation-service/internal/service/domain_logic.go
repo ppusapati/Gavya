@@ -10,7 +10,7 @@ import (
 	"github.com/ppusapati/gavya/libs/integrity/bitemporal"
 	"github.com/ppusapati/gavya/libs/integrity/mlclient"
 	"github.com/ppusapati/gavya/libs/integrity/origin"
-	ulidpkg "p9e.in/samavaya/packages/ULID"
+	ulidpkg "p9e.in/samavaya/packages/ulid"
 
 	"github.com/ppusapati/gavya/services/observation-service/internal/domain"
 	"github.com/ppusapati/gavya/services/observation-service/internal/repository"
