@@ -79,12 +79,16 @@ func isolated(t *testing.T) (owner, app *pgx.Conn) {
 		run(rel)
 	}
 	run("libs/integrity/isolation/isolation.sql")
+	run("libs/integrity/isolation/foreignkeys.sql")
 
-	if _, err := owner.Exec(ctx, "SELECT gavya_apply_tenant_isolation()"); err != nil {
-		t.Fatalf("apply isolation: %v", err)
-	}
-	if _, err := owner.Exec(ctx, "SELECT gavya_grant_app_access()"); err != nil {
-		t.Fatalf("grant app access: %v", err)
+	for _, stmt := range []string{
+		"SELECT gavya_apply_tenant_isolation()",
+		"SELECT gavya_grant_app_access()",
+		"SELECT gavya_make_foreign_keys_tenant_safe()",
+	} {
+		if _, err := owner.Exec(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
 	}
 
 	appDSN := strings.Replace(dsn(t, db), "postgres://", "postgres://", 1)
@@ -405,4 +409,109 @@ func TestEveryTenantOwnedTableIsCovered(t *testing.T) {
 		t.Fatal("no tables were found to be covered, so this test would pass vacuously")
 	}
 	t.Logf("%d tenant-owned tables isolated, %d not, %d tables carry no tenant", covered, uncovered, noTenant)
+}
+
+// Row-level security does not reach foreign keys. The check runs as the system
+// rather than as the querying role, so a single-column key lets one tenant
+// reference a row it cannot see — and, because the constraint either accepts the
+// reference or does not, tells it whether that row exists at all. That is an
+// enumeration channel straight through the isolation boundary, one probe at a
+// time.
+func TestATenantCannotReferenceARowItCannotSee(t *testing.T) {
+	owner, app := isolated(t)
+	ctx := context.Background()
+
+	// Beta records a milking session of its own.
+	if _, err := owner.Exec(ctx, `
+		INSERT INTO milk_sessions (id,tenant_id,cattle_id,session_date,shift_type,status,created_by,updated_by)
+		VALUES ('S_BBBBBBBBBBBBBBBBBBBBBBBB',$1,'C_BBBBBBBBBBBBBBBBBBBBBBBB',CURRENT_DATE,
+		        'morning','open','seed','seed')`, beta); err != nil {
+		t.Fatal(err)
+	}
+
+	scopeTo(t, app, alpha)
+
+	// Alpha cannot see it.
+	var n int
+	if err := app.QueryRow(ctx,
+		"SELECT count(*) FROM milk_sessions WHERE id='S_BBBBBBBBBBBBBBBBBBBBBBBB'").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("alpha can see beta's session, so this test proves nothing")
+	}
+
+	// And must not be able to record milk against it.
+	_, err := app.Exec(ctx, `
+		INSERT INTO milk_records (id,tenant_id,session_id,cattle_id,quantity_liters,
+		                          recorded_at,recorded_by,created_by,updated_by)
+		VALUES ('R_AAAAAAAAAAAAAAAAAAAAAAAA',$1,'S_BBBBBBBBBBBBBBBBBBBBBBBB',
+		        'C_BBBBBBBBBBBBBBBBBBBBBBBB',5.0,NOW(),'alpha','alpha','alpha')`, alpha)
+	if err == nil {
+		t.Fatal("alpha recorded milk against a session belonging to beta")
+	}
+	var pg *pgconn.PgError
+	if !errors.As(err, &pg) || pg.Code != "23503" {
+		t.Errorf("refused with %v, want a foreign key violation (23503)", err)
+	}
+}
+
+// Every declared foreign key between two tenant-owned tables has to carry the
+// tenant. One that does not is the one an attacker uses.
+func TestNoForeignKeyCanCrossATenantBoundary(t *testing.T) {
+	owner, _ := isolated(t)
+
+	rows, err := owner.Query(context.Background(), `
+		SELECT schema_name, table_name, constraint_name, references_table
+		FROM gavya_foreign_key_report
+		WHERE both_sides_have_a_tenant AND NOT carries_the_tenant`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+
+	var crossable int
+	for rows.Next() {
+		var schema, table, name, ref string
+		if err := rows.Scan(&schema, &table, &name, &ref); err != nil {
+			t.Fatal(err)
+		}
+		crossable++
+		t.Errorf("%s.%s constraint %s references %s without the tenant", schema, table, name, ref)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	var safe int
+	if err := owner.QueryRow(context.Background(),
+		"SELECT count(*) FROM gavya_foreign_key_report WHERE carries_the_tenant").Scan(&safe); err != nil {
+		t.Fatal(err)
+	}
+	if safe == 0 {
+		t.Fatal("no foreign keys carry the tenant, so this test would pass vacuously")
+	}
+	t.Logf("%d foreign keys carry the tenant, %d do not", safe, crossable)
+}
+
+// The conversion must not quietly change what a key does on delete. A CASCADE
+// turned into NO ACTION leaves rows behind that the schema says should have
+// gone, and nothing complains until somebody counts them.
+func TestTheConversionKeepsTheReferentialActions(t *testing.T) {
+	owner, _ := isolated(t)
+
+	var cascades int
+	if err := owner.QueryRow(context.Background(), `
+		SELECT count(*) FROM pg_constraint c
+		JOIN pg_class r ON r.oid = c.conrelid
+		JOIN pg_namespace n ON n.oid = r.relnamespace
+		WHERE c.contype = 'f' AND n.nspname NOT IN ('pg_catalog','information_schema')
+		  AND c.confdeltype = 'c'`).Scan(&cascades); err != nil {
+		t.Fatal(err)
+	}
+	// The schema ships exactly one ON DELETE CASCADE. If the conversion dropped
+	// it this is zero, and nothing else in the system would have noticed.
+	if cascades != 1 {
+		t.Errorf("%d foreign keys cascade on delete, want the 1 the schema declares", cascades)
+	}
 }

@@ -45,6 +45,13 @@ echo "gavya: applying tenant isolation"
 "${psql[@]}" --command "SELECT gavya_apply_tenant_isolation();"
 "${psql[@]}" --command "SELECT gavya_grant_app_access();"
 
+# Row-level security does not reach foreign keys: the check runs as the system,
+# not as the querying role, so a single-column key lets one tenant reference
+# another's row and reports whether it exists.
+echo "gavya: making foreign keys tenant-safe"
+"${psql[@]}" --file /repo/libs/integrity/isolation/foreignkeys.sql
+"${psql[@]}" --command "SELECT gavya_make_foreign_keys_tenant_safe();"
+
 # The password is set here rather than in the SQL file, so a credential never
 # enters the repository.
 "${psql[@]}" --command \
@@ -66,6 +73,27 @@ if [ "$unprotected" != "0" ]; then
     exit 1
 fi
 
+# The same refusal for foreign keys. One left crossable is one probe away from
+# telling a tenant what exists in another.
+crossable=$("${psql[@]}" --tuples-only --no-align --command "
+    SELECT count(*) FROM gavya_foreign_key_report
+    WHERE both_sides_have_a_tenant AND NOT carries_the_tenant")
+if [ "$crossable" != "0" ]; then
+    echo "gavya: $crossable foreign keys can still cross a tenant boundary:" >&2
+    "${psql[@]}" --command "
+        SELECT schema_name, table_name, constraint_name, references_table
+        FROM gavya_foreign_key_report
+        WHERE both_sides_have_a_tenant AND NOT carries_the_tenant" >&2
+    exit 1
+fi
+
 protected=$("${psql[@]}" --tuples-only --no-align --command "
     SELECT count(*) FROM gavya_isolation_report WHERE rls_enabled AND rls_forced")
-echo "gavya: $protected tables isolated; services connect as gavya_app"
+keys=$("${psql[@]}" --tuples-only --no-align --command "
+    SELECT count(*) FROM gavya_foreign_key_report WHERE carries_the_tenant")
+loose=$("${psql[@]}" --tuples-only --no-align --command "
+    SELECT count(*) FROM gavya_unconstrained_reference_report WHERE probably_references IS NOT NULL")
+echo "gavya: $protected tables isolated, $keys foreign keys carry the tenant; services connect as gavya_app"
+# Not a failure. It is a standing count of references nothing enforces, printed
+# so it is not discovered later as a surprise.
+echo "gavya: note — $loose columns name a table they do not reference; see gavya_unconstrained_reference_report"
