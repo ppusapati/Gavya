@@ -5,12 +5,24 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: secret
+      # No default. A password baked into a compose file is a password that
+      # reaches production, because the file is what gets copied.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       POSTGRES_DB: dairy
+      # Read by the init script below, which sets it on the application role.
+      GAVYA_APP_PASSWORD: ${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # Creates the tables and applies tenant isolation, once, before any
+      # service can connect. Without this the database comes up empty.
+      - ./deploy/postgres-init:/docker-entrypoint-initdb.d:ro
+      # The schemas are read from the repository rather than copied, so a new
+      # service's tables cannot be left behind by a stale copy.
+      - ./services:/repo/services:ro
+      - ./libs:/repo/libs:ro
+      - ./pkg/database/schema:/repo/pkg/database/schema:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
@@ -61,7 +73,7 @@ services:
     environment:
       SERVICE_NAME: tenant-service
       SERVER_ADDR: ":8080"
-      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+      DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
     depends_on:
       postgres:
         condition: service_healthy
@@ -75,7 +87,7 @@ services:
     environment:
       SERVICE_NAME: cattle-service
       SERVER_ADDR: ":8080"
-      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+      DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
     depends_on:
       postgres:
         condition: service_healthy
@@ -89,7 +101,7 @@ services:
     environment:
       SERVICE_NAME: milk-service
       SERVER_ADDR: ":8080"
-      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+      DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
     depends_on:
       postgres:
         condition: service_healthy
@@ -103,7 +115,7 @@ services:
     environment:
       SERVICE_NAME: breeding-service
       SERVER_ADDR: ":8080"
-      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+      DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
     depends_on:
       postgres:
         condition: service_healthy
@@ -117,7 +129,7 @@ services:
     environment:
       SERVICE_NAME: health-service
       SERVER_ADDR: ":8080"
-      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+      DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
     depends_on:
       postgres:
         condition: service_healthy
@@ -131,7 +143,7 @@ services:
     environment:
       SERVICE_NAME: feed-service
       SERVER_ADDR: ":8080"
-      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+      DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
     depends_on:
       postgres:
         condition: service_healthy
@@ -145,7 +157,7 @@ services:
     environment:
       SERVICE_NAME: farm-service
       SERVER_ADDR: ":8080"
-      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+      DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
     depends_on:
       postgres:
         condition: service_healthy
@@ -159,7 +171,7 @@ services:
     environment:
       SERVICE_NAME: cattle-market-service
       SERVER_ADDR: ":8080"
-      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+      DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
     depends_on:
       postgres:
         condition: service_healthy
@@ -173,7 +185,7 @@ services:
     environment:
       SERVICE_NAME: product-catalog-service
       SERVER_ADDR: ":8080"
-      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+      DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
     depends_on:
       postgres:
         condition: service_healthy
@@ -187,7 +199,7 @@ services:
     environment:
       SERVICE_NAME: inventory-service
       SERVER_ADDR: ":8080"
-      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+      DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
     depends_on:
       postgres:
         condition: service_healthy
@@ -201,7 +213,7 @@ services:
     environment:
       SERVICE_NAME: order-service
       SERVER_ADDR: ":8080"
-      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+      DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
     depends_on:
       postgres:
         condition: service_healthy
@@ -215,7 +227,7 @@ services:
     environment:
       SERVICE_NAME: billing-service
       SERVER_ADDR: ":8080"
-      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+      DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
     depends_on:
       postgres:
         condition: service_healthy
@@ -229,7 +241,7 @@ services:
     environment:
       SERVICE_NAME: notification-service
       SERVER_ADDR: ":8080"
-      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+      DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
     depends_on:
       postgres:
         condition: service_healthy
@@ -243,7 +255,7 @@ services:
     environment:
       SERVICE_NAME: reporting-service
       SERVER_ADDR: ":8080"
-      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+      DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
     depends_on:
       postgres:
         condition: service_healthy
@@ -257,7 +269,7 @@ services:
     environment:
       SERVICE_NAME: audit-service
       SERVER_ADDR: ":8080"
-      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+      DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
     depends_on:
       postgres:
         condition: service_healthy
@@ -271,7 +283,7 @@ services:
     environment:
       SERVICE_NAME: file-service
       SERVER_ADDR: ":8080"
-      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+      DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
       STORAGE_PROVIDER: local
       STORAGE_BUCKET: /data/uploads
     volumes:
@@ -291,7 +303,7 @@ services:
     environment:
       SERVICE_NAME: ingestion-service
       SERVER_ADDR: ":8091"
-      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+      DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
     depends_on:
       postgres:
         condition: service_healthy
@@ -305,7 +317,7 @@ services:
     environment:
       SERVICE_NAME: observation-service
       SERVER_ADDR: ":8092"
-      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+      DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
       # Which measurement-control law this deployment operates under. Required:
       # the service refuses to start without it, because an eligibility verdict
       # cites a statute and the wrong one is worse than none. One of
@@ -326,7 +338,7 @@ services:
     environment:
       SERVICE_NAME: canonical-service
       SERVER_ADDR: ":8093"
-      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+      DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
     depends_on:
       postgres:
         condition: service_healthy
@@ -340,7 +352,7 @@ services:
     environment:
       SERVICE_NAME: pooling-service
       SERVER_ADDR: ":8094"
-      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+      DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
     depends_on:
       postgres:
         condition: service_healthy
@@ -354,7 +366,7 @@ services:
     environment:
       SERVICE_NAME: balance-service
       SERVER_ADDR: ":8095"
-      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+      DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
       RECONCILIATION_ML_URL: "http://reconciliation-service:9103"
       RECONCILIATION_ML_TIMEOUT: "5"
     depends_on:
@@ -370,7 +382,7 @@ services:
     environment:
       SERVICE_NAME: shadow-settlement-service
       SERVER_ADDR: ":8090"
-      DATABASE_URL: "postgres://postgres:secret@postgres:5432/dairy?sslmode=disable"
+      DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
       # Clearing this disables the advisory call; deterministic classification
       # is unaffected and every divergence is still classified.
       DIVERGENCE_ML_URL: "http://divergence-service:9104"

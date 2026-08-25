@@ -37,73 +37,30 @@ package tenantdb
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/ppusapati/gavya/libs/integrity/tenantctx"
 )
 
 // The session parameter the isolation policies read.
 const SettingName = "app.tenant_id"
 
-type contextKey struct{}
-
-// ErrNoTenant is returned when a caller asks for the tenant of a context that
-// has none.
-var ErrNoTenant = errors.New("tenantdb: no tenant on this context")
-
 // WithTenant returns a context that will scope every database connection taken
 // under it to this tenant.
 func WithTenant(ctx context.Context, tenantID string) context.Context {
-	return context.WithValue(ctx, contextKey{}, tenantID)
+	return tenantctx.With(ctx, tenantID)
 }
 
 // TenantFrom returns the tenant a context carries.
-func TenantFrom(ctx context.Context) (string, error) {
-	v, ok := ctx.Value(contextKey{}).(string)
-	if !ok || v == "" {
-		return "", ErrNoTenant
-	}
-	return v, nil
-}
+func TenantFrom(ctx context.Context) (string, error) { return tenantctx.From(ctx) }
 
-// ErrBadTenant reports a tenant identifier that cannot be one.
-type ErrBadTenant struct {
-	Value  string
-	Reason string
-}
-
-func (e *ErrBadTenant) Error() string {
-	return fmt.Sprintf("tenantdb: %q is not a tenant identifier: %s", e.Value, e.Reason)
-}
-
-// checkTenant rejects a value that cannot be an identifier.
-//
-// Not a defence against injection — set_config binds the value as a parameter,
-// so there is no statement for it to escape from. It is here because a tenant
-// carrying a newline or a control character is a sign that something upstream is
-// putting the wrong string in the context, and that is worth failing on rather
-// than storing rows under.
-func checkTenant(v string) error {
-	if v == "" {
-		return &ErrBadTenant{v, "it is empty"}
-	}
-	if len(v) > 64 {
-		return &ErrBadTenant{v, "it is longer than any identifier this system issues"}
-	}
-	for _, r := range v {
-		if r < 0x20 || r == 0x7f {
-			return &ErrBadTenant{v, "it contains a control character"}
-		}
-	}
-	if strings.TrimSpace(v) != v {
-		return &ErrBadTenant{v, "it is padded with whitespace"}
-	}
-	return nil
-}
+// ErrNoTenant is returned when a caller asks for the tenant of a context that
+// has none.
+var ErrNoTenant = tenantctx.ErrNoTenant
 
 // Execer is the part of a connection this package needs. Both *pgx.Conn and
 // pgx.Tx satisfy it.
@@ -115,7 +72,7 @@ type Execer interface {
 // connection — a migration, a test, a background job — can scope it the same way
 // the pool does.
 func Apply(ctx context.Context, conn Execer, tenantID string) error {
-	if err := checkTenant(tenantID); err != nil {
+	if err := tenantctx.Check(tenantID); err != nil {
 		return err
 	}
 	// false: session scope. The parameter has to outlive the statement that sets

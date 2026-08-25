@@ -1,3 +1,6 @@
 
 # Rust build artifacts
 /ml/target/
+
+# Local credentials for docker compose; .env.example is the template.
+.env

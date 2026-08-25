@@ -9,9 +9,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
+
+	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
 
 	"github.com/ppusapati/gavya/libs/integrity/mlclient"
 	"p9e.in/samavaya/packages/p9log"
@@ -26,7 +27,7 @@ func main() {
 	cfg := config.Load()
 	log := p9log.NewHelper(p9log.DefaultLogger)
 
-	pool, err := pgxpool.New(context.Background(), cfg.DatabaseURL)
+	pool, err := tenantdb.NewPool(context.Background(), cfg.DatabaseURL)
 	if err != nil {
 		log.Errorf("db connect: %v", err)
 		os.Exit(1)

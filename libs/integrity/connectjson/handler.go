@@ -18,9 +18,17 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
+	"strings"
+	"sync"
 
 	"connectrpc.com/connect"
+
+	"github.com/ppusapati/gavya/libs/integrity/tenantctx"
 )
+
+// TenantHeader carries a tenant established by something that verified it.
+const TenantHeader = "X-Gavya-Tenant"
 
 // MaxRequestBytes bounds a single request. Generous for a settlement batch,
 // small enough that a misbehaving peer cannot exhaust memory.
@@ -61,7 +69,13 @@ func Unary[Req any, Resp any](
 			req.Header()[k] = v
 		}
 
-		resp, err := fn(r.Context(), req)
+		ctx, err := scopeToTenant(r.Context(), r.Header.Get(TenantHeader), &msg)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+
+		resp, err := fn(ctx, req)
 		if err != nil {
 			writeError(w, err)
 			return
@@ -130,3 +144,101 @@ func HTTPStatus(code connect.Code) int {
 
 // Procedure builds the path a Connect procedure is addressed at.
 func Procedure(service, method string) string { return "/" + service + "/" + method }
+
+// scopeToTenant puts the request's tenant on the context, where the database
+// layer reads it to scope the connection.
+//
+// This is the one place every request in every service passes through, which is
+// why it is here rather than in each handler: a handler that forgot would be
+// refused by the policies, but only after somebody noticed the endpoint had
+// stopped working.
+//
+// Two sources, and the difference between them matters:
+//
+// The header is set by something that verified who is calling. The body field is
+// the client's own claim about which tenant it is. Today there is no
+// authentication in front of these services, so the body is all there is, and
+// that is worth being precise about: scoping connections from the body closes
+// the class of defect where a query forgets its tenant and reads across the
+// boundary — which has already happened twice in this codebase — and does not
+// close the case of a caller that asks for another tenant on purpose. That one
+// closes when the header arrives from a verified token.
+//
+// When both are present they must agree. A request that presents a verified
+// tenant and then asks for a different one in its body is refused rather than
+// resolved, because either answer would be a decision about whose data somebody
+// gets.
+func scopeToTenant(ctx context.Context, header string, msg any) (context.Context, error) {
+	body := tenantFromBody(msg)
+
+	switch {
+	case header != "" && body != "" && header != body:
+		return nil, connect.NewError(connect.CodePermissionDenied,
+			fmt.Errorf("this request is authenticated for tenant %q but asks for tenant %q", header, body))
+	case header != "":
+		return withChecked(ctx, header)
+	case body != "":
+		return withChecked(ctx, body)
+	default:
+		// No tenant anywhere. Left off the context deliberately: the database
+		// refuses an unscoped connection, so a procedure that genuinely has no
+		// tenant fails loudly at the first query rather than reading everything.
+		return ctx, nil
+	}
+}
+
+func withChecked(ctx context.Context, tenant string) (context.Context, error) {
+	if err := tenantctx.Check(tenant); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	return tenantctx.With(ctx, tenant), nil
+}
+
+// tenantFromBody reads the tenant out of a decoded request.
+//
+// By the JSON name rather than the Go field name, because that is the name the
+// wire format fixes; the Go spelling varies across these services (TenantID,
+// TenantId) and matching on it would silently miss whichever spelling was not
+// thought of.
+func tenantFromBody(msg any) string {
+	v := reflect.ValueOf(msg)
+	for v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return ""
+		}
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return ""
+	}
+	idx, ok := tenantFieldOf(v.Type())
+	if !ok {
+		return ""
+	}
+	f := v.Field(idx)
+	if f.Kind() != reflect.String {
+		return ""
+	}
+	return f.String()
+}
+
+// tenantFields caches the lookup, so the reflection happens once per request
+// type rather than once per request.
+var tenantFields sync.Map // reflect.Type -> int, or -1 for none
+
+func tenantFieldOf(t reflect.Type) (int, bool) {
+	if cached, ok := tenantFields.Load(t); ok {
+		i := cached.(int)
+		return i, i >= 0
+	}
+	found := -1
+	for i := 0; i < t.NumField(); i++ {
+		name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
+		if name == "tenant_id" {
+			found = i
+			break
+		}
+	}
+	tenantFields.Store(t, found)
+	return found, found >= 0
+}

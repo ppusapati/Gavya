@@ -8,7 +8,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
+
 	"github.com/ppusapati/gavya/services/reporting-service/internal/config"
 	"github.com/ppusapati/gavya/services/reporting-service/internal/handler"
 	"github.com/ppusapati/gavya/services/reporting-service/internal/repository"
@@ -22,7 +23,7 @@ func main() {
 	cfg := config.Load()
 	log := p9log.NewHelper(p9log.DefaultLogger)
 
-	pool, err := pgxpool.New(context.Background(), cfg.DatabaseURL)
+	pool, err := tenantdb.NewPool(context.Background(), cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("db connect: %v", err)
 	}
