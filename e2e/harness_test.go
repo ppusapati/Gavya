@@ -38,12 +38,25 @@ type service struct {
 	name     string
 	database string
 	schema   string
+	// env carries settings this service requires beyond the common ones. A
+	// service that refuses to start without a setting belongs here, so the
+	// refusal is exercised rather than assumed.
+	env []string
 }
 
 var services = []service{
 	{name: "canonical-service", database: "e2e_canonical", schema: "services/canonical-service/internal/db/schema.sql"},
 	{name: "shadow-settlement-service", database: "e2e_shadow", schema: "services/shadow-settlement-service/internal/db/schema.sql"},
 	{name: "ingestion-service", database: "e2e_ingestion", schema: "services/ingestion-service/internal/db/schema.sql"},
+	{
+		name: "observation-service", database: "e2e_observation",
+		schema: "services/observation-service/internal/db/schema.sql",
+		// The measurement-control regime has no default and the service will not
+		// start without it. Naming it here is what proves the requirement is
+		// satisfiable; TestObservationRefusesToStartWithoutARegime proves it is
+		// actually required.
+		env: []string{"MEASUREMENT_REGIME=IN_LEGAL_METROLOGY"},
+	},
 }
 
 // platform is a running set of services, addressed by name.
@@ -127,6 +140,7 @@ func startPlatform(t *testing.T) *platform {
 			"ANOMALY_ML_URL=",
 			"UNCERTAINTY_ML_URL=",
 		)
+		cmd.Env = append(cmd.Env, svc.env...)
 		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 		if err := cmd.Start(); err != nil {
 			t.Fatalf("start %s: %v", svc.name, err)
@@ -244,6 +258,9 @@ func waitReady(t *testing.T, c *svcclient.Client, name string) {
 func (p *platform) canonical() *svcclient.Client { return p.clients["canonical-service"] }
 func (p *platform) shadow() *svcclient.Client    { return p.clients["shadow-settlement-service"] }
 func (p *platform) ingestion() *svcclient.Client { return p.clients["ingestion-service"] }
+func (p *platform) observation() *svcclient.Client {
+	return p.clients["observation-service"]
+}
 
 func (p *platform) opts() svcclient.CallOptions {
 	return svcclient.CallOptions{TenantID: p.tenant, RequestID: newID("req")}
