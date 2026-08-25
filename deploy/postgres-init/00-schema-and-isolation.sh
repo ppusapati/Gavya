@@ -52,6 +52,22 @@ echo "gavya: making foreign keys tenant-safe"
 "${psql[@]}" --file /repo/libs/integrity/isolation/foreignkeys.sql
 "${psql[@]}" --command "SELECT gavya_make_foreign_keys_tenant_safe();"
 
+# The references the schema names and does not enforce. After the converter,
+# because it relies on the unique keys the converter adds.
+echo "gavya: enforcing the declared references"
+"${psql[@]}" --file /repo/libs/integrity/isolation/references.sql
+"${psql[@]}" --command "SELECT constraint_name, outcome FROM gavya_enforce_references();" > /dev/null
+
+# A reference-shaped column nobody has decided about. Not a failure — it may well
+# not be a reference — but a question that has to reach somebody rather than
+# answer itself by staying quiet.
+undecided=$("${psql[@]}" --tuples-only --no-align --command \
+    "SELECT count(*) FROM gavya_undecided_references")
+if [ "$undecided" != "0" ]; then
+    echo "gavya: $undecided reference-shaped column(s) have no decision recorded:" >&2
+    "${psql[@]}" --command "SELECT * FROM gavya_undecided_references" >&2
+fi
+
 # Some tables cannot be isolated by a tenant column because they do not have
 # one, and are isolated another way. Applied after the sweep so it is the sweep's
 # result that gets corrected, not the other way round.
@@ -137,6 +153,14 @@ keys=$("${psql[@]}" --tuples-only --no-align --command "
     SELECT count(*) FROM gavya_foreign_key_report WHERE carries_the_tenant")
 loose=$("${psql[@]}" --tuples-only --no-align --command "
     SELECT count(*) FROM gavya_unconstrained_reference_report WHERE probably_references IS NOT NULL")
+refused=$("${psql[@]}" --tuples-only --no-align --command "
+    SELECT count(*) FROM gavya_enforce_references() WHERE outcome LIKE 'REFUSED%'")
+if [ "$refused" != "0" ]; then
+    echo "gavya: $refused declared reference(s) could not be enforced because the data already " \
+         "violates them:" >&2
+    "${psql[@]}" --command "SELECT * FROM gavya_enforce_references() WHERE outcome LIKE 'REFUSED%'" >&2
+fi
+
 echo "gavya: $protected tables isolated, $keys foreign keys carry the tenant; services connect as gavya_app"
 # Not a failure. It is a standing count of references nothing enforces, printed
 # so it is not discovered later as a surprise.

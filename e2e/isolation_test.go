@@ -80,11 +80,13 @@ func isolated(t *testing.T) (owner, app *pgx.Conn) {
 	}
 	run("libs/integrity/isolation/isolation.sql")
 	run("libs/integrity/isolation/foreignkeys.sql")
+	run("libs/integrity/isolation/references.sql")
 
 	for _, stmt := range []string{
 		"SELECT gavya_apply_tenant_isolation()",
 		"SELECT gavya_grant_app_access()",
 		"SELECT gavya_make_foreign_keys_tenant_safe()",
+		"SELECT gavya_enforce_references()",
 	} {
 		if _, err := owner.Exec(ctx, stmt); err != nil {
 			t.Fatalf("%s: %v", stmt, err)
@@ -542,5 +544,149 @@ func applySQL(t *testing.T, conn *pgx.Conn, root, rel string) {
 	}
 	if _, err := conn.Exec(context.Background(), string(b)); err != nil {
 		t.Fatalf("apply %s: %v", rel, err)
+	}
+}
+
+// A milk collection names an animal, and until now nothing checked that the
+// animal existed. A settlement is recomputed from collections joined to animals;
+// a collection whose animal is not there does not fail loudly, it drops out of
+// the join and quietly reduces somebody's payment.
+func TestACollectionCannotNameAnAnimalThatDoesNotExist(t *testing.T) {
+	_, app := isolated(t)
+	scopeTo(t, app, alpha)
+
+	_, err := app.Exec(context.Background(), `
+		INSERT INTO milk_sessions (id,tenant_id,cattle_id,session_date,shift_type,status,created_by,updated_by)
+		VALUES ('S_INVENTED_0000000000000',$1,'C_NEVER_ISSUED_0000000000',CURRENT_DATE,
+		        'morning','open','alpha','alpha')`, alpha)
+	if err == nil {
+		t.Fatal("a session was recorded against an animal that was never issued")
+	}
+	var pg *pgconn.PgError
+	if !errors.As(err, &pg) || pg.Code != "23503" {
+		t.Errorf("refused with %v, want a foreign key violation", err)
+	}
+}
+
+// And not one belonging to somebody else, which is the case a single-column
+// reference would have allowed: the foreign key is checked by the system rather
+// than by the querying role, so the policies do not stop it.
+func TestACollectionCannotNameAnotherTenantsAnimal(t *testing.T) {
+	_, app := isolated(t)
+	scopeTo(t, app, alpha)
+
+	_, err := app.Exec(context.Background(), `
+		INSERT INTO milk_sessions (id,tenant_id,cattle_id,session_date,shift_type,status,created_by,updated_by)
+		VALUES ('S_CROSSING_0000000000000',$1,'C_BBBBBBBBBBBBBBBBBBBBBBBB',CURRENT_DATE,
+		        'morning','open','alpha','alpha')`, alpha)
+	if err == nil {
+		t.Fatal("alpha recorded a session against beta's animal")
+	}
+	var pg *pgconn.PgError
+	if !errors.As(err, &pg) || pg.Code != "23503" {
+		t.Errorf("refused with %v, want a foreign key violation", err)
+	}
+}
+
+// The exclusion that matters. quarantined_records holds what failed validation
+// on the way in, and one of the reasons is that the device is not one we know
+// about. A foreign key there would refuse to quarantine exactly the records most
+// worth keeping, and the data would be dropped rather than held where somebody
+// can look at it.
+func TestARecordFromAnUnregisteredDeviceCanStillBeQuarantined(t *testing.T) {
+	owner, _ := isolated(t)
+
+	if _, err := owner.Exec(context.Background(), `
+		INSERT INTO quarantined_records
+			(id,tenant_id,reason,detail,device_id,generation,external_session_id,
+			 sequence,payload_hash,payload,captured_at,created_by)
+		VALUES ('Q_1_00000000000000000000',$1,'UNTRUSTED_SESSION_IDENTITY',
+		        'the device is not registered','D_NEVER_REGISTERED_000000',1,'sess-1',
+		        1,'abc','{}',NOW(),'seed')`, alpha); err != nil {
+		t.Fatalf("a record from an unregistered device could not be quarantined: %v", err)
+	}
+
+	var n int
+	if err := owner.QueryRow(context.Background(),
+		"SELECT count(*) FROM quarantined_records WHERE device_id = 'D_NEVER_REGISTERED_000000'").
+		Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("%d quarantined records, want the one that was just written", n)
+	}
+}
+
+// The list of decisions is the one thing here that is written out rather than
+// derived, so it is made self-checking: a reference-shaped column nobody has
+// decided about turns up here rather than staying quiet.
+func TestEveryReferenceShapedColumnHasADecision(t *testing.T) {
+	owner, _ := isolated(t)
+
+	rows, err := owner.Query(context.Background(),
+		"SELECT table_name, column_name, probably_references FROM gavya_undecided_references")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var n int
+	for rows.Next() {
+		var table, column, target string
+		if err := rows.Scan(&table, &column, &target); err != nil {
+			t.Fatal(err)
+		}
+		n++
+		t.Errorf("%s.%s looks like a reference to %s and nobody has recorded whether it is one",
+			table, column, target)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	var decided int
+	if err := owner.QueryRow(context.Background(),
+		"SELECT count(*) FROM gavya_reference_decisions()").Scan(&decided); err != nil {
+		t.Fatal(err)
+	}
+	if decided == 0 {
+		t.Fatal("no decisions are recorded, so this test would pass vacuously")
+	}
+	t.Logf("%d decisions recorded, %d columns undecided", decided, n)
+}
+
+// Adding a constraint over data that already violates it must say how much is
+// wrong, not fail on the first row. One bad import and half a table call for
+// different responses, and ALTER TABLE names one row either way.
+func TestEnforcingAReferenceOverBadDataSaysHowMuchIsBad(t *testing.T) {
+	owner, _ := isolated(t)
+	ctx := context.Background()
+
+	// Drop one constraint and put a row through the gap it leaves.
+	if _, err := owner.Exec(ctx,
+		"ALTER TABLE milk_sessions DROP CONSTRAINT milk_sessions_cattle_id_fkey"); err != nil {
+		t.Fatalf("the constraint this test removes is not there: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		// Exactly 26 characters, which is what an id column holds.
+		id := "S_ORPHAN_" + string(rune('A'+i)) + "0000000000000000"
+		if _, err := owner.Exec(ctx, `
+			INSERT INTO milk_sessions (id,tenant_id,cattle_id,session_date,shift_type,status,created_by,updated_by)
+			VALUES ($2,$1,'C_NEVER_ISSUED_0000000000',CURRENT_DATE,'morning','open','seed','seed')`,
+			alpha, id); err != nil {
+			t.Fatalf("seeding orphan %d: %v", i, err)
+		}
+	}
+
+	var outcome string
+	if err := owner.QueryRow(ctx, `
+		SELECT outcome FROM gavya_enforce_references()
+		WHERE constraint_name = 'milk_sessions_cattle_id_fkey'`).Scan(&outcome); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(outcome, "REFUSED") {
+		t.Fatalf("outcome = %q, want a refusal", outcome)
+	}
+	if !strings.Contains(outcome, "3 row") {
+		t.Errorf("outcome = %q, want it to say how many rows are wrong", outcome)
 	}
 }
