@@ -1,6 +1,8 @@
 package config
 
 import (
+	"github.com/ppusapati/gavya/libs/integrity/ports"
+
 	"os"
 	"strings"
 )
@@ -51,33 +53,33 @@ type Config struct {
 func Load() *Config {
 	return &Config{
 		ServiceName: getEnv("SERVICE_NAME", "gateway-service"),
-		ServerAddr:  getEnv("SERVER_ADDR", ":8000"),
+		ServerAddr:  getEnv("SERVER_ADDR", ports.Addr(ports.Gateway)),
 
-		CattleServiceURL:   getEnv("CATTLE_SERVICE_URL", "http://localhost:8079"),
-		MilkServiceURL:     getEnv("MILK_SERVICE_URL", "http://localhost:8078"),
-		BreedingServiceURL: getEnv("BREEDING_SERVICE_URL", "http://localhost:8082"),
-		HealthServiceURL:   getEnv("HEALTH_SERVICE_URL", "http://localhost:8083"),
-		FeedServiceURL:     getEnv("FEED_SERVICE_URL", "http://localhost:8084"),
-		FarmServiceURL:     getEnv("FARM_SERVICE_URL", "http://localhost:8081"),
+		CattleServiceURL:   getEnv("CATTLE_SERVICE_URL", ports.LocalURL(ports.Cattle)),
+		MilkServiceURL:     getEnv("MILK_SERVICE_URL", ports.LocalURL(ports.Milk)),
+		BreedingServiceURL: getEnv("BREEDING_SERVICE_URL", ports.LocalURL(ports.Breeding)),
+		HealthServiceURL:   getEnv("HEALTH_SERVICE_URL", ports.LocalURL(ports.Health)),
+		FeedServiceURL:     getEnv("FEED_SERVICE_URL", ports.LocalURL(ports.Feed)),
+		FarmServiceURL:     getEnv("FARM_SERVICE_URL", ports.LocalURL(ports.Farm)),
 
-		CattleMarketServiceURL:   getEnv("CATTLE_MARKET_SERVICE_URL", "http://localhost:8077"),
-		ProductCatalogServiceURL: getEnv("PRODUCT_CATALOG_SERVICE_URL", "http://localhost:8085"),
-		InventoryServiceURL:      getEnv("INVENTORY_SERVICE_URL", "http://localhost:8086"),
-		OrderServiceURL:          getEnv("ORDER_SERVICE_URL", "http://localhost:8087"),
-		BillingServiceURL:        getEnv("BILLING_SERVICE_URL", "http://localhost:8088"),
+		CattleMarketServiceURL:   getEnv("CATTLE_MARKET_SERVICE_URL", ports.LocalURL(ports.CattleMarket)),
+		ProductCatalogServiceURL: getEnv("PRODUCT_CATALOG_SERVICE_URL", ports.LocalURL(ports.ProductCatalog)),
+		InventoryServiceURL:      getEnv("INVENTORY_SERVICE_URL", ports.LocalURL(ports.Inventory)),
+		OrderServiceURL:          getEnv("ORDER_SERVICE_URL", ports.LocalURL(ports.Order)),
+		BillingServiceURL:        getEnv("BILLING_SERVICE_URL", ports.LocalURL(ports.Billing)),
 
-		TenantServiceURL:       getEnv("TENANT_SERVICE_URL", "http://localhost:8089"),
-		NotificationServiceURL: getEnv("NOTIFICATION_SERVICE_URL", "http://localhost:8098"),
-		ReportingServiceURL:    getEnv("REPORTING_SERVICE_URL", "http://localhost:8096"),
-		AuditServiceURL:        getEnv("AUDIT_SERVICE_URL", "http://localhost:8097"),
-		FileServiceURL:         getEnv("FILE_SERVICE_URL", "http://localhost:8099"),
+		TenantServiceURL:       getEnv("TENANT_SERVICE_URL", ports.LocalURL(ports.Tenant)),
+		NotificationServiceURL: getEnv("NOTIFICATION_SERVICE_URL", ports.LocalURL(ports.Notification)),
+		ReportingServiceURL:    getEnv("REPORTING_SERVICE_URL", ports.LocalURL(ports.Reporting)),
+		AuditServiceURL:        getEnv("AUDIT_SERVICE_URL", ports.LocalURL(ports.Audit)),
+		FileServiceURL:         getEnv("FILE_SERVICE_URL", ports.LocalURL(ports.File)),
 
-		IngestionServiceURL:        getEnv("INGESTION_SERVICE_URL", "http://localhost:8091"),
-		CanonicalServiceURL:        getEnv("CANONICAL_SERVICE_URL", "http://localhost:8093"),
-		ObservationServiceURL:      getEnv("OBSERVATION_SERVICE_URL", "http://localhost:8092"),
-		PoolingServiceURL:          getEnv("POOLING_SERVICE_URL", "http://localhost:8094"),
-		BalanceServiceURL:          getEnv("BALANCE_SERVICE_URL", "http://localhost:8095"),
-		ShadowSettlementServiceURL: getEnv("SHADOW_SETTLEMENT_SERVICE_URL", "http://localhost:8090"),
+		IngestionServiceURL:        getEnv("INGESTION_SERVICE_URL", ports.LocalURL(ports.Ingestion)),
+		CanonicalServiceURL:        getEnv("CANONICAL_SERVICE_URL", ports.LocalURL(ports.Canonical)),
+		ObservationServiceURL:      getEnv("OBSERVATION_SERVICE_URL", ports.LocalURL(ports.Observation)),
+		PoolingServiceURL:          getEnv("POOLING_SERVICE_URL", ports.LocalURL(ports.Pooling)),
+		BalanceServiceURL:          getEnv("BALANCE_SERVICE_URL", ports.LocalURL(ports.Balance)),
+		ShadowSettlementServiceURL: getEnv("SHADOW_SETTLEMENT_SERVICE_URL", ports.LocalURL(ports.ShadowSettlement)),
 
 		CORSAllowedOrigins: splitList(getEnv("CORS_ALLOWED_ORIGINS", "")),
 	}

@@ -1,6 +1,10 @@
 package config
 
-import "os"
+import (
+	"os"
+
+	"github.com/ppusapati/gavya/libs/integrity/ports"
+)
 
 type Config struct {
 	ServiceName string
@@ -11,7 +15,7 @@ type Config struct {
 func Load() *Config {
 	return &Config{
 		ServiceName: getEnv("SERVICE_NAME", "canonical-service"),
-		ServerAddr:  getEnv("SERVER_ADDR", ":8093"),
+		ServerAddr:  getEnv("SERVER_ADDR", ports.Addr(ports.Canonical)),
 		DatabaseURL: getEnv("DATABASE_URL", "postgres://postgres:secret@localhost:5432/dairy?sslmode=disable"),
 	}
 }

@@ -1,6 +1,8 @@
 package config
 
 import (
+	"github.com/ppusapati/gavya/libs/integrity/ports"
+
 	"os"
 	"strconv"
 	"time"
@@ -24,7 +26,7 @@ type Config struct {
 func Load() *Config {
 	return &Config{
 		ServiceName:         getEnv("SERVICE_NAME", "shadow-settlement-service"),
-		ServerAddr:          getEnv("SERVER_ADDR", ":8090"),
+		ServerAddr:          getEnv("SERVER_ADDR", ports.Addr(ports.ShadowSettlement)),
 		DatabaseURL:         getEnv("DATABASE_URL", "postgres://postgres:secret@localhost:5432/dairy?sslmode=disable"),
 		DivergenceMLURL:     getEnv("DIVERGENCE_ML_URL", ""),
 		DivergenceMLTimeout: getDuration("DIVERGENCE_ML_TIMEOUT", 3*time.Second),

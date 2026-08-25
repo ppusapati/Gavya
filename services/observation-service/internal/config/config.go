@@ -1,6 +1,8 @@
 package config
 
 import (
+	"github.com/ppusapati/gavya/libs/integrity/ports"
+
 	"os"
 	"strconv"
 	"time"
@@ -31,7 +33,7 @@ type Config struct {
 func Load() *Config {
 	return &Config{
 		ServiceName: getEnv("SERVICE_NAME", "observation-service"),
-		ServerAddr:  getEnv("SERVER_ADDR", ":8092"),
+		ServerAddr:  getEnv("SERVER_ADDR", ports.Addr(ports.Observation)),
 		DatabaseURL: getEnv("DATABASE_URL", "postgres://postgres:secret@localhost:5432/dairy?sslmode=disable"),
 		// No default. A deployment that has not said which measurement-control
 		// law it operates under would otherwise be given India's, and every

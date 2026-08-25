@@ -1,6 +1,8 @@
 package config
 
 import (
+	"github.com/ppusapati/gavya/libs/integrity/ports"
+
 	"os"
 	"strconv"
 	"time"
@@ -25,7 +27,7 @@ type Config struct {
 func Load() *Config {
 	return &Config{
 		ServiceName:             getEnv("SERVICE_NAME", "balance-service"),
-		ServerAddr:              getEnv("SERVER_ADDR", ":8095"),
+		ServerAddr:              getEnv("SERVER_ADDR", ports.Addr(ports.Balance)),
 		DatabaseURL:             getEnv("DATABASE_URL", "postgres://postgres:secret@localhost:5432/dairy?sslmode=disable"),
 		ReconciliationMLURL:     getEnv("RECONCILIATION_ML_URL", ""),
 		ReconciliationMLTimeout: getDuration("RECONCILIATION_ML_TIMEOUT", 5*time.Second),

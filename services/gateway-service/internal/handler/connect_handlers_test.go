@@ -7,6 +7,8 @@ import (
 
 	"p9e.in/samavaya/packages/p9log"
 
+	"github.com/ppusapati/gavya/libs/integrity/ports"
+
 	"github.com/ppusapati/gavya/services/gateway-service/internal/config"
 )
 
@@ -138,5 +140,62 @@ func TestAMalformedUpstreamDoesNotDisableTheGateway(t *testing.T) {
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if rec.Code != http.StatusOK {
 		t.Errorf("gateway health = %d, want 200", rec.Code)
+	}
+}
+
+// The gateway's upstream defaults and the services' own defaults were kept in
+// two places and drifted: fourteen of the pairs disagreed, so on a developer's
+// machine the gateway could not reach most of the platform. Both sides read one
+// table now, and this is what says so — a future edit that hardcodes a number
+// back into either side fails here.
+func TestUpstreamDefaultsComeFromTheSharedTable(t *testing.T) {
+	cfg := config.Load()
+
+	for _, c := range []struct {
+		name string
+		url  string
+		port int
+	}{
+		{"cattle", cfg.CattleServiceURL, ports.Cattle},
+		{"milk", cfg.MilkServiceURL, ports.Milk},
+		{"breeding", cfg.BreedingServiceURL, ports.Breeding},
+		{"health", cfg.HealthServiceURL, ports.Health},
+		{"feed", cfg.FeedServiceURL, ports.Feed},
+		{"farm", cfg.FarmServiceURL, ports.Farm},
+		{"cattle-market", cfg.CattleMarketServiceURL, ports.CattleMarket},
+		{"product-catalog", cfg.ProductCatalogServiceURL, ports.ProductCatalog},
+		{"inventory", cfg.InventoryServiceURL, ports.Inventory},
+		{"order", cfg.OrderServiceURL, ports.Order},
+		{"billing", cfg.BillingServiceURL, ports.Billing},
+		{"tenant", cfg.TenantServiceURL, ports.Tenant},
+		{"notification", cfg.NotificationServiceURL, ports.Notification},
+		{"reporting", cfg.ReportingServiceURL, ports.Reporting},
+		{"audit", cfg.AuditServiceURL, ports.Audit},
+		{"file", cfg.FileServiceURL, ports.File},
+		{"ingestion", cfg.IngestionServiceURL, ports.Ingestion},
+		{"canonical", cfg.CanonicalServiceURL, ports.Canonical},
+		{"observation", cfg.ObservationServiceURL, ports.Observation},
+		{"pooling", cfg.PoolingServiceURL, ports.Pooling},
+		{"balance", cfg.BalanceServiceURL, ports.Balance},
+		{"shadow-settlement", cfg.ShadowSettlementServiceURL, ports.ShadowSettlement},
+	} {
+		if want := ports.LocalURL(c.port); c.url != want {
+			t.Errorf("the gateway dials %s at %s, but %s listens on %s",
+				c.name, c.url, c.name, want)
+		}
+	}
+}
+
+// Every upstream the gateway routes must have somewhere to dial. A service
+// added to the routing table without a port is a route to nothing.
+func TestEveryRoutedUpstreamHasAPort(t *testing.T) {
+	h, _ := newHandler(t)
+	for _, rt := range h.routes {
+		if rt.proxy == nil {
+			t.Errorf("route %s has no upstream", rt.prefix)
+		}
+	}
+	if len(h.routes) != 22 {
+		t.Errorf("%d upstreams are routed; the platform has 22 addressable services", len(h.routes))
 	}
 }

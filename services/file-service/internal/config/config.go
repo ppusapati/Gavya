@@ -1,6 +1,10 @@
 package config
 
-import "os"
+import (
+	"os"
+
+	"github.com/ppusapati/gavya/libs/integrity/ports"
+)
 
 type Config struct {
 	ServiceName, ServerAddr, DatabaseURL string
@@ -10,7 +14,7 @@ type Config struct {
 func Load() *Config {
 	return &Config{
 		ServiceName:     getEnv("SERVICE_NAME", "file-service"),
-		ServerAddr:      getEnv("SERVER_ADDR", ":8095"),
+		ServerAddr:      getEnv("SERVER_ADDR", ports.Addr(ports.File)),
 		DatabaseURL:     getEnv("DATABASE_URL", "postgres://postgres:secret@localhost:5432/dairy?sslmode=disable"),
 		StorageProvider: getEnv("STORAGE_PROVIDER", "local"),
 		StorageBucket:   getEnv("STORAGE_BUCKET", "/data/uploads"),
