@@ -40,12 +40,23 @@
 --
 -- WHY THE UNSET CASE RAISES RATHER THAN RETURNS NOTHING
 --
--- The policies read current_setting('app.tenant_id') without the missing_ok
--- argument. With missing_ok, an unset tenant yields NULL, every comparison is
--- NULL, and a SELECT returns zero rows: a query that silently finds nothing is
--- indistinguishable from a tenant that genuinely has no data, and that is how a
--- connection-handling bug reaches production wearing an empty result set.
--- Without it, the statement raises 42704 and names the parameter.
+-- A query that silently finds nothing is indistinguishable from a tenant that
+-- genuinely has no data, so a connection-handling bug reaches production wearing
+-- an empty result set. The policies therefore go through gavya_current_tenant(),
+-- which raises instead of returning nothing.
+--
+-- A plain current_setting('app.tenant_id') looks like it does the same job, and
+-- on a fresh connection it does: an unset parameter raises 42704. It stops doing
+-- it the moment connections are pooled. Once any request has set the parameter,
+-- the session has it defined, and RESET — or set_config to NULL — leaves it as
+-- the empty string rather than undefined. current_setting then returns '',
+-- nothing raises, and every subsequent request that forgot its tenant quietly
+-- matches no rows.
+--
+-- That failure only appears under connection reuse: under load, in production,
+-- and never in a test that opens one connection and closes it. So the empty
+-- string is treated as what it is — a connection that was handed back without a
+-- tenant — and refused in the same way as a missing one.
 --
 --
 -- WHY SOFT DELETION IS NOT IN HERE
@@ -83,6 +94,31 @@ BEGIN
     ALTER ROLE gavya_app LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
 END
 $$;
+
+-- ---------------------------------------------------------------------------
+-- The tenant of the current connection
+-- ---------------------------------------------------------------------------
+
+CREATE OR REPLACE FUNCTION gavya_current_tenant() RETURNS text AS $fn$
+DECLARE
+    v text;
+BEGIN
+    v := current_setting('app.tenant_id', true);
+    -- NULL is a connection that never had a tenant. Empty is a pooled
+    -- connection that had one, was reset, and has been handed to a request that
+    -- did not set one. Both are the same mistake and neither may return rows.
+    IF v IS NULL OR v = '' THEN
+        RAISE EXCEPTION 'no tenant is set on this connection'
+            USING ERRCODE = '42501',
+                  HINT = 'set app.tenant_id before querying; note that a reset '
+                         'parameter reads as the empty string, not as missing';
+    END IF;
+    RETURN v;
+END
+$fn$ LANGUAGE plpgsql STABLE;
+
+COMMENT ON FUNCTION gavya_current_tenant() IS
+    'The tenant this connection is acting for. Raises rather than returning nothing when unset.';
 
 -- ---------------------------------------------------------------------------
 -- Applying the policy
@@ -132,8 +168,8 @@ BEGIN
             EXECUTE format($p$
                 CREATE POLICY tenant_isolation ON %I.%I
                 FOR ALL
-                USING (id = current_setting('app.tenant_id'))
-                WITH CHECK (id = current_setting('app.tenant_id'))
+                USING (id = gavya_current_tenant())
+                WITH CHECK (id = gavya_current_tenant())
             $p$, r.nsp, r.relname);
             table_name := r.relname;
             outcome := 'isolated on id';
@@ -158,8 +194,8 @@ BEGIN
         EXECUTE format($p$
             CREATE POLICY tenant_isolation ON %I.%I
             FOR ALL
-            USING (tenant_id = current_setting('app.tenant_id'))
-            WITH CHECK (tenant_id = current_setting('app.tenant_id'))
+            USING (tenant_id = gavya_current_tenant())
+            WITH CHECK (tenant_id = gavya_current_tenant())
         $p$, r.nsp, r.relname);
 
         table_name := r.relname;

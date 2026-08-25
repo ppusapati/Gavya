@@ -253,11 +253,9 @@ func TestATenantCannotDeleteAnotherTenantsRow(t *testing.T) {
 	}
 }
 
-// A connection that never set a tenant must fail loudly. The tempting
-// alternative — current_setting(..., true), which yields NULL and therefore no
-// rows — turns a connection-handling bug into an empty result set, and an empty
-// result set is indistinguishable from a tenant that genuinely has no data. That
-// is how this kind of defect reaches production.
+// A connection that never set a tenant must fail loudly. Returning no rows
+// instead turns a connection-handling bug into an empty result set, and an empty
+// result set is indistinguishable from a tenant that genuinely has no data.
 func TestAQueryWithNoTenantSetIsRefusedRatherThanReturningNothing(t *testing.T) {
 	_, app := isolated(t)
 
@@ -267,8 +265,48 @@ func TestAQueryWithNoTenantSetIsRefusedRatherThanReturningNothing(t *testing.T) 
 		t.Fatalf("a query with no tenant set returned %d rows instead of failing", n)
 	}
 	var pg *pgconn.PgError
-	if !errors.As(err, &pg) || pg.Code != "42704" {
-		t.Errorf("failed with %v, want an unrecognised-parameter error naming app.tenant_id", err)
+	if !errors.As(err, &pg) || pg.Code != "42501" {
+		t.Errorf("failed with %v, want a refusal naming the missing tenant", err)
+	}
+}
+
+// The same requirement, on the connection shape that actually occurs in
+// production. This is the case a plain current_setting('app.tenant_id') gets
+// wrong: on a fresh connection an unset parameter raises, but once any request
+// has set it the session has it defined, and resetting it leaves the empty
+// string rather than nothing. The next request that forgets its tenant then
+// matches no rows in silence.
+//
+// It only happens when connections are reused — under load, in production, and
+// never in a test that opens one connection and closes it. So it is tested on a
+// connection that has been used and reset, not on a fresh one.
+func TestAReusedConnectionThatLostItsTenantIsAlsoRefused(t *testing.T) {
+	_, app := isolated(t)
+	ctx := context.Background()
+
+	// Serve one request properly, exactly as the pool would.
+	scopeTo(t, app, alpha)
+	var n int
+	if err := app.QueryRow(ctx, "SELECT count(*) FROM cattle").Scan(&n); err != nil {
+		t.Fatalf("the scoped query failed: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("the scoped query saw %d rows, want 1", n)
+	}
+
+	// Hand the connection back, and give it to a request that sets no tenant.
+	if _, err := app.Exec(ctx, "RESET app.tenant_id"); err != nil {
+		t.Fatal(err)
+	}
+
+	err := app.QueryRow(ctx, "SELECT count(*) FROM cattle").Scan(&n)
+	if err == nil {
+		t.Fatalf("a reused connection with no tenant returned %d rows instead of failing — "+
+			"an empty result set is how this defect reaches production", n)
+	}
+	var pg *pgconn.PgError
+	if !errors.As(err, &pg) || pg.Code != "42501" {
+		t.Errorf("failed with %v, want a refusal naming the missing tenant", err)
 	}
 }
 
