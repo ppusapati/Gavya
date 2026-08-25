@@ -91,6 +91,14 @@ func isolated(t *testing.T) (owner, app *pgx.Conn) {
 		}
 	}
 
+	// Tables that cannot be isolated by a tenant column are isolated another
+	// way, after the sweep, so it is the sweep's result that gets corrected.
+	extras, _ := filepath.Glob(filepath.Join(root, "services", "*", "internal", "db", "isolation.sql"))
+	for _, e := range extras {
+		rel, _ := filepath.Rel(root, e)
+		run(rel)
+	}
+
 	appDSN := strings.Replace(dsn(t, db), "postgres://", "postgres://", 1)
 	app, err = pgx.Connect(ctx, asRole(appDSN, "gavya_app"))
 	if err != nil {
@@ -378,7 +386,7 @@ func TestEveryTenantOwnedTableIsCovered(t *testing.T) {
 	}
 	defer rows.Close()
 
-	var covered, uncovered, noTenant int
+	var covered, uncovered, noTenant, otherwise int
 	for rows.Next() {
 		var schema, table string
 		var hasTenant, enabled, forced bool
@@ -386,12 +394,19 @@ func TestEveryTenantOwnedTableIsCovered(t *testing.T) {
 		if err := rows.Scan(&schema, &table, &hasTenant, &enabled, &forced, &policies); err != nil {
 			t.Fatal(err)
 		}
-		// The tenants table has no tenant_id and is isolated on its own key.
-		if !hasTenant && table != "tenants" {
-			noTenant++
-			if enabled {
-				t.Errorf("%s.%s has no tenant column but carries a tenant policy", schema, table)
+		// A table with no tenant column is not automatically outside the
+		// boundary. `tenants` is isolated on its own key and `users` by
+		// membership, because a person belongs to several tenants and cannot
+		// carry one column saying which. Isolated by some other means is a
+		// success; the case worth reporting is isolated by no means at all.
+		if !hasTenant {
+			if enabled && forced && policies > 0 {
+				otherwise++
+				continue
 			}
+			noTenant++
+			t.Logf("%s.%s has no tenant column and no policy — confirm that is intended",
+				schema, table)
 			continue
 		}
 		if enabled && forced && policies > 0 {
@@ -408,7 +423,8 @@ func TestEveryTenantOwnedTableIsCovered(t *testing.T) {
 	if covered == 0 {
 		t.Fatal("no tables were found to be covered, so this test would pass vacuously")
 	}
-	t.Logf("%d tenant-owned tables isolated, %d not, %d tables carry no tenant", covered, uncovered, noTenant)
+	t.Logf("%d tenant-owned tables isolated, %d not; %d isolated by another means, %d carry no tenant and no policy",
+		covered, uncovered, otherwise, noTenant)
 }
 
 // Row-level security does not reach foreign keys. The check runs as the system

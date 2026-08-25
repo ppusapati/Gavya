@@ -52,6 +52,15 @@ echo "gavya: making foreign keys tenant-safe"
 "${psql[@]}" --file /repo/libs/integrity/isolation/foreignkeys.sql
 "${psql[@]}" --command "SELECT gavya_make_foreign_keys_tenant_safe();"
 
+# Some tables cannot be isolated by a tenant column because they do not have
+# one, and are isolated another way. Applied after the sweep so it is the sweep's
+# result that gets corrected, not the other way round.
+for extra in /repo/services/*/internal/db/isolation.sql; do
+    [ -e "$extra" ] || continue
+    echo "gavya: applying $(basename "$(dirname "$(dirname "$(dirname "$extra")")")") isolation"
+    "${psql[@]}" --file "$extra"
+done
+
 # The password is set here rather than in the SQL file, so a credential never
 # enters the repository.
 "${psql[@]}" --command \
@@ -86,6 +95,15 @@ if [ "$crossable" != "0" ]; then
         WHERE both_sides_have_a_tenant AND NOT carries_the_tenant" >&2
     exit 1
 fi
+
+# A table with no tenant column is not a failure — schema_migrations has none
+# and needs none — but it is not nothing either, and the only way it gets looked
+# at is if it is said out loud.
+"${psql[@]}" --tuples-only --no-align --command "
+    SELECT 'gavya: note - ' || schema_name || '.' || table_name ||
+           ' has no tenant column and no policy; confirm that is intended'
+    FROM gavya_isolation_report
+    WHERE NOT has_tenant_column AND NOT rls_enabled"
 
 protected=$("${psql[@]}" --tuples-only --no-align --command "
     SELECT count(*) FROM gavya_isolation_report WHERE rls_enabled AND rls_forced")

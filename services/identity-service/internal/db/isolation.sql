@@ -1,0 +1,206 @@
+-- Isolation for the identity tables, which the general sweep cannot get right.
+--
+-- Two problems, neither of which appears anywhere else in the schema.
+--
+--
+-- THE TABLE WITH NO TENANT COLUMN
+--
+-- `users` is deliberately global: a federation manager oversees a dozen
+-- societies and a vet works across four, and one login per tenant means one
+-- password reset per tenant and no way to say who a person is across the estate.
+-- So there is no tenant_id to compare against, and the column-driven sweep in
+-- libs/integrity/isolation leaves the table alone — which would let any tenant
+-- read every user's address and password hash.
+--
+-- It is isolated by membership instead. A tenant sees a person exactly when that
+-- person is one of theirs, which is a policy the database can enforce and
+-- happens to be the answer to the business question too.
+--
+--
+-- THE QUERIES THAT RUN BEFORE A TENANT IS KNOWN
+--
+-- Authentication is the one thing that cannot already know its tenant: finding
+-- the account for an email address, and resolving a session to the tenant it
+-- acts for, are what establish the tenant in the first place. Under the
+-- policies, those queries are refused — and the refusal is correct, because
+-- there is genuinely no tenant yet.
+--
+-- The tempting fix is to exempt the identity tables, or to give the identity
+-- service a role that bypasses the policies. Both hand it unrestricted read
+-- across every tenant's memberships and sessions for the sake of three lookups.
+--
+-- Instead there are three functions, each running with the definer's rights,
+-- each answering exactly one pre-authentication question and returning the
+-- minimum that question needs. Everything else the identity service does goes
+-- through the policies like every other service. The exception is three
+-- functions long and each one is short enough to read.
+
+-- ---------------------------------------------------------------------------
+-- users, isolated by membership
+-- ---------------------------------------------------------------------------
+
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE users FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON users;
+
+CREATE POLICY tenant_isolation ON users
+FOR ALL
+USING (
+    EXISTS (
+        SELECT 1 FROM tenant_memberships m
+        WHERE m.user_id = users.id
+          AND m.tenant_id = gavya_current_tenant()
+          AND m.deleted_at IS NULL
+    )
+)
+-- Writing is narrower than reading. A tenant may update somebody who is already
+-- one of theirs; creating a person is not a tenant-scoped act, because the
+-- membership that would authorise it does not exist yet. That path goes through
+-- the definer-rights function below, where the caller has to say which tenant
+-- the new person is being added to.
+WITH CHECK (
+    EXISTS (
+        SELECT 1 FROM tenant_memberships m
+        WHERE m.user_id = users.id
+          AND m.tenant_id = gavya_current_tenant()
+          AND m.deleted_at IS NULL
+    )
+);
+
+-- ---------------------------------------------------------------------------
+-- The three pre-authentication lookups
+-- ---------------------------------------------------------------------------
+
+-- gavya_find_user_for_login answers "is there an account for this address, and
+-- what does verifying it need".
+--
+-- It returns the hash rather than doing the comparison, because comparing is the
+-- application's job and the algorithm lives there. It returns a row even for an
+-- address with no account — with found = false and a dummy-shaped result — so
+-- the caller can do the same work either way. A caller that returns early on a
+-- missing account is measurably faster in that case, and the difference tells an
+-- attacker which addresses exist.
+CREATE OR REPLACE FUNCTION gavya_find_user_for_login(p_email_normalised text)
+RETURNS TABLE(
+    found         boolean,
+    user_id       text,
+    password_hash text,
+    status        text,
+    locked_until  timestamptz,
+    failed_attempts int
+) AS $fn$
+BEGIN
+    RETURN QUERY
+    SELECT true, u.id::text, u.password_hash, u.status::text, u.locked_until, u.failed_attempts
+    FROM users u
+    WHERE u.email_normalised = p_email_normalised
+      AND u.deleted_at IS NULL;
+
+    IF NOT FOUND THEN
+        RETURN QUERY SELECT false, NULL::text, NULL::text, NULL::text, NULL::timestamptz, 0;
+    END IF;
+END
+$fn$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
+
+COMMENT ON FUNCTION gavya_find_user_for_login(text) IS
+    'Pre-authentication lookup: the stored credential for an address, or a not-found row of the same shape.';
+
+-- gavya_resolve_session answers "what tenant is this session acting for, and is
+-- it still usable".
+--
+-- This is what makes a signed token withdrawable. A token checked only by its
+-- signature is valid until it expires, so dismissal, credential theft and a lost
+-- laptop are all unhandleable for the length of the lifetime. One indexed lookup
+-- per request buys revocation that takes effect on the next request.
+--
+-- It says why a session is unusable, because "expired" and "revoked" call for
+-- different things from whoever is reading the logs — but the caller must not
+-- pass that distinction to the client, who is told only that they are not signed
+-- in.
+CREATE OR REPLACE FUNCTION gavya_resolve_session(p_session_id text)
+RETURNS TABLE(
+    valid               boolean,
+    reason              text,
+    tenant_id           text,
+    user_id             text,
+    service_identity_id text
+) AS $fn$
+DECLARE
+    s record;
+BEGIN
+    SELECT * INTO s FROM auth_sessions a WHERE a.id = p_session_id;
+
+    IF NOT FOUND THEN
+        RETURN QUERY SELECT false, 'no such session', NULL::text, NULL::text, NULL::text;
+        RETURN;
+    END IF;
+    IF s.revoked_at IS NOT NULL THEN
+        RETURN QUERY SELECT false, coalesce(s.revoked_reason, 'revoked')::text,
+                            NULL::text, NULL::text, NULL::text;
+        RETURN;
+    END IF;
+    IF s.expires_at <= now() THEN
+        RETURN QUERY SELECT false, 'expired', NULL::text, NULL::text, NULL::text;
+        RETURN;
+    END IF;
+
+    RETURN QUERY SELECT true, NULL::text, s.tenant_id::text,
+                        s.user_id::text, s.service_identity_id::text;
+END
+$fn$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
+
+COMMENT ON FUNCTION gavya_resolve_session(text) IS
+    'Pre-authentication lookup: the tenant a session acts for, and whether it is still live.';
+
+-- gavya_find_service_identity answers the same question for a service.
+--
+-- A service credential is a password nobody notices needs rotating, so the
+-- expiry is part of what is checked here rather than left to whoever remembers.
+CREATE OR REPLACE FUNCTION gavya_find_service_identity(p_name text)
+RETURNS TABLE(
+    found       boolean,
+    identity_id text,
+    tenant_id   text,
+    secret_hash text,
+    status      text,
+    expires_at  timestamptz,
+    permissions text[]
+) AS $fn$
+BEGIN
+    RETURN QUERY
+    SELECT true, si.id::text, si.tenant_id::text, si.secret_hash, si.status::text,
+           si.expires_at, si.permissions
+    FROM service_identities si
+    WHERE si.name = p_name AND si.deleted_at IS NULL;
+
+    IF NOT FOUND THEN
+        RETURN QUERY SELECT false, NULL::text, NULL::text, NULL::text, NULL::text,
+                            NULL::timestamptz, NULL::text[];
+    END IF;
+END
+$fn$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
+
+COMMENT ON FUNCTION gavya_find_service_identity(text) IS
+    'Pre-authentication lookup: the stored credential for a service, or a not-found row of the same shape.';
+
+-- ---------------------------------------------------------------------------
+-- Who may call them
+-- ---------------------------------------------------------------------------
+
+-- These run with the definer's rights, so who may call them is the whole
+-- control. Revoked from PUBLIC first: a function created by a superuser is
+-- executable by everybody by default, which would make each of these a hole
+-- rather than a door.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gavya_app') THEN
+        REVOKE ALL ON FUNCTION gavya_find_user_for_login(text) FROM PUBLIC;
+        REVOKE ALL ON FUNCTION gavya_resolve_session(text) FROM PUBLIC;
+        REVOKE ALL ON FUNCTION gavya_find_service_identity(text) FROM PUBLIC;
+
+        GRANT EXECUTE ON FUNCTION gavya_find_user_for_login(text) TO gavya_app;
+        GRANT EXECUTE ON FUNCTION gavya_resolve_session(text) TO gavya_app;
+        GRANT EXECUTE ON FUNCTION gavya_find_service_identity(text) TO gavya_app;
+    END IF;
+END
+$$;
