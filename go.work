@@ -4,6 +4,7 @@ use (
 	./pkg
 	./libs/integrity
 	./e2e
+	./tools/amcu
 	./services/canonical-service
 	./services/balance-service
 	./services/ingestion-service
