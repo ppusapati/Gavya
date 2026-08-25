@@ -29,11 +29,19 @@
 -- service a role that bypasses the policies. Both hand it unrestricted read
 -- across every tenant's memberships and sessions for the sake of three lookups.
 --
--- Instead there are three functions, each running with the definer's rights,
--- each answering exactly one pre-authentication question and returning the
--- minimum that question needs. Everything else the identity service does goes
--- through the policies like every other service. The exception is three
--- functions long and each one is short enough to read.
+-- Instead there are six functions, each running with the definer's rights, each
+-- doing exactly one thing the pre-authentication path needs and no more.
+-- Everything else the identity service does goes through the policies like every
+-- other service. The exception is six short functions rather than a role that
+-- can read everything.
+--
+-- Three of them read: the account for an address, the tenants a person may sign
+-- in to, and the credential for a service. Three write, and the reason is the
+-- same in each case — the write happens before a tenant exists. Recording a
+-- failed sign-in against an address that has no account is the clearest: those
+-- are the attempts most worth keeping, they have no tenant to be scoped to, and
+-- under the policy the insert is simply refused, so a credential-stuffing run
+-- would leave no trace at all.
 
 -- ---------------------------------------------------------------------------
 -- users, isolated by membership
@@ -183,6 +191,89 @@ $fn$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
 COMMENT ON FUNCTION gavya_find_service_identity(text) IS
     'Pre-authentication lookup: the stored credential for a service, or a not-found row of the same shape.';
 
+
+-- gavya_memberships_for_login answers "which tenants may this person sign in
+-- to". It spans tenants by necessity: the answer is what decides which one the
+-- session will be scoped to, so it cannot be asked from inside one.
+--
+-- Keyed by user id rather than by address, so it can only be asked about
+-- somebody whose account has already been found.
+CREATE OR REPLACE FUNCTION gavya_memberships_for_login(p_user_id text)
+RETURNS TABLE(
+    tenant_id  text,
+    role_id    text,
+    role_name  text,
+    status     text,
+    is_default boolean
+) AS $fn$
+BEGIN
+    RETURN QUERY
+    SELECT m.tenant_id::text, m.role_id::text, r.name::text, m.status::text, m.is_default
+    FROM tenant_memberships m
+    JOIN roles r ON r.tenant_id = m.tenant_id AND r.id = m.role_id
+    WHERE m.user_id = p_user_id
+      AND m.deleted_at IS NULL
+    ORDER BY m.tenant_id;
+END
+$fn$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
+
+COMMENT ON FUNCTION gavya_memberships_for_login(text) IS
+    'Pre-authentication lookup: the tenants a person may sign in to.';
+
+-- gavya_record_authentication_attempt writes one line of the sign-in log.
+--
+-- It needs definer rights for the same reason the log is worth keeping: the
+-- attempts that matter most are the ones against addresses that do not exist,
+-- and those have no tenant to be scoped to. Under the policy that insert is
+-- refused — so a credential-stuffing run would leave no trace at all, which is
+-- the exact opposite of what the table is for.
+--
+-- Reading the log stays under the policy: a tenant sees its own attempts and not
+-- anybody else's, since the rows carry email addresses.
+CREATE OR REPLACE FUNCTION gavya_record_authentication_attempt(
+    p_id               text,
+    p_email_normalised text,
+    p_user_id          text,
+    p_tenant_id        text,
+    p_succeeded        boolean,
+    p_failure_reason   text,
+    p_ip_address       text,
+    p_user_agent       text
+) RETURNS void AS $fn$
+BEGIN
+    INSERT INTO authentication_attempts
+        (id, email_normalised, user_id, tenant_id, succeeded, failure_reason, ip_address, user_agent)
+    VALUES
+        (p_id, p_email_normalised, nullif(p_user_id, ''), nullif(p_tenant_id, ''),
+         p_succeeded, nullif(p_failure_reason, ''), nullif(p_ip_address, ''), nullif(p_user_agent, ''));
+END
+$fn$ LANGUAGE plpgsql SECURITY DEFINER;
+
+COMMENT ON FUNCTION gavya_record_authentication_attempt(text,text,text,text,boolean,text,text,text) IS
+    'Records one sign-in attempt, including against addresses that have no account and therefore no tenant.';
+
+-- gavya_record_login_state writes back what an attempt did to an account: the
+-- failure count and any lock. Same reason as above — it happens before a tenant
+-- exists, and `users` has none of its own.
+CREATE OR REPLACE FUNCTION gavya_record_login_state(
+    p_user_id         text,
+    p_failed_attempts int,
+    p_locked_until    timestamptz,
+    p_succeeded       boolean
+) RETURNS void AS $fn$
+BEGIN
+    UPDATE users
+    SET failed_attempts = p_failed_attempts,
+        locked_until    = p_locked_until,
+        last_login_at   = CASE WHEN p_succeeded THEN now() ELSE last_login_at END,
+        updated_at      = now()
+    WHERE id = p_user_id;
+END
+$fn$ LANGUAGE plpgsql SECURITY DEFINER;
+
+COMMENT ON FUNCTION gavya_record_login_state(text,int,timestamptz,boolean) IS
+    'Writes back the failure count and lock an attempt produced.';
+
 -- ---------------------------------------------------------------------------
 -- Who may call them
 -- ---------------------------------------------------------------------------
@@ -198,9 +289,16 @@ BEGIN
         REVOKE ALL ON FUNCTION gavya_resolve_session(text) FROM PUBLIC;
         REVOKE ALL ON FUNCTION gavya_find_service_identity(text) FROM PUBLIC;
 
+        REVOKE ALL ON FUNCTION gavya_memberships_for_login(text) FROM PUBLIC;
+        REVOKE ALL ON FUNCTION gavya_record_authentication_attempt(text,text,text,text,boolean,text,text,text) FROM PUBLIC;
+        REVOKE ALL ON FUNCTION gavya_record_login_state(text,int,timestamptz,boolean) FROM PUBLIC;
+
         GRANT EXECUTE ON FUNCTION gavya_find_user_for_login(text) TO gavya_app;
         GRANT EXECUTE ON FUNCTION gavya_resolve_session(text) TO gavya_app;
         GRANT EXECUTE ON FUNCTION gavya_find_service_identity(text) TO gavya_app;
+        GRANT EXECUTE ON FUNCTION gavya_memberships_for_login(text) TO gavya_app;
+        GRANT EXECUTE ON FUNCTION gavya_record_authentication_attempt(text,text,text,text,boolean,text,text,text) TO gavya_app;
+        GRANT EXECUTE ON FUNCTION gavya_record_login_state(text,int,timestamptz,boolean) TO gavya_app;
     END IF;
 END
 $$;

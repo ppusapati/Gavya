@@ -1,6 +1,9 @@
 package ports
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -67,15 +70,58 @@ func TestTheIntegrityBlockIsContiguous(t *testing.T) {
 
 // Every service in the repository should have an entry, or its default is
 // nobody's decision.
+// TestTheTableCoversTheKnownServices reads the services off disk rather than
+// from a list here.
+//
+// A list is a thing somebody has to remember to add a new service to, and
+// forgetting means the service has no port, falls back to whatever its own
+// default is, and collides with something — which is the failure this package
+// was written to end. Deriving it means a directory appearing under services/
+// is enough.
 func TestTheTableCoversTheKnownServices(t *testing.T) {
-	for _, name := range []string{
-		"gateway", "tenant", "cattle", "milk", "breeding", "health", "feed", "farm",
-		"cattle-market", "product-catalog", "inventory", "order", "billing",
-		"notification", "reporting", "audit", "file",
-		"shadow-settlement", "ingestion", "observation", "canonical", "pooling", "balance",
-	} {
-		if _, ok := All[name]; !ok {
-			t.Errorf("%s has no port assigned", name)
+	root := repoRoot(t)
+	entries, err := os.ReadDir(filepath.Join(root, "services"))
+	if err != nil {
+		t.Skipf("no services directory at %s: %v", root, err)
+	}
+
+	var checked int
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
 		}
+		// Directories are named "<thing>-service"; the table is keyed by the
+		// thing.
+		name := strings.TrimSuffix(e.Name(), "-service")
+		if name == e.Name() {
+			continue
+		}
+		checked++
+		if _, ok := All[name]; !ok {
+			t.Errorf("services/%s has no port in this table, so it will fall back to its own "+
+				"default and collide with something", e.Name())
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no services were found, so this test would pass vacuously")
+	}
+	t.Logf("%d services on disk, %d ports assigned", checked, len(All))
+}
+
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.work")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("no go.work above the working directory")
+		}
+		dir = parent
 	}
 }

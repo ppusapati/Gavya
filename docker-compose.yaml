@@ -308,6 +308,20 @@ services:
       postgres:
         condition: service_healthy
 
+  identity-service:
+    build:
+      context: .
+      dockerfile: services/identity-service/Dockerfile
+    ports:
+      - "8102:8080"
+    environment:
+      SERVICE_NAME: identity-service
+      SERVER_ADDR: ":8080"
+      DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   observation-service:
     build:
       context: .
