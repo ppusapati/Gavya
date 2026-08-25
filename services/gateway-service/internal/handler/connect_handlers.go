@@ -25,10 +25,24 @@ type Handler struct {
 	cfg    *config.Config
 	log    *p9log.Helper
 	routes []route
+	// verifier turns a session into a tenant. Nil disables every authenticated
+	// route rather than letting them through unauthenticated.
+	verifier Verifier
 }
 
 func New(cfg *config.Config, log *p9log.Helper) *Handler {
-	return &Handler{cfg: cfg, log: log}
+	h := &Handler{cfg: cfg, log: log}
+	if cfg.IdentityServiceURL != "" {
+		h.verifier = newIdentityVerifier(cfg.IdentityServiceURL)
+	}
+	return h
+}
+
+// WithVerifier replaces how sessions are checked, so a test can drive the
+// gateway without an identity service behind it.
+func (h *Handler) WithVerifier(v Verifier) *Handler {
+	h.verifier = v
+	return h
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
@@ -54,6 +68,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		{"/billing.v1.", h.cfg.BillingServiceURL},
 
 		// Platform.
+		{"/gavya.identity.v1.", h.cfg.IdentityServiceURL},
 		{"/tenant.v1.", h.cfg.TenantServiceURL},
 		{"/notification.v1.", h.cfg.NotificationServiceURL},
 		{"/reporting.v1.", h.cfg.ReportingServiceURL},
@@ -96,10 +111,18 @@ func (h *Handler) Register(mux *http.ServeMux) {
 }
 
 func (h *Handler) dispatch(w http.ResponseWriter, r *http.Request) {
+	// Before routing, not after. A request that is going to be refused for
+	// having no session must be refused whether or not an upstream exists for
+	// it, and a request that is going to be forwarded must have had the
+	// client's own tenant header removed first.
+	if !h.authenticate(w, r) {
+		return
+	}
 	for _, rt := range h.routes {
 		if strings.HasPrefix(r.URL.Path, rt.prefix) {
-			// Headers, including X-Tenant-ID, are forwarded by the reverse proxy
-			// as received.
+			// The reverse proxy forwards headers as they now stand, which
+			// includes the tenant this gateway just established and excludes
+			// anything the client sent under that name.
 			rt.proxy.ServeHTTP(w, r)
 			return
 		}

@@ -38,6 +38,7 @@ services:
     environment:
       SERVICE_NAME: gateway-service
       SERVER_ADDR: ":8080"
+      IDENTITY_SERVICE_URL: "http://identity-service:8080"
       CATTLE_SERVICE_URL: "http://cattle-service:8080"
       MILK_SERVICE_URL: "http://milk-service:8080"
       BREEDING_SERVICE_URL: "http://breeding-service:8080"

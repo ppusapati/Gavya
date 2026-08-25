@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -80,11 +81,36 @@ func routeExists(h *Handler, path string) bool {
 	return false
 }
 
-func TestUnknownPathIsNotFound(t *testing.T) {
+// An unauthenticated caller is refused before the routing table is consulted,
+// so a path that exists and a path that does not are the same reply.
+//
+// This test used to expect 404 and the change is deliberate: answering 404
+// before authenticating lets anybody with a network route enumerate which
+// services this platform runs, one guess at a time, without an account.
+func TestAnUnauthenticatedCallerCannotTellWhichPathsExist(t *testing.T) {
 	_, mux := newHandler(t)
 
+	var codes []int
+	for _, path := range []string{"/nosuch.v1.Service/Method", "/milk.v1.MilkService/RecordMilk"} {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, nil))
+		codes = append(codes, rec.Code)
+	}
+	if codes[0] != http.StatusUnauthorized || codes[1] != http.StatusUnauthorized {
+		t.Errorf("statuses %v, want both 401 — a real path and an invented one must look alike",
+			codes)
+	}
+}
+
+// And once past authentication, an unrouted path is a plain 404.
+func TestAnUnknownPathIsNotFoundOnceAuthenticated(t *testing.T) {
+	h, mux := newHandler(t)
+	h.WithVerifier(stubVerifier{tenant: "T_A", user: "US_1"})
+
 	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/nosuch.v1.Service/Method", nil))
+	req := httptest.NewRequest(http.MethodPost, "/nosuch.v1.Service/Method", nil)
+	req.Header.Set("Authorization", "Bearer SE_1")
+	mux.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", rec.Code)
@@ -195,7 +221,26 @@ func TestEveryRoutedUpstreamHasAPort(t *testing.T) {
 			t.Errorf("route %s has no upstream", rt.prefix)
 		}
 	}
-	if len(h.routes) != 22 {
-		t.Errorf("%d upstreams are routed; the platform has 22 addressable services", len(h.routes))
+	// Counted against the port table rather than a number written here, so
+	// adding a service updates both sides at once or neither.
+	if len(h.routes) != len(ports.All)-1 {
+		t.Errorf("%d upstreams are routed and %d services have ports (the gateway itself is "+
+			"not an upstream); a service with a port and no route is unreachable, and a route "+
+			"with no port dials nothing", len(h.routes), len(ports.All))
 	}
+}
+
+// stubVerifier stands in for the identity service.
+type stubVerifier struct {
+	tenant  string
+	user    string
+	service string
+	err     error
+}
+
+func (s stubVerifier) Verify(context.Context, string) (Identity, error) {
+	if s.err != nil {
+		return Identity{}, s.err
+	}
+	return Identity{TenantID: s.tenant, UserID: s.user, ServiceIdentityID: s.service}, nil
 }
