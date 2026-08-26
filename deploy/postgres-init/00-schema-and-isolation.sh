@@ -151,8 +151,14 @@ protected=$("${psql[@]}" --tuples-only --no-align --command "
     SELECT count(*) FROM gavya_isolation_report WHERE rls_enabled AND rls_forced")
 keys=$("${psql[@]}" --tuples-only --no-align --command "
     SELECT count(*) FROM gavya_foreign_key_report WHERE carries_the_tenant")
+# Every reference-shaped column nothing enforces, not only the ones whose target
+# can be guessed from the name. Restricting this to a guessable target reported
+# 26 where the real figure was 89, which is a number that reassures rather than
+# informs.
 loose=$("${psql[@]}" --tuples-only --no-align --command "
-    SELECT count(*) FROM gavya_unconstrained_reference_report WHERE probably_references IS NOT NULL")
+    SELECT count(*) FROM gavya_unconstrained_reference_report")
+unguessable=$("${psql[@]}" --tuples-only --no-align --command "
+    SELECT count(*) FROM gavya_unguessable_references")
 refused=$("${psql[@]}" --tuples-only --no-align --command "
     SELECT count(*) FROM gavya_enforce_references() WHERE outcome LIKE 'REFUSED%'")
 if [ "$refused" != "0" ]; then
@@ -164,4 +170,11 @@ fi
 echo "gavya: $protected tables isolated, $keys foreign keys carry the tenant; services connect as gavya_app"
 # Not a failure. It is a standing count of references nothing enforces, printed
 # so it is not discovered later as a surprise.
-echo "gavya: note — $loose columns name a table they do not reference; see gavya_unconstrained_reference_report"
+echo "gavya: note — $loose reference-shaped columns are enforced by nothing; see gavya_unconstrained_reference_report"
+# Of those, the ones the decision list cannot even ask about, because their
+# target cannot be guessed from the column name. These are the gap in the check
+# above rather than in the schema, and saying so is the point.
+if [ "$unguessable" != "0" ]; then
+    echo "gavya: note — $unguessable of them point at a table no rule can guess, so no decision " \
+         "has been demanded for them; see gavya_unguessable_references"
+fi

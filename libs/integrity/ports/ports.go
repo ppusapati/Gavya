@@ -56,6 +56,7 @@ const (
 	File         = 8101
 	Identity     = 8102
 	Procurement  = 8103
+	Settlement   = 8104
 )
 
 // Addr is what a service passes to net/http as its listen address.
@@ -92,4 +93,5 @@ var All = map[string]int{
 	"file":              File,
 	"identity":          Identity,
 	"procurement":       Procurement,
+	"settlement":        Settlement,
 }

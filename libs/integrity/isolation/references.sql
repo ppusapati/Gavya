@@ -45,6 +45,17 @@
 -- The decisions
 -- ---------------------------------------------------------------------------
 
+-- The views come down before the function they read, or this file cannot be
+-- applied a second time.
+--
+-- It could not. DROP FUNCTION refuses while a view depends on it, so every
+-- re-run after the first failed on this line and left everything below it — the
+-- decisions, the enforcer, the check — as it was on the first run. A schema
+-- change to this file would have applied cleanly to a fresh database and been
+-- silently ignored on every existing one, which is the worst way round for a
+-- migration to be wrong.
+DROP VIEW IF EXISTS gavya_undecided_references;
+DROP VIEW IF EXISTS gavya_unguessable_references;
 DROP FUNCTION IF EXISTS gavya_reference_decisions();
 CREATE FUNCTION gavya_reference_decisions()
 RETURNS TABLE(table_name text, column_name text, references_table text, enforce boolean, reason text)
@@ -120,7 +131,43 @@ BEGIN
         -- where somebody can look at it.
         ('quarantined_records', 'device_id', 'devices', false,
             'a quarantined record is one that failed validation, and may name a device that was '
-            'never registered — that is often why it was quarantined')
+            'never registered — that is often why it was quarantined'),
+
+        -- Settlement.
+        --
+        -- cycle_lines.collection_id names a row in procurement's
+        -- priced_collections. Under the deployment this platform actually runs —
+        -- one database, all services — the table is right there and the key
+        -- could be enforced. It is not, and the reason is what the column is for.
+        --
+        -- A cycle line is a copy of what a collection said at the moment the
+        -- fortnight was gathered, kept precisely so that a collection corrected
+        -- afterwards does not change what a producer was already paid. The id is
+        -- the trail back to the source, not a live dependency on it. Enforcing
+        -- the key would make the settlement record hostage to a row it has
+        -- deliberately stopped reading: a collection deleted for being a
+        -- duplicate would take with it the line proving somebody was paid for
+        -- it, and the payable would no longer add up.
+        --
+        -- The uniqueness of collection_id is enforced, which is the property
+        -- that matters — one collection reaches one cycle. Its existence is not.
+        ('cycle_lines', 'collection_id', 'priced_collections', false,
+            'a cycle line is a copy of what a collection said when the fortnight was gathered, '
+            'kept so a later correction cannot change what a producer was already paid; the id '
+            'is a trail back to the source, not a live dependency on it'),
+
+        -- The rest are enforced. Each is a composite key inside settlement''s own
+        -- tables and each is declared in its schema, so these entries record the
+        -- decision rather than create the constraint.
+        ('cycle_lines', 'cycle_id', 'payment_cycles', true,
+            'a line belongs to the cycle that gathered it'),
+        ('cycle_deductions', 'cycle_id', 'payment_cycles', true,
+            'a deduction was taken in a cycle'),
+        ('cycle_deductions', 'recovery_id', 'recoveries', true,
+            'a deduction is money taken against a specific debt, and one that names a debt that '
+            'does not exist is money taken for no reason anybody can find'),
+        ('producer_payables', 'cycle_id', 'payment_cycles', true,
+            'a payable is what one producer takes home from one cycle')
     ) AS t(table_name, column_name, references_table, enforce, reason);
 END
 $fn$ LANGUAGE plpgsql IMMUTABLE;
@@ -218,11 +265,37 @@ COMMENT ON FUNCTION gavya_enforce_references(text) IS
 -- derived, so instead a missing decision is made loud. A column that turns up
 -- here is not necessarily a problem — it may well not be a reference — but it is
 -- a question somebody has to answer rather than one that answers itself.
-DROP VIEW IF EXISTS gavya_undecided_references;
 CREATE VIEW gavya_undecided_references AS
 SELECT r.schema_name, r.table_name, r.column_name, r.probably_references
 FROM gavya_unconstrained_reference_report r
 WHERE r.probably_references IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM gavya_reference_decisions() d
+      WHERE d.table_name = r.table_name AND d.column_name = r.column_name);
+
+-- The blind spot in the view above, made countable.
+--
+-- gavya_undecided_references only considers a column whose name matches a table
+-- name, because that is the only case where the target can be guessed. That
+-- leaves it silent about every reference-shaped column whose target is named
+-- irregularly — and irregular naming is the norm: cattle.owner_id points at no
+-- table called "owners", and cycle_lines.collection_id points at
+-- priced_collections.
+--
+-- At the time of writing that is 63 columns against 26, so the check that exists
+-- to make a missing decision loud was quiet about seventy per cent of them. Many
+-- of the 63 are genuinely not references — trace_id, source_record_id,
+-- external_id — but that is the argument for somebody deciding, not for the
+-- question never being asked.
+--
+-- This is a report rather than a failure. Deciding all of them is a piece of
+-- work across every service in the platform, and a deployment that refused to
+-- finish until it was done would simply be switched off. What it must not do is
+-- report a number that understates the gap by seventy per cent.
+CREATE VIEW gavya_unguessable_references AS
+SELECT r.schema_name, r.table_name, r.column_name
+FROM gavya_unconstrained_reference_report r
+WHERE r.probably_references IS NULL
   AND NOT EXISTS (
       SELECT 1 FROM gavya_reference_decisions() d
       WHERE d.table_name = r.table_name AND d.column_name = r.column_name);

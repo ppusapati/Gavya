@@ -10,6 +10,7 @@ use (
 	./services/ingestion-service
 	./services/pooling-service
 	./services/procurement-service
+	./services/settlement-service
 	./services/shadow-settlement-service
 	./services/identity-service
 	./services/observation-service

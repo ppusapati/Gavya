@@ -42,6 +42,16 @@ type service struct {
 	// service that refuses to start without a setting belongs here, so the
 	// refusal is exercised rather than assumed.
 	env []string
+
+	// needs names services that must already be running, because this one calls
+	// them. Services start in the order they are declared, so this is a check
+	// that the order is right rather than a scheduler — a list that disagrees
+	// with the declaration order fails loudly instead of producing a service
+	// pointed at an address nothing is listening on.
+	needs []string
+	// envOfDep maps a dependency's name to the variable this service reads its
+	// address from.
+	envOfDep map[string]string
 }
 
 // sharedSchemas are applied to every service's database, because every service
@@ -71,6 +81,17 @@ var services = []service{
 	// Procurement is the native path: a society prices its own collections from
 	// its own chart, rather than the platform recomputing somebody else's.
 	{name: "procurement-service", database: "e2e_procurement", schema: "services/procurement-service/internal/db/schema.sql"},
+	// Settlement turns a fortnight of priced milk into what each producer is
+	// actually handed. It reads the collections from procurement rather than
+	// recomputing them, so the URL is not optional — a settlement service
+	// pointed at nothing gathers nothing and reports a fortnight in which every
+	// producer earned zero.
+	{
+		name: "settlement-service", database: "e2e_settlement",
+		schema:   "services/settlement-service/internal/db/schema.sql",
+		needs:    []string{"procurement-service"},
+		envOfDep: map[string]string{"procurement-service": "PROCUREMENT_URL"},
+	},
 }
 
 // platform is a running set of services, addressed by name.
@@ -129,6 +150,8 @@ func startPlatform(t *testing.T) *platform {
 	binDir := t.TempDir()
 
 	p := &platform{clients: map[string]*svcclient.Client{}, tenant: newID("tnt")}
+	// Where each service ended up, so one that calls another can be told.
+	addrs := map[string]string{}
 
 	for _, svc := range services {
 		prepareDatabase(t, svc)
@@ -142,6 +165,7 @@ func startPlatform(t *testing.T) *platform {
 
 		port := freePort(t)
 		addr := fmt.Sprintf("127.0.0.1:%d", port)
+		addrs[svc.name] = addr
 
 		cmd := exec.Command(bin)
 		cmd.Env = append(os.Environ(),
@@ -155,6 +179,21 @@ func startPlatform(t *testing.T) *platform {
 			"UNCERTAINTY_ML_URL=",
 		)
 		cmd.Env = append(cmd.Env, svc.env...)
+		for _, dep := range svc.needs {
+			depAddr, up := addrs[dep]
+			if !up {
+				// A dependency declared after its dependent would leave this
+				// service pointed at nothing, and the failure would surface as
+				// an empty result rather than as a broken harness.
+				t.Fatalf("%s needs %s, which has not been started yet; move it earlier in the "+
+					"services list", svc.name, dep)
+			}
+			variable, named := svc.envOfDep[dep]
+			if !named {
+				t.Fatalf("%s needs %s but does not say which variable carries its address", svc.name, dep)
+			}
+			cmd.Env = append(cmd.Env, variable+"=http://"+depAddr)
+		}
 		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 		if err := cmd.Start(); err != nil {
 			t.Fatalf("start %s: %v", svc.name, err)
@@ -288,6 +327,9 @@ func (p *platform) observation() *svcclient.Client {
 func (p *platform) pooling() *svcclient.Client { return p.clients["pooling-service"] }
 func (p *platform) procurement() *svcclient.Client {
 	return p.clients["procurement-service"]
+}
+func (p *platform) settlement() *svcclient.Client {
+	return p.clients["settlement-service"]
 }
 
 func (p *platform) opts() svcclient.CallOptions {
