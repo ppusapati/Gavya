@@ -190,6 +190,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	route("ListWindows", connectjson.Unary(h.ListWindows))
 	route("AddFlow", connectjson.Unary(h.AddFlow))
 	route("ListFlows", connectjson.Unary(h.ListFlows))
+	route("Observability", connectjson.Unary(h.Observability))
 	route("Reconcile", connectjson.Unary(h.Reconcile))
 	route("GetRun", connectjson.Unary(h.GetRun))
 	route("ListRuns", connectjson.Unary(h.ListRuns))
@@ -446,4 +447,67 @@ func parseTime(s, field string) (time.Time, error) {
 		return time.Time{}, errors.New(field + " must be an RFC3339 timestamp")
 	}
 	return t.UTC(), nil
+}
+
+type ObservabilityRequest struct {
+	TenantID string `json:"tenant_id"`
+	WindowID string `json:"window_id"`
+}
+
+// ObservabilityResponse is what this window's instruments can and cannot
+// establish, before any milk is compared.
+type ObservabilityResponse struct {
+	// Observable are unmeasured legs the node balances determine uniquely.
+	Observable []string `json:"observable"`
+	// Unobservable are unmeasured legs they do not. The reconciler will still
+	// print a figure for these; it is one of infinitely many that fit.
+	Unobservable []string `json:"unobservable"`
+
+	// Redundant are measured legs that can be computed from the others, so a
+	// gross error on them is detectable.
+	Redundant []string `json:"redundant"`
+	// JustDetermined are measured legs that cannot be. Nothing in this window
+	// disagrees with them however wrong they are, which makes "the window
+	// reconciled" a much weaker statement than it sounds.
+	JustDetermined []string `json:"just_determined"`
+
+	FullyObservable bool `json:"fully_observable"`
+	FullyRedundant  bool `json:"fully_redundant"`
+}
+
+// Observability reports what the layout of instruments in a window can
+// establish.
+//
+// Asked before a route runs rather than after, which is the useful time to find
+// out that the only leg anybody can verify is the tanker.
+func (h *Handler) Observability(ctx context.Context, req *connect.Request[ObservabilityRequest]) (*connect.Response[ObservabilityResponse], error) {
+	o, err := h.svc.Observability(ctx, req.Msg.TenantID, req.Msg.WindowID)
+	if err != nil {
+		switch {
+		case errors.Is(err, repository.ErrNotFound):
+			return nil, connect.NewError(connect.CodeNotFound, err)
+		case errors.Is(err, domain.ErrNoFlowsToClassify),
+			errors.Is(err, domain.ErrNoInteriorNodes):
+			// A window with nothing in it, or one where every leg crosses the
+			// boundary. Neither is a fault; both mean the question cannot be
+			// answered yet, which is a different thing from the answer being
+			// that everything is fine.
+			return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	out := &ObservabilityResponse{
+		Observable: o.Observable, Unobservable: o.Unobservable,
+		Redundant: o.Redundant, JustDetermined: o.JustDetermined,
+		FullyObservable: o.FullyObservable(), FullyRedundant: o.FullyRedundant(),
+	}
+	// Never null on the wire: a client that renders a missing list as "nothing
+	// to worry about" and an empty list as "nothing to worry about" is right
+	// only once.
+	for _, p := range []*[]string{&out.Observable, &out.Unobservable, &out.Redundant, &out.JustDetermined} {
+		if *p == nil {
+			*p = []string{}
+		}
+	}
+	return connect.NewResponse(out), nil
 }

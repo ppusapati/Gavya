@@ -1208,3 +1208,294 @@ func TestProposingFlowsWithoutARoundingModeIsRefused(t *testing.T) {
 		t.Errorf("a proposal with a rounding mode was refused: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// What the instruments can establish
+// ---------------------------------------------------------------------------
+
+type observabilityReq struct {
+	TenantID string `json:"tenant_id"`
+	WindowID string `json:"window_id"`
+}
+
+type observabilityResp struct {
+	Observable      []string `json:"observable"`
+	Unobservable    []string `json:"unobservable"`
+	Redundant       []string `json:"redundant"`
+	JustDetermined  []string `json:"just_determined"`
+	FullyObservable bool     `json:"fully_observable"`
+	FullyRedundant  bool     `json:"fully_redundant"`
+}
+
+// buildWindow puts a set of proposed flows into a balance window.
+func buildWindow(t *testing.T, p *platform, route string, flows []*flowProto) string {
+	t.Helper()
+	w, err := svcclient.Call[createWindowReq, createWindowResp](
+		context.Background(), p.balance(), balanceSvc+"/CreateWindow",
+		createWindowReq{TenantID: p.tenant, RouteRef: route,
+			PeriodStart: "2026-06-01T00:00:00Z", PeriodEnd: "2026-06-02T00:00:00Z",
+			Unit: "LITRES", Actor: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("CreateWindow: %v", err)
+	}
+	for _, f := range flows {
+		in := addFlowReq{
+			TenantID: p.tenant, WindowID: w.Window.ID, FlowID: f.FlowID,
+			FromNode: f.FromNodeID, ToNode: f.ToNodeID,
+			Measured: f.Measured.Value, Unmeasured: f.Unmeasured,
+			ObservationRef: f.MovementID, Actor: "e2e",
+		}
+		if f.Uncertainty != nil {
+			in.StandardUncertainty = f.Uncertainty.Value
+		}
+		if f.FromNodeID != "" {
+			in.FromNodeKind = "TANKER"
+		}
+		if f.ToNodeID != "" {
+			in.ToNodeKind = "TANKER"
+		}
+		if _, err := svcclient.Call[addFlowReq, addFlowResp](
+			context.Background(), p.balance(), balanceSvc+"/AddFlow", in, p.opts()); err != nil {
+			t.Fatalf("AddFlow %s: %v", f.FlowID, err)
+		}
+	}
+	return w.Window.ID
+}
+
+func observability(t *testing.T, p *platform, windowID string) *observabilityResp {
+	t.Helper()
+	resp, err := svcclient.Call[observabilityReq, observabilityResp](
+		context.Background(), p.balance(), balanceSvc+"/Observability",
+		observabilityReq{TenantID: p.tenant, WindowID: windowID}, p.opts())
+	if err != nil {
+		t.Fatalf("Observability: %v", err)
+	}
+	return resp
+}
+
+// An expired certificate does not just downgrade one leg; it can leave the whole
+// window unable to check anything.
+//
+// This is the question a reconciled figure never answers. Both windows below
+// reconcile. In the first, the two measurements check each other and a ten-litre
+// discrepancy is detectable. In the second the cooler's certificate has expired,
+// its leg is solved for instead of weighted, and the remaining measurement has
+// nothing to disagree with — so the window closes perfectly no matter what the
+// flowmeter reads.
+//
+// A plant manager told only "the window reconciled" cannot tell those two apart.
+func TestAWindowCanReconcilePerfectlyAndCheckNothing(t *testing.T) {
+	p := startPlatform(t)
+
+	cooler := mustNode(t, p, "BMC-101", "Kothapalli cooler", "BULK_COOLER")
+	tanker := mustNode(t, p, "TS09-UA-6600", "Tanker 11", "TANKER")
+	plant := mustNode(t, p, "PLANT-21", "Sangam plant", "PLANT")
+
+	current := registerInstrumentReq{
+		NodeID: cooler.ID, Method: "DIP", Label: "Dipstick BMC-101",
+		RelativePPM: 5000, CertificateRef: "CERT-DIP-101",
+		CalibratedOn: "2026-01-01", ValidUntil: "2027-01-01",
+	}
+	if _, err := registerInstrument(t, p, current); err != nil {
+		t.Fatalf("RegisterInstrument: %v", err)
+	}
+	if _, err := registerInstrument(t, p, registerInstrumentReq{
+		NodeID: tanker.ID, Method: "FLOWMETER", Label: "Flowmeter TS09-UA-6600",
+		RelativePPM: 2000, CertificateRef: "CERT-FM-6600",
+		CalibratedOn: "2026-01-01", ValidUntil: "2027-01-01",
+	}); err != nil {
+		t.Fatalf("RegisterInstrument: %v", err)
+	}
+
+	move := func(from, to, at, qty, method string) string {
+		t.Helper()
+		m, err := dispatch(t, p, dispatchReq{
+			FromNodeID: from, ToNodeID: to, At: at,
+			Quantity: litres(qty), Method: method,
+		})
+		if err != nil {
+			t.Fatalf("Dispatch: %v", err)
+		}
+		if _, err := receive(t, p, receiveReq{
+			MovementID: m.ID, At: at, Quantity: litres(qty), Method: method,
+		}); err != nil {
+			t.Fatalf("Receive: %v", err)
+		}
+		return m.ID
+	}
+	load := move(cooler.ID, tanker.ID, "2026-06-01T05:00:00Z", "5000.000", "DIP")
+	haul := move(tanker.ID, plant.ID, "2026-06-01T06:00:00Z", "4990.000", "FLOWMETER")
+
+	propose := func() []*flowProto {
+		t.Helper()
+		resp, err := svcclient.Call[proposeFlowsReq, proposeFlowsResp](
+			context.Background(), p.material(), materialSvc+"/ProposeFlows",
+			proposeFlowsReq{TenantID: p.tenant, From: "2026-06-01", To: "2026-06-02",
+				Rounding: "HALF_UP"}, p.opts())
+		if err != nil {
+			t.Fatalf("ProposeFlows: %v", err)
+		}
+		return resp.Flows
+	}
+
+	// Both instruments current: the tanker is the one node in the window, and
+	// its two legs check each other.
+	before := observability(t, p, buildWindow(t, p, "ROUTE-A", propose()))
+	if !before.FullyRedundant {
+		t.Errorf("with both certificates current, %v cannot be checked", before.JustDetermined)
+	}
+	if len(before.Redundant) != 2 {
+		t.Errorf("%d legs are checkable, want both", len(before.Redundant))
+	}
+	if !before.FullyObservable {
+		t.Errorf("nothing is unmeasured and yet %v is unobservable", before.Unobservable)
+	}
+
+	// Now the cooler's certificate turns out to have expired. Nothing about the
+	// milk changes; the platform simply stops vouching for one reading.
+	expiredCooler := mustNode(t, p, "BMC-102", "Kothapalli cooler, recertified", "BULK_COOLER")
+	if _, err := registerInstrument(t, p, registerInstrumentReq{
+		NodeID: expiredCooler.ID, Method: "DIP", Label: "Dipstick BMC-102",
+		RelativePPM: 5000, CertificateRef: "CERT-DIP-102",
+		CalibratedOn: "2025-01-01", ValidUntil: "2026-01-01",
+	}); err != nil {
+		t.Fatalf("RegisterInstrument: %v", err)
+	}
+	tanker2 := mustNode(t, p, "TS09-UA-6601", "Tanker 12", "TANKER")
+	plant2 := mustNode(t, p, "PLANT-22", "Sangam plant", "PLANT")
+	if _, err := registerInstrument(t, p, registerInstrumentReq{
+		NodeID: tanker2.ID, Method: "FLOWMETER", Label: "Flowmeter TS09-UA-6601",
+		RelativePPM: 2000, CertificateRef: "CERT-FM-6601",
+		CalibratedOn: "2026-01-01", ValidUntil: "2027-01-01",
+	}); err != nil {
+		t.Fatalf("RegisterInstrument: %v", err)
+	}
+	staleLoad := move(expiredCooler.ID, tanker2.ID, "2026-06-01T07:00:00Z", "5000.000", "DIP")
+	move(tanker2.ID, plant2.ID, "2026-06-01T08:00:00Z", "4990.000", "FLOWMETER")
+
+	all := propose()
+	var stale []*flowProto
+	for _, f := range all {
+		if f.MovementID == staleLoad || (f.FromNodeID == tanker2.ID || f.ToNodeID == tanker2.ID) {
+			stale = append(stale, f)
+		}
+	}
+	if len(stale) != 2 {
+		t.Fatalf("%d legs touch the second tanker, want 2", len(stale))
+	}
+	after := observability(t, p, buildWindow(t, p, "ROUTE-B", stale))
+
+	if after.FullyRedundant {
+		t.Error("a window whose only vouched-for reading is one leg reports as fully checkable")
+	}
+	if len(after.Redundant) != 0 {
+		t.Errorf("%v reads as checkable; with the other leg solved for there is nothing left "+
+			"to check it against", after.Redundant)
+	}
+	if len(after.JustDetermined) != 1 {
+		t.Errorf("%d measured legs read as unchecked, want the one that is left",
+			len(after.JustDetermined))
+	}
+	// The unmeasured leg is still determined — it is whatever makes the tanker
+	// balance — so the reconciler will print a figure for it. What it cannot do
+	// is notice if the flowmeter is wrong.
+	if !after.FullyObservable {
+		t.Errorf("the solved-for leg reads as unobservable: %v", after.Unobservable)
+	}
+
+	// And both windows reconcile. That is the point: reconciling says nothing
+	// about whether anything was checked.
+	for _, w := range []struct {
+		name  string
+		flows []*flowProto
+	}{{"both current", propose()[:2]}, {"one expired", stale}} {
+		id := buildWindow(t, p, "ROUTE-"+w.name, w.flows)
+		if _, err := svcclient.Call[reconcileReq, reconcileResp](
+			context.Background(), p.balance(), balanceSvc+"/Reconcile",
+			reconcileReq{TenantID: p.tenant, WindowID: id, Actor: "e2e"}, p.opts()); err != nil {
+			t.Errorf("%s: the window did not reconcile: %v", w.name, err)
+		}
+	}
+	_ = load
+	_ = haul
+}
+
+// An unmetered split cannot be resolved, and the window says so before anybody
+// tries to settle on it.
+//
+// Milk leaves a chilling unit by two routes and neither is metered. Any split
+// that adds up fits the balances, so the reconciler will print one of infinitely
+// many. It is exactly the case a reconciled figure looks confident about and
+// should not.
+func TestAnUnmeteredSplitIsReportedAsUndeterminedBeforeAnybodySettlesOnIt(t *testing.T) {
+	p := startPlatform(t)
+
+	cooler := mustNode(t, p, "BMC-201", "Feeding cooler", "BULK_COOLER")
+	chiller := mustNode(t, p, "CU-1", "Chilling unit", "CHILLING_UNIT")
+	plant := mustNode(t, p, "PLANT-31", "Sangam plant", "PLANT")
+
+	// One metered leg into the chiller. The instrument belongs to the node the
+	// milk leaves, because that is the reading being offered — an earlier
+	// version of this test registered it at the receiving end and got a third
+	// unmeasured leg it did not expect.
+	if _, err := registerInstrument(t, p, registerInstrumentReq{
+		NodeID: cooler.ID, Method: "FLOWMETER", Label: "Outlet meter BMC-201",
+		RelativePPM: 2000, CertificateRef: "CERT-BMC-201",
+		CalibratedOn: "2026-01-01", ValidUntil: "2027-01-01",
+	}); err != nil {
+		t.Fatalf("RegisterInstrument: %v", err)
+	}
+
+	// Both branches leave the chiller by dip, and no dipstick is registered
+	// there — so both come back unmeasured.
+	for i, qty := range []string{"3000.000", "2000.000"} {
+		at := "2026-06-01T0" + string(rune('5'+i)) + ":00:00Z"
+		m, err := dispatch(t, p, dispatchReq{
+			FromNodeID: chiller.ID, ToNodeID: plant.ID, At: at,
+			Quantity: litres(qty), Method: "DIP",
+		})
+		if err != nil {
+			t.Fatalf("Dispatch branch %d: %v", i, err)
+		}
+		if _, err := receive(t, p, receiveReq{
+			MovementID: m.ID, At: at, Quantity: litres(qty), Method: "DIP",
+		}); err != nil {
+			t.Fatalf("Receive branch %d: %v", i, err)
+		}
+	}
+	// And the metered leg into the chiller, so the chiller both receives and
+	// sends and is therefore a node this window can test.
+	inbound, err := dispatch(t, p, dispatchReq{
+		FromNodeID: cooler.ID, ToNodeID: chiller.ID, At: "2026-06-01T04:00:00Z",
+		Quantity: litres("5000.000"), Method: "FLOWMETER",
+	})
+	if err != nil {
+		t.Fatalf("Dispatch inbound: %v", err)
+	}
+	if _, err := receive(t, p, receiveReq{
+		MovementID: inbound.ID, At: "2026-06-01T04:30:00Z",
+		Quantity: litres("5000.000"), Method: "FLOWMETER",
+	}); err != nil {
+		t.Fatalf("Receive inbound: %v", err)
+	}
+
+	resp, err := svcclient.Call[proposeFlowsReq, proposeFlowsResp](
+		context.Background(), p.material(), materialSvc+"/ProposeFlows",
+		proposeFlowsReq{TenantID: p.tenant, From: "2026-06-01", To: "2026-06-02",
+			Rounding: "HALF_UP"}, p.opts())
+	if err != nil {
+		t.Fatalf("ProposeFlows: %v", err)
+	}
+	if resp.Unmeasured != 2 {
+		t.Fatalf("%d legs came back unmeasured, want the two unmetered branches", resp.Unmeasured)
+	}
+
+	o := observability(t, p, buildWindow(t, p, "ROUTE-SPLIT", resp.Flows))
+	if o.FullyObservable {
+		t.Error("an unmetered split reports as fully determined")
+	}
+	if len(o.Unobservable) != 2 {
+		t.Errorf("%d legs read as undetermined, want both branches of the split: %v",
+			len(o.Unobservable), o)
+	}
+}

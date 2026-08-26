@@ -133,6 +133,24 @@ func (s *Service) ListFlows(ctx context.Context, tenantID, windowID string) ([]d
 	return s.repo.ListFlows(ctx, tenantID, windowID)
 }
 
+// Observability says what this window's measurement layout can and cannot tell
+// anybody, before a single litre is compared.
+//
+// Separate from Reconcile on purpose. Reconcile answers what the numbers came
+// to; this answers whether the numbers could have said anything — and it is
+// worth asking first, because a window where nothing is checkable reconciles
+// perfectly every time and means nothing.
+func (s *Service) Observability(ctx context.Context, tenantID, windowID string) (*domain.Observability, error) {
+	if _, err := s.repo.GetWindow(ctx, tenantID, windowID); err != nil {
+		return nil, err
+	}
+	flows, err := s.repo.ListFlows(ctx, tenantID, windowID)
+	if err != nil {
+		return nil, err
+	}
+	return domain.Classify(flows)
+}
+
 type ReconcileInput struct {
 	TenantID string
 	WindowID string
