@@ -48,6 +48,11 @@ type Repository interface {
 	ListPayables(ctx context.Context, tenantID, cycleID string) ([]*domain.ProducerPayable, error)
 	GetPayable(ctx context.Context, tenantID, id string) (*domain.ProducerPayable, error)
 	MarkPaid(ctx context.Context, tenantID, id, reference, actor string, at time.Time) (*domain.ProducerPayable, error)
+	// RaiseAdjustment records money owed after a cycle was already settled.
+	RaiseAdjustment(ctx context.Context, p *domain.ProducerPayable, actor string) (*domain.ProducerPayable, error)
+	// ApprovePayable signs off one payable, which is how an adjustment raised
+	// after its cycle was approved gets approved at all.
+	ApprovePayable(ctx context.Context, tenantID, id, actor string) (*domain.ProducerPayable, error)
 	HoldPayable(ctx context.Context, tenantID, id, reason, actor string) (*domain.ProducerPayable, error)
 
 	Statement(ctx context.Context, tenantID, cycleID, producerRef string) (*domain.Statement, error)
@@ -246,12 +251,12 @@ func (r *repo) Gather(ctx context.Context, cycleID string, g *Gathered) error {
 			INSERT INTO producer_payables
 				(id,tenant_id,cycle_id,producer_ref,currency,amount_scale,
 				 gross_minor_units,deducted_minor_units,net_minor_units,
-				 carried_forward_minor_units,status)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+				 carried_forward_minor_units,status,kind)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
 			r.ids.New(), tenantID, cycleID, p.ProducerRef,
 			p.Net.Currency, p.Net.Scale,
 			p.Gross.Value, p.Deducted.Value, p.Net.Value,
-			p.CarriedForward.Value, string(domain.Payable)); err != nil {
+			p.CarriedForward.Value, string(domain.Payable), string(domain.KindSettlement)); err != nil {
 			return fmt.Errorf("write payable for %s: %w", p.ProducerRef, err)
 		}
 	}
@@ -413,7 +418,7 @@ func (r *repo) ApproveCycle(ctx context.Context, tenantID, cycleID, actor string
 	// quietly undo.
 	if _, err := tx.Exec(ctx,
 		`UPDATE producer_payables SET status=$3, approved_at=NOW(), approved_by=$4, updated_at=NOW()
-		 WHERE tenant_id=$1 AND cycle_id=$2 AND status='PAYABLE'`,
+		 WHERE tenant_id=$1 AND cycle_id=$2 AND status='PAYABLE' AND kind='SETTLEMENT'`,
 		tenantID, cycleID, string(domain.PayableApproved), actor); err != nil {
 		return nil, err
 	}
@@ -514,7 +519,136 @@ func (r *repo) ListRecoveries(ctx context.Context, tenantID, producerRef string,
 const payableCols = `id,tenant_id,cycle_id,producer_ref,currency,amount_scale,
 	gross_minor_units,deducted_minor_units,net_minor_units,carried_forward_minor_units,
 	status,approved_at,COALESCE(approved_by,''),paid_at,COALESCE(paid_by,''),
-	COALESCE(payment_reference,''),COALESCE(held_reason,''),created_at`
+	COALESCE(payment_reference,''),COALESCE(held_reason,''),created_at,
+	kind,COALESCE(adjusts_payable_id,''),COALESCE(reason,'')`
+
+// RaiseAdjustment records money that turned out to be owed after a cycle was
+// settled.
+//
+// The cycle is not required to be in any particular state, and that is the
+// point: an adjustment exists precisely because the cycle is finished. Refusing
+// one against a paid cycle would leave a wrong payment with no remedy, which is
+// the situation this was added to end.
+func (r *repo) RaiseAdjustment(ctx context.Context, p *domain.ProducerPayable, actor string) (*domain.ProducerPayable, error) {
+	if p.Reason == "" {
+		return nil, domain.ErrNoAdjustmentReason
+	}
+	if p.Net.IsZero() {
+		return nil, domain.ErrZeroAdjustment
+	}
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	// The cycle has to exist and belong to this tenant. Without the check an
+	// adjustment could name any cycle id and the composite foreign key would be
+	// the only thing objecting, several layers down.
+	var exists bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM payment_cycles WHERE tenant_id=$1 AND id=$2 AND deleted_at IS NULL)`,
+		p.TenantID, p.CycleID).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, ErrNotFound
+	}
+	if p.AdjustsPayableID != "" {
+		var adjusts bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM producer_payables
+			 WHERE tenant_id=$1 AND id=$2 AND producer_ref=$3)`,
+			p.TenantID, p.AdjustsPayableID, p.ProducerRef).Scan(&adjusts); err != nil {
+			return nil, err
+		}
+		// An adjustment that names another producer's payment is either a typo
+		// or somebody moving money between members with a reason field.
+		if !adjusts {
+			return nil, fmt.Errorf("%w: payable %s is not %s's", ErrNotFound,
+				p.AdjustsPayableID, p.ProducerRef)
+		}
+	}
+
+	p.ID = r.ids.New()
+	p.Kind = domain.KindAdjustment
+	p.Status = domain.Payable
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO producer_payables
+			(id,tenant_id,cycle_id,producer_ref,currency,amount_scale,
+			 gross_minor_units,deducted_minor_units,net_minor_units,
+			 carried_forward_minor_units,status,kind,adjusts_payable_id,reason)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,0,$7,0,$8,$9,nullif($10,''),$11)`,
+		p.ID, p.TenantID, p.CycleID, p.ProducerRef, p.Net.Currency, p.Net.Scale,
+		p.Net.Value, string(p.Status), string(p.Kind), p.AdjustsPayableID, p.Reason); err != nil {
+		return nil, fmt.Errorf("raise adjustment: %w", err)
+	}
+
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "raise_adjustment", ResourceType: "producer_payable", ResourceID: p.ID,
+		After: map[string]any{
+			"cycle_id": p.CycleID, "producer_ref": p.ProducerRef,
+			"amount": p.Net.String(), "reason": p.Reason,
+			"adjusts_payable_id": p.AdjustsPayableID,
+		},
+		ServiceName: serviceName,
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return r.GetPayable(ctx, p.TenantID, p.ID)
+}
+
+// ApprovePayable signs off one payable.
+//
+// ApproveCycle approves a whole gathered cycle at once and refuses to run
+// against a cycle that has already been approved — which is every cycle an
+// adjustment is raised against. So an adjustment needs its own approval, and it
+// gets the same rule: only a PAYABLE one can be approved, and a held one stays
+// held until somebody deals with the hold.
+func (r *repo) ApprovePayable(ctx context.Context, tenantID, id, actor string) (*domain.ProducerPayable, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	var status string
+	if err := tx.QueryRow(ctx,
+		`SELECT status FROM producer_payables WHERE tenant_id=$1 AND id=$2 FOR UPDATE`,
+		tenantID, id).Scan(&status); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	if status != string(domain.Payable) {
+		return nil, &domain.ErrWrongStatus{
+			What: "payable", ID: id, Is: status,
+			Wanted: string(domain.Payable), Action: "approve",
+		}
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE producer_payables SET status=$3, approved_at=NOW(), approved_by=$4, updated_at=NOW()
+		 WHERE tenant_id=$1 AND id=$2`,
+		tenantID, id, string(domain.PayableApproved), actor); err != nil {
+		return nil, err
+	}
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "approve_payable", ResourceType: "producer_payable", ResourceID: id,
+		Before:      map[string]any{"status": status},
+		After:       map[string]any{"status": string(domain.PayableApproved)},
+		ServiceName: serviceName,
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return r.GetPayable(ctx, tenantID, id)
+}
 
 func (r *repo) ListPayables(ctx context.Context, tenantID, cycleID string) ([]*domain.ProducerPayable, error) {
 	rows, err := r.db.Query(ctx,
@@ -703,13 +837,47 @@ func (r *repo) Statement(ctx context.Context, tenantID, cycleID, producerRef str
 		return nil, err
 	}
 
+	// The settlement row specifically. Without the kind filter this returns
+	// whichever of the fortnight and its adjustments the database happened to
+	// yield, and a statement would show an adjustment where the fortnight goes.
 	p, err := scanPayable(r.db.QueryRow(ctx,
 		`SELECT `+payableCols+` FROM producer_payables
-		 WHERE tenant_id=$1 AND cycle_id=$2 AND producer_ref=$3`, tenantID, cycleID, producerRef))
+		 WHERE tenant_id=$1 AND cycle_id=$2 AND producer_ref=$3 AND kind='SETTLEMENT'`,
+		tenantID, cycleID, producerRef))
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return nil, err
 	}
+	// Checked rather than assumed. The query above filters on kind, and the
+	// partial unique index means at most one row can match — but a query that
+	// lost the filter would return an arbitrary one of several rows without
+	// complaining, and the statement would show a correction where the
+	// fortnight goes. Which row comes back first is physical order, so no test
+	// can force the bad case; this makes it loud if it ever happens.
+	if p != nil && p.Kind != domain.KindSettlement {
+		return nil, fmt.Errorf("the statement for %s in cycle %s picked up a %s payable where "+
+			"the fortnight's own figures belong", producerRef, cycleID, p.Kind)
+	}
 	s.Payable = p
+
+	arows, err := r.db.Query(ctx,
+		`SELECT `+payableCols+` FROM producer_payables
+		 WHERE tenant_id=$1 AND cycle_id=$2 AND producer_ref=$3 AND kind='ADJUSTMENT'
+		 ORDER BY created_at, id`, tenantID, cycleID, producerRef)
+	if err != nil {
+		return nil, err
+	}
+	for arows.Next() {
+		a, err := scanPayable(arows)
+		if err != nil {
+			arows.Close()
+			return nil, err
+		}
+		s.Adjustments = append(s.Adjustments, a)
+	}
+	arows.Close()
+	if err := arows.Err(); err != nil {
+		return nil, err
+	}
 
 	// The period's quantity, per unit. Litres and kilograms are not added
 	// together: a society recording some collections in one and some in the
@@ -782,10 +950,12 @@ func scanPayable(s scanner) (*domain.ProducerPayable, error) {
 	var status, currency string
 	var scale int32
 	var gross, deducted, net, carried int64
+	var kind string
 	err := s.Scan(&p.ID, &p.TenantID, &p.CycleID, &p.ProducerRef, &currency, &scale,
 		&gross, &deducted, &net, &carried,
 		&status, &p.ApprovedAt, &p.ApprovedBy, &p.PaidAt, &p.PaidBy,
-		&p.PaymentReference, &p.HeldReason, &p.CreatedAt)
+		&p.PaymentReference, &p.HeldReason, &p.CreatedAt,
+		&kind, &p.AdjustsPayableID, &p.Reason)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -793,6 +963,7 @@ func scanPayable(s scanner) (*domain.ProducerPayable, error) {
 		return nil, err
 	}
 	p.Status = domain.PayableStatus(status)
+	p.Kind = domain.PayableKind(kind)
 	p.Gross = money.Money{Value: gross, Scale: scale, Currency: currency}
 	p.Deducted = money.Money{Value: deducted, Scale: scale, Currency: currency}
 	p.Net = money.Money{Value: net, Scale: scale, Currency: currency}

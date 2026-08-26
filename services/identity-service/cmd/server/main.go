@@ -18,8 +18,8 @@ import (
 	"github.com/ppusapati/gavya/services/identity-service/internal/repository"
 	"github.com/ppusapati/gavya/services/identity-service/internal/service"
 
-	ulidpkg "p9e.in/samavaya/packages/ulid"
 	"p9e.in/samavaya/packages/p9log"
+	ulidpkg "p9e.in/samavaya/packages/ulid"
 )
 
 // ids and clock are the two things the service takes from the outside world, so

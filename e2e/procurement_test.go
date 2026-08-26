@@ -94,6 +94,11 @@ type pricedCollectionProto struct {
 	AmountMinorUnits int64  `json:"amount_minor_units"`
 	Explanation      string `json:"explanation"`
 	OriginKind       string `json:"origin_kind"`
+
+	SupersededAt     string `json:"superseded_at,omitempty"`
+	SupersededBy     string `json:"superseded_by,omitempty"`
+	Supersedes       string `json:"supersedes,omitempty"`
+	CorrectionReason string `json:"correction_reason,omitempty"`
 }
 
 type recordCollectionResp struct {

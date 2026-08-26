@@ -37,6 +37,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	route("RecordCollection", connectjson.Unary(h.RecordCollection))
 	route("GetCollection", connectjson.Unary(h.GetCollection))
 	route("ListCollections", connectjson.Unary(h.ListCollections))
+	route("CorrectCollection", connectjson.Unary(h.CorrectCollection))
+	route("GetCollectionVersions", connectjson.Unary(h.GetCollectionVersions))
 }
 
 // PointProto is a measurement, as a decimal literal.
@@ -233,6 +235,13 @@ type PricedCollectionProto struct {
 	SourceRecordID string `json:"source_record_id,omitempty"`
 	CreatedAt      string `json:"created_at"`
 	CreatedBy      string `json:"created_by"`
+
+	// Corrections. A row carrying superseded_at is a version that has since been
+	// restated; one carrying supersedes is the restatement.
+	SupersededAt     string `json:"superseded_at,omitempty"`
+	SupersededBy     string `json:"superseded_by,omitempty"`
+	Supersedes       string `json:"supersedes,omitempty"`
+	CorrectionReason string `json:"correction_reason,omitempty"`
 }
 
 type RecordCollectionResponse struct {
@@ -306,6 +315,9 @@ type ListCollectionsRequest struct {
 	To          string `json:"to,omitempty"`
 	Limit       int32  `json:"limit,omitempty"`
 	Offset      int32  `json:"offset,omitempty"`
+	// IncludeSuperseded adds the versions that have since been corrected. Off by
+	// default, because a caller totalling a fortnight wants each delivery once.
+	IncludeSuperseded bool `json:"include_superseded,omitempty"`
 }
 
 type ListCollectionsResponse struct {
@@ -331,7 +343,8 @@ func (h *Handler) ListCollections(ctx context.Context, req *connect.Request[List
 		}
 	}
 
-	list, err := h.svc.ListCollections(ctx, m.TenantID, m.ProducerRef, from, to, int(m.Limit), int(m.Offset))
+	list, err := h.svc.ListCollections(ctx, m.TenantID, m.ProducerRef, from, to,
+		int(m.Limit), int(m.Offset), m.IncludeSuperseded)
 	if err != nil {
 		return nil, classify(err)
 	}
@@ -448,6 +461,11 @@ func fromCollection(c *domain.PricedCollection) *PricedCollectionProto {
 	if c.Rate.Numerator != 0 {
 		p.Rate = c.Rate.String()
 	}
+	if c.SupersededAt != nil {
+		p.SupersededAt = c.SupersededAt.UTC().Format(time.RFC3339)
+	}
+	p.SupersededBy, p.Supersedes = c.SupersededBy, c.Supersedes
+	p.CorrectionReason = c.CorrectionReason
 	return p
 }
 
@@ -483,8 +501,10 @@ func classify(err error) error {
 	case errors.Is(err, domain.ErrNoCard):
 		return connect.NewError(connect.CodeFailedPrecondition, err)
 	case errors.Is(err, domain.ErrNoProducer), errors.Is(err, domain.ErrNoQuantity),
-		errors.Is(err, domain.ErrNoShift):
+		errors.Is(err, domain.ErrNoShift), errors.Is(err, domain.ErrNoCorrectionReason):
 		return connect.NewError(connect.CodeInvalidArgument, err)
+	case errors.Is(err, domain.ErrAlreadySuperseded), errors.Is(err, domain.ErrNothingChanged):
+		return connect.NewError(connect.CodeFailedPrecondition, err)
 	}
 	// A card that has not decided, or a reading off the chart: the caller's
 	// data or the society's policy, not the platform.
@@ -509,4 +529,94 @@ func itoa(i int) string {
 		i /= 10
 	}
 	return string(b)
+}
+
+type CorrectCollectionRequest struct {
+	TenantID string `json:"tenant_id"`
+	// ID is the collection being corrected, which must be the current version.
+	ID string `json:"id"`
+
+	Quantity     PointProto `json:"quantity"`
+	QuantityUnit string     `json:"quantity_unit"`
+	Fat          PointProto `json:"fat,omitempty"`
+	SNF          PointProto `json:"snf,omitempty"`
+	FatKg        PointProto `json:"fat_kg,omitempty"`
+	SNFKg        PointProto `json:"snf_kg,omitempty"`
+
+	// Reason is required, and it goes on the producer's record.
+	Reason string `json:"reason"`
+	Actor  string `json:"actor"`
+}
+
+type CorrectCollectionResponse struct {
+	Collection *PricedCollectionProto `json:"collection"`
+	// Supersedes is the id of the version this replaced, so a caller can fetch
+	// what the figure was before without searching for it.
+	Supersedes string `json:"supersedes"`
+}
+
+// CorrectCollection restates a delivery recorded wrongly.
+//
+// The producer, the day and the shift are not in this request on purpose. They
+// identify which delivery is being talked about, and a request that could
+// change them would let one member's milk be moved to another under a field
+// marked "reason".
+func (h *Handler) CorrectCollection(ctx context.Context, req *connect.Request[CorrectCollectionRequest]) (*connect.Response[CorrectCollectionResponse], error) {
+	m := req.Msg
+	in := domain.Correction{
+		TenantID: m.TenantID, ID: m.ID,
+		Unit:   ratecard.Basis(m.QuantityUnit),
+		Reason: m.Reason, Actor: m.Actor,
+	}
+	for _, f := range []struct {
+		in  PointProto
+		out *ratecard.Point
+		who string
+	}{
+		{m.Quantity, &in.Quantity, "quantity"},
+		{m.Fat, &in.Fat, "fat"},
+		{m.SNF, &in.SNF, "snf"},
+		{m.FatKg, &in.FatKg, "fat_kg"},
+		{m.SNFKg, &in.SNFKg, "snf_kg"},
+	} {
+		p, err := f.in.point()
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument,
+				errors.New(f.who+": "+err.Error()))
+		}
+		*f.out = p
+	}
+
+	saved, err := h.svc.CorrectCollection(ctx, in)
+	if err != nil {
+		return nil, classify(err)
+	}
+	return connect.NewResponse(&CorrectCollectionResponse{
+		Collection: fromCollection(saved), Supersedes: saved.Supersedes,
+	}), nil
+}
+
+type GetCollectionVersionsRequest struct {
+	TenantID string `json:"tenant_id"`
+	ID       string `json:"id"`
+}
+
+type GetCollectionVersionsResponse struct {
+	// Versions are every version of the delivery, oldest first. The last is the
+	// one in force unless it too has been superseded.
+	Versions []*PricedCollectionProto `json:"versions"`
+}
+
+// GetCollectionVersions is what a producer disputing a figure is shown: every
+// version of their delivery, what each came to, and why it changed.
+func (h *Handler) GetCollectionVersions(ctx context.Context, req *connect.Request[GetCollectionVersionsRequest]) (*connect.Response[GetCollectionVersionsResponse], error) {
+	list, err := h.svc.Versions(ctx, req.Msg.TenantID, req.Msg.ID)
+	if err != nil {
+		return nil, classify(err)
+	}
+	out := make([]*PricedCollectionProto, 0, len(list))
+	for _, c := range list {
+		out = append(out, fromCollection(c))
+	}
+	return connect.NewResponse(&GetCollectionVersionsResponse{Versions: out}), nil
 }

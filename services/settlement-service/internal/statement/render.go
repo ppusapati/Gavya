@@ -34,28 +34,29 @@ import (
 // be putting words in a co-operative's mouth on a document its members sign
 // for. A society supplies its own.
 type Labels struct {
-	Title      string
-	Member     string
-	Society    string
-	Period     string
-	Cycle      string
-	Date       string
-	Shift      string
-	Quantity   string
-	Rate       string
-	Amount     string
-	Morning    string
-	Evening    string
-	Total      string
-	Gross      string
-	Less       string
-	Net        string
-	CarriedFwd string
-	Paid       string
-	Reference  string
-	Held       string
-	NotYetPaid string
-	NoMilk     string
+	Title       string
+	Member      string
+	Society     string
+	Period      string
+	Cycle       string
+	Date        string
+	Shift       string
+	Quantity    string
+	Rate        string
+	Amount      string
+	Morning     string
+	Evening     string
+	Total       string
+	Gross       string
+	Less        string
+	Net         string
+	CarriedFwd  string
+	Paid        string
+	Reference   string
+	Held        string
+	NotYetPaid  string
+	NoMilk      string
+	Adjustments string
 }
 
 // DefaultLabels is the English set.
@@ -68,7 +69,8 @@ func DefaultLabels() Labels {
 		Total: "Total", Gross: "Gross", Less: "Less", Net: "NET PAYABLE",
 		CarriedFwd: "Carried forward", Paid: "Paid", Reference: "Reference",
 		Held: "Payment held", NotYetPaid: "Not yet paid",
-		NoMilk: "No milk was delivered in this period.",
+		NoMilk:      "No milk was delivered in this period.",
+		Adjustments: "Adjustments to this period, made after it was settled",
 	}
 }
 
@@ -259,6 +261,26 @@ func Render(s *domain.Statement, o Options) (string, error) {
 		b.WriteString(l.NotYetPaid + "\n")
 	}
 
+	// Corrections to this period, made after it was settled.
+	//
+	// Below the net and clearly separated, not folded into it. The net is what
+	// the member was handed at the window; an adjustment is a second movement
+	// that happened afterwards, and adding the two would print a figure nobody
+	// ever actually received. A member reconciling this against their own
+	// records needs to see both events, not their sum.
+	if len(s.Adjustments) > 0 {
+		rule("-")
+		b.WriteString(l.Adjustments + ":\n")
+		for _, a := range s.Adjustments {
+			what := a.Reason
+			if a.Status != domain.PayablePaid {
+				what += " (" + string(a.Status) + ")"
+			}
+			b.WriteString(figure("  "+what, "", a.Net.String(), o.Width, c.amt) + "\n")
+		}
+		rule("=")
+	}
+
 	out := b.String()
 	// Checked after the fact as well as designed for, because the measurement
 	// above is arithmetic on what the content is expected to be and this is the
@@ -338,6 +360,9 @@ func collectAmounts(s *domain.Statement) []string {
 	}
 	for _, total := range s.Quantities {
 		out = append(out, total)
+	}
+	for _, a := range s.Adjustments {
+		out = append(out, a.Net.String())
 	}
 	return out
 }

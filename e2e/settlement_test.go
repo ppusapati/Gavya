@@ -123,6 +123,9 @@ type payableProto struct {
 	Net              string `json:"net"`
 	CarriedForward   string `json:"carried_forward"`
 	NetMinorUnits    int64  `json:"net_minor_units"`
+	Kind             string `json:"kind"`
+	AdjustsPayableID string `json:"adjusts_payable_id,omitempty"`
+	Reason           string `json:"reason,omitempty"`
 	Status           string `json:"status"`
 	PaidAt           string `json:"paid_at,omitempty"`
 	PaymentReference string `json:"payment_reference,omitempty"`
@@ -203,6 +206,16 @@ type statementProto struct {
 	PaidAt           string `json:"paid_at,omitempty"`
 	PaymentReference string `json:"payment_reference,omitempty"`
 	HeldReason       string `json:"held_reason,omitempty"`
+
+	Adjustments []statementAdjustmentProto `json:"adjustments,omitempty"`
+}
+
+type statementAdjustmentProto struct {
+	ID     string `json:"id"`
+	Amount string `json:"amount"`
+	Reason string `json:"reason"`
+	Status string `json:"status"`
+	PaidAt string `json:"paid_at,omitempty"`
 }
 
 type statementResp struct {
@@ -288,15 +301,43 @@ func payables(t *testing.T, p *platform, cycleID string) *listPayablesResp {
 	return resp
 }
 
+// payableFor returns a producer's SETTLEMENT payable for a cycle.
+//
+// The kind matters. A producer may have several payables in one cycle once
+// corrections exist — the fortnight and any adjustments to it — and a helper
+// that took the first match by producer would silently return whichever the
+// database yielded. It did, and a test asserting the fortnight was approved
+// started reading an adjustment's status instead.
 func payableFor(t *testing.T, p *platform, cycleID, producer string) *payableProto {
 	t.Helper()
+	var found *payableProto
 	for _, pp := range payables(t, p, cycleID).Payables {
-		if pp.ProducerRef == producer {
-			return pp
+		if pp.ProducerRef != producer || pp.Kind != "SETTLEMENT" {
+			continue
+		}
+		if found != nil {
+			t.Fatalf("%s has two settlement payables in cycle %s, which is one producer paid "+
+				"twice for one fortnight", producer, cycleID)
+		}
+		found = pp
+	}
+	if found == nil {
+		t.Fatalf("no settlement payable for %s in cycle %s", producer, cycleID)
+	}
+	return found
+}
+
+// adjustmentsFor returns a producer's corrections in a cycle, in the order they
+// were raised.
+func adjustmentsFor(t *testing.T, p *platform, cycleID, producer string) []*payableProto {
+	t.Helper()
+	var out []*payableProto
+	for _, pp := range payables(t, p, cycleID).Payables {
+		if pp.ProducerRef == producer && pp.Kind == "ADJUSTMENT" {
+			out = append(out, pp)
 		}
 	}
-	t.Fatalf("no payable for %s in cycle %s", producer, cycleID)
-	return nil
+	return out
 }
 
 func statement(t *testing.T, p *platform, cycleID, producer string) *statementProto {
@@ -1323,5 +1364,480 @@ func TestACycleThatHasNotBeenGatheredPrintsNothing(t *testing.T) {
 		context.Background(), p.settlement(), settlementSvc+"/PrintCycleStatements",
 		printCycleReq{TenantID: p.tenant, CycleID: cycle.ID, Width: 80}, p.opts()); err == nil {
 		t.Error("a stack was printed for a cycle that has not been gathered")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Corrections
+// ---------------------------------------------------------------------------
+
+type correctCollectionReq struct {
+	TenantID     string     `json:"tenant_id"`
+	ID           string     `json:"id"`
+	Quantity     pointProto `json:"quantity"`
+	QuantityUnit string     `json:"quantity_unit"`
+	Fat          pointProto `json:"fat,omitempty"`
+	SNF          pointProto `json:"snf,omitempty"`
+	Reason       string     `json:"reason"`
+	Actor        string     `json:"actor"`
+}
+
+type correctCollectionResp struct {
+	Collection *pricedCollectionProto `json:"collection"`
+	Supersedes string                 `json:"supersedes"`
+}
+
+type versionsReq struct {
+	TenantID string `json:"tenant_id"`
+	ID       string `json:"id"`
+}
+
+type versionsResp struct {
+	Versions []*pricedCollectionProto `json:"versions"`
+}
+
+type raiseAdjustmentReq struct {
+	TenantID         string `json:"tenant_id"`
+	CycleID          string `json:"cycle_id"`
+	ProducerRef      string `json:"producer_ref"`
+	Currency         string `json:"currency"`
+	AmountScale      int32  `json:"amount_scale"`
+	Amount           string `json:"amount"`
+	AdjustsPayableID string `json:"adjusts_payable_id,omitempty"`
+	Reason           string `json:"reason"`
+	Actor            string `json:"actor"`
+}
+
+type getPayableReq struct {
+	TenantID string `json:"tenant_id"`
+	ID       string `json:"id"`
+}
+
+type approvePayableReq struct {
+	TenantID string `json:"tenant_id"`
+	ID       string `json:"id"`
+	Actor    string `json:"actor"`
+}
+
+func correctCollection(t *testing.T, p *platform, in correctCollectionReq) (*correctCollectionResp, error) {
+	t.Helper()
+	in.TenantID = p.tenant
+	if in.Actor == "" {
+		in.Actor = "e2e"
+	}
+	return svcclient.Call[correctCollectionReq, correctCollectionResp](
+		context.Background(), p.procurement(), procurementSvc+"/CorrectCollection", in, p.opts())
+}
+
+func raiseAdjustment(t *testing.T, p *platform, in raiseAdjustmentReq) (*payableResp, error) {
+	t.Helper()
+	in.TenantID = p.tenant
+	in.Currency, in.AmountScale = "INR", 2
+	if in.Actor == "" {
+		in.Actor = "e2e_secretary"
+	}
+	return svcclient.Call[raiseAdjustmentReq, payableResp](
+		context.Background(), p.settlement(), settlementSvc+"/RaiseAdjustment", in, p.opts())
+}
+
+// A mis-entered reading is corrected, and both versions stay readable.
+//
+// This is the commonest data-entry error in a dairy: the analyser said 4.2 and
+// the operator typed 4.1. Before there was a correction path the unique index
+// made that permanent — the row could not be replaced and a second one could
+// not be added — so a society would have kept its real ledger on paper, which
+// is the failure this platform exists to end.
+func TestAMisEnteredReadingIsCorrectedAndBothVersionsRemain(t *testing.T) {
+	p := startPlatform(t)
+	declareChart(t, p, "March", "2026-03-01T00:00:00Z", "")
+
+	producer := newID("prod")
+	in := morning(producer, "2026-03-01", "10.000", "4.1", "8.6")
+	in.SocietyCode = society
+	wrong, err := collect(t, p, in)
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	// fat 4.1 / SNF 8.6 reads 43.0000, so 10 litres is 430.00.
+	if wrong.Amount != "430.00" {
+		t.Fatalf("the original reads %s, want 430.00", wrong.Amount)
+	}
+
+	// Re-recording the same delivery is still refused: a correction is not a
+	// second collection.
+	if _, err := collect(t, p, in); err == nil {
+		t.Error("the same producer, day and shift was recorded a second time")
+	}
+
+	corrected, err := correctCollection(t, p, correctCollectionReq{
+		ID:       wrong.ID,
+		Quantity: pointProto{Value: "10.000", Scale: 3}, QuantityUnit: "PER_LITRE",
+		Fat: pointProto{Value: "4.2", Scale: 1}, SNF: pointProto{Value: "8.6", Scale: 1},
+		Reason: "analyser slip read 4.2; entered as 4.1",
+	})
+	if err != nil {
+		t.Fatalf("CorrectCollection: %v", err)
+	}
+	// fat 4.2 / SNF 8.6 reads 45.0000, so 450.00. Re-priced from the readings
+	// rather than carrying the old rate forward.
+	if corrected.Collection.Amount != "450.00" {
+		t.Errorf("the correction reads %s, want 450.00", corrected.Collection.Amount)
+	}
+	if corrected.Supersedes != wrong.ID {
+		t.Errorf("the correction supersedes %q, want %q", corrected.Supersedes, wrong.ID)
+	}
+
+	// Both versions are readable, and the history says why it changed.
+	versions, err := svcclient.Call[versionsReq, versionsResp](
+		context.Background(), p.procurement(), procurementSvc+"/GetCollectionVersions",
+		versionsReq{TenantID: p.tenant, ID: wrong.ID}, p.opts())
+	if err != nil {
+		t.Fatalf("GetCollectionVersions: %v", err)
+	}
+	if len(versions.Versions) != 2 {
+		t.Fatalf("%d versions, want 2", len(versions.Versions))
+	}
+	if versions.Versions[0].Amount != "430.00" || versions.Versions[1].Amount != "450.00" {
+		t.Errorf("the versions read %s then %s, want 430.00 then 450.00",
+			versions.Versions[0].Amount, versions.Versions[1].Amount)
+	}
+	if versions.Versions[0].SupersededAt == "" {
+		t.Error("the original does not record when it stopped being believed")
+	}
+	if !strings.Contains(versions.Versions[1].CorrectionReason, "analyser slip") {
+		t.Errorf("the correction does not carry its reason: %q",
+			versions.Versions[1].CorrectionReason)
+	}
+}
+
+// A correction with no reason is refused, and so is one that changes nothing.
+func TestACorrectionMustSayWhyAndMustChangeSomething(t *testing.T) {
+	p := startPlatform(t)
+	declareChart(t, p, "March", "2026-03-01T00:00:00Z", "")
+
+	producer := newID("prod")
+	in := morning(producer, "2026-03-01", "10.000", "4.1", "8.6")
+	in.SocietyCode = society
+	original, err := collect(t, p, in)
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+
+	base := correctCollectionReq{
+		ID:       original.ID,
+		Quantity: pointProto{Value: "10.000", Scale: 3}, QuantityUnit: "PER_LITRE",
+		Fat: pointProto{Value: "4.2", Scale: 1}, SNF: pointProto{Value: "8.6", Scale: 1},
+	}
+
+	noReason := base
+	noReason.Reason = ""
+	if _, err := correctCollection(t, p, noReason); err == nil {
+		t.Error("a figure was restated with no reason recorded")
+	}
+
+	// The same readings back again restates nothing.
+	same := base
+	same.Fat = pointProto{Value: "4.1", Scale: 1}
+	same.Reason = "no change"
+	if _, err := correctCollection(t, p, same); err == nil {
+		t.Error("a correction that changes no reading was accepted")
+	} else if !strings.Contains(err.Error(), "does not change") {
+		t.Errorf("the refusal does not say the correction changes nothing: %v", err)
+	}
+
+	// The real one lands, and correcting the superseded version afterwards is
+	// refused: a chain is corrected at its head.
+	good := base
+	good.Reason = "analyser slip read 4.2"
+	if _, err := correctCollection(t, p, good); err != nil {
+		t.Fatalf("CorrectCollection: %v", err)
+	}
+	// Correcting the superseded version is refused, and the refusal has to say
+	// so. Three things stop this: the service checks before pricing, the
+	// repository checks again under a row lock, and the live-version index
+	// refuses the insert because the correction already there is live.
+	//
+	// The index alone is enough to keep the data right, and asserting only that
+	// something failed would pass with both checks removed — it did. What the
+	// checks buy is a refusal that names the cause instead of a duplicate-key
+	// error naming an index, so that is what is asserted.
+	_, err = correctCollection(t, p, correctCollectionReq{
+		ID:       original.ID,
+		Quantity: pointProto{Value: "11.000", Scale: 3}, QuantityUnit: "PER_LITRE",
+		Fat: pointProto{Value: "4.0", Scale: 1}, SNF: pointProto{Value: "8.5", Scale: 1},
+		Reason: "correcting the old version",
+	})
+	if err == nil {
+		t.Fatal("a superseded version was corrected, leaving two live corrections of one delivery")
+	}
+	if !strings.Contains(err.Error(), "already been corrected") {
+		t.Errorf("the refusal does not say the version has already been corrected: %v", err)
+	}
+}
+
+// A settlement gathers the corrected version, once.
+//
+// The hazard is the corrected collection arriving alongside the version it
+// corrected: the producer would be paid for the same milk twice, at the wrong
+// figure and then at the right one, and both lines would look entirely ordinary
+// on the statement.
+func TestASettlementGathersTheCorrectedVersionAndOnlyThat(t *testing.T) {
+	p := startPlatform(t)
+	declareChart(t, p, "March", "2026-03-01T00:00:00Z", "")
+
+	producer := newID("prod")
+	in := morning(producer, "2026-03-01", "10.000", "4.1", "8.6")
+	in.SocietyCode = society
+	original, err := collect(t, p, in)
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	if _, err := correctCollection(t, p, correctCollectionReq{
+		ID:       original.ID,
+		Quantity: pointProto{Value: "10.000", Scale: 3}, QuantityUnit: "PER_LITRE",
+		Fat: pointProto{Value: "4.2", Scale: 1}, SNF: pointProto{Value: "8.6", Scale: 1},
+		Reason: "analyser slip read 4.2",
+	}); err != nil {
+		t.Fatalf("CorrectCollection: %v", err)
+	}
+
+	cycle := mustOpenCycle(t, p, "March 1-15", "2026-03-01", "2026-03-15", "CAP_AT_EARNINGS")
+	if _, err := gather(t, p, cycle.ID); err != nil {
+		t.Fatalf("GatherCycle: %v", err)
+	}
+
+	pay := payableFor(t, p, cycle.ID, producer)
+	if pay.Gross != "450.00" {
+		t.Errorf("gross %s, want the corrected 450.00 — 880.00 would mean both versions "+
+			"were gathered and the producer paid twice for one delivery", pay.Gross)
+	}
+	s := statement(t, p, cycle.ID, producer)
+	if len(s.Lines) != 1 {
+		t.Errorf("the statement shows %d deliveries for one morning's milk", len(s.Lines))
+	}
+}
+
+// The remedy the paid-is-final trigger names.
+//
+// A fortnight is settled and paid. Then a reading is found to be wrong. The
+// payment cannot be edited — the trigger refuses, and it says a payment that
+// turned out to be wrong is corrected by a further payment. This is that
+// further payment, and until it existed the refusal named a remedy the platform
+// did not have.
+func TestAWrongPaymentIsCorrectedByAFurtherPaymentRatherThanAnEdit(t *testing.T) {
+	p := startPlatform(t)
+	declareChart(t, p, "March", "2026-03-01T00:00:00Z", "")
+
+	producer := newID("prod")
+	deliverFortnight(t, p, producer, marchFirstTen)
+	cycle := mustOpenCycle(t, p, "March 1-15", "2026-03-01", "2026-03-15", "CAP_AT_EARNINGS")
+	if _, err := gather(t, p, cycle.ID); err != nil {
+		t.Fatalf("GatherCycle: %v", err)
+	}
+	if _, err := approve(t, p, cycle.ID); err != nil {
+		t.Fatalf("ApproveCycle: %v", err)
+	}
+	pay := payableFor(t, p, cycle.ID, producer)
+	if _, err := svcclient.Call[markPaidReq, payableResp](
+		context.Background(), p.settlement(), settlementSvc+"/MarkPaid",
+		markPaidReq{TenantID: p.tenant, ID: pay.ID, Actor: "e2e_cashier"}, p.opts()); err != nil {
+		t.Fatalf("MarkPaid: %v", err)
+	}
+	if pay.Net != "4300.00" {
+		t.Fatalf("the fortnight paid %s, want 4300.00", pay.Net)
+	}
+
+	adj, err := raiseAdjustment(t, p, raiseAdjustmentReq{
+		CycleID: cycle.ID, ProducerRef: producer, Amount: "20.00",
+		AdjustsPayableID: pay.ID,
+		Reason:           "fat on 3 March restated from 4.1 to 4.2 after the payment",
+	})
+	if err != nil {
+		t.Fatalf("RaiseAdjustment: %v", err)
+	}
+	if adj.Payable.Kind != "ADJUSTMENT" || adj.Payable.Status != "PAYABLE" {
+		t.Errorf("the adjustment is %s / %s", adj.Payable.Kind, adj.Payable.Status)
+	}
+
+	// It goes through the same approval and payment as anything else that moves
+	// money to a producer.
+	if _, err := svcclient.Call[markPaidReq, payableResp](
+		context.Background(), p.settlement(), settlementSvc+"/MarkPaid",
+		markPaidReq{TenantID: p.tenant, ID: adj.Payable.ID, Actor: "e2e_cashier"}, p.opts()); err == nil {
+		t.Error("an adjustment nobody had approved was paid")
+	}
+	if _, err := svcclient.Call[approvePayableReq, payableResp](
+		context.Background(), p.settlement(), settlementSvc+"/ApprovePayable",
+		approvePayableReq{TenantID: p.tenant, ID: adj.Payable.ID, Actor: "e2e_secretary"},
+		p.opts()); err != nil {
+		t.Fatalf("ApprovePayable: %v", err)
+	}
+	paid, err := svcclient.Call[markPaidReq, payableResp](
+		context.Background(), p.settlement(), settlementSvc+"/MarkPaid",
+		markPaidReq{TenantID: p.tenant, ID: adj.Payable.ID, PaymentReference: "CASH", Actor: "e2e_cashier"},
+		p.opts())
+	if err != nil {
+		t.Fatalf("MarkPaid on the adjustment: %v", err)
+	}
+	if paid.Payable.Status != "PAID" {
+		t.Errorf("the adjustment is %s after payment", paid.Payable.Status)
+	}
+
+	// The original payment is untouched, which is the whole point.
+	after := payableFor(t, p, cycle.ID, producer)
+	if after.Net != "4300.00" || after.Status != "PAID" {
+		t.Errorf("the original payment changed: %s / %s", after.Net, after.Status)
+	}
+
+	// And the member's statement shows both events, not their sum.
+	s := statement(t, p, cycle.ID, producer)
+	if s.Net != "4300.00" {
+		t.Errorf("the statement's net is %s; the adjustment was folded into what the member "+
+			"was handed at the window", s.Net)
+	}
+	page, err := printStatement(t, p, printStatementReq{
+		CycleID: cycle.ID, ProducerRef: producer, Width: 80,
+	})
+	if err != nil {
+		t.Fatalf("PrintProducerStatement: %v", err)
+	}
+	t.Logf("the corrected statement:\n%s", page.Page)
+	if !strings.Contains(page.Page, "20.00") || !strings.Contains(page.Page, "restated from 4.1") {
+		t.Errorf("the printed statement does not show the correction:\n%s", page.Page)
+	}
+	if !strings.Contains(page.Page, "4300.00") {
+		t.Errorf("the printed statement lost the fortnight's own net:\n%s", page.Page)
+	}
+}
+
+// An overpayment is recovered by a negative adjustment.
+//
+// Corrections run both ways: a reading restated downwards means the producer
+// was paid too much. A schema that refused a negative amount here — which is
+// what "a gross is never below zero" looked like at first — makes half of what
+// adjustments are for impossible.
+func TestAnOverpaymentIsRecoveredByANegativeAdjustment(t *testing.T) {
+	p := startPlatform(t)
+	declareChart(t, p, "March", "2026-03-01T00:00:00Z", "")
+
+	producer := newID("prod")
+	deliverFortnight(t, p, producer, marchFirstTen[:2])
+	cycle := mustOpenCycle(t, p, "March 1-15", "2026-03-01", "2026-03-15", "CAP_AT_EARNINGS")
+	if _, err := gather(t, p, cycle.ID); err != nil {
+		t.Fatalf("GatherCycle: %v", err)
+	}
+
+	adj, err := raiseAdjustment(t, p, raiseAdjustmentReq{
+		CycleID: cycle.ID, ProducerRef: producer, Amount: "-40.00",
+		Reason: "fat restated 4.2 to 4.1 on both mornings; overpaid",
+	})
+	if err != nil {
+		t.Fatalf("RaiseAdjustment: %v", err)
+	}
+	if adj.Payable.Net != "-40.00" {
+		t.Errorf("the adjustment reads %s, want -40.00", adj.Payable.Net)
+	}
+
+	// It appears on the statement as a subtraction with its reason.
+	page, err := printStatement(t, p, printStatementReq{
+		CycleID: cycle.ID, ProducerRef: producer, Width: 80,
+	})
+	if err != nil {
+		t.Fatalf("PrintProducerStatement: %v", err)
+	}
+	if !strings.Contains(page.Page, "-40.00") || !strings.Contains(page.Page, "overpaid") {
+		t.Errorf("the page does not show the recovery:\n%s", page.Page)
+	}
+}
+
+// An adjustment must say why, must move some money, and must belong to the
+// producer whose payment it names.
+func TestAnAdjustmentIsRefusedWithoutAReasonAnAmountOrTheRightProducer(t *testing.T) {
+	p := startPlatform(t)
+	declareChart(t, p, "March", "2026-03-01T00:00:00Z", "")
+
+	producer, other := newID("prod"), newID("prod")
+	deliverFortnight(t, p, producer, marchFirstTen[:2])
+	deliverFortnight(t, p, other, marchFirstTen[:2])
+	cycle := mustOpenCycle(t, p, "March 1-15", "2026-03-01", "2026-03-15", "CAP_AT_EARNINGS")
+	if _, err := gather(t, p, cycle.ID); err != nil {
+		t.Fatalf("GatherCycle: %v", err)
+	}
+	theirs := payableFor(t, p, cycle.ID, other)
+
+	if _, err := raiseAdjustment(t, p, raiseAdjustmentReq{
+		CycleID: cycle.ID, ProducerRef: producer, Amount: "10.00", Reason: "",
+	}); err == nil {
+		t.Error("money moved to a producer with no reason recorded")
+	}
+	if _, err := raiseAdjustment(t, p, raiseAdjustmentReq{
+		CycleID: cycle.ID, ProducerRef: producer, Amount: "0.00", Reason: "nothing",
+	}); err == nil {
+		t.Error("an adjustment of zero was raised")
+	}
+	// Naming another member's payment would be moving money between members
+	// with a field marked "reason".
+	if _, err := raiseAdjustment(t, p, raiseAdjustmentReq{
+		CycleID: cycle.ID, ProducerRef: producer, Amount: "10.00",
+		AdjustsPayableID: theirs.ID, Reason: "correcting somebody else's payment",
+	}); err == nil {
+		t.Error("an adjustment for one member named another member's payment")
+	}
+}
+
+// Approving a fortnight approves the fortnight, not the corrections raised
+// beside it.
+//
+// A correction is a separate decision about a separate movement of money, often
+// made by a different person for a different reason. Sweeping it up in the bulk
+// approval of the period it corrects means nobody ever looked at it — the
+// signature on the cycle was for the figures the gathering produced, and the
+// adjustment was not among them.
+func TestApprovingACycleDoesNotApproveTheCorrectionsBesideIt(t *testing.T) {
+	p := startPlatform(t)
+	declareChart(t, p, "March", "2026-03-01T00:00:00Z", "")
+
+	producer := newID("prod")
+	deliverFortnight(t, p, producer, marchFirstTen[:3])
+	cycle := mustOpenCycle(t, p, "March 1-15", "2026-03-01", "2026-03-15", "CAP_AT_EARNINGS")
+	if _, err := gather(t, p, cycle.ID); err != nil {
+		t.Fatalf("GatherCycle: %v", err)
+	}
+
+	// Raised while the cycle is still GATHERED, so the bulk approval that
+	// follows would reach it.
+	adj, err := raiseAdjustment(t, p, raiseAdjustmentReq{
+		CycleID: cycle.ID, ProducerRef: producer, Amount: "15.00",
+		Reason: "a reading queried by the member and not yet resolved",
+	})
+	if err != nil {
+		t.Fatalf("RaiseAdjustment: %v", err)
+	}
+
+	if _, err := approve(t, p, cycle.ID); err != nil {
+		t.Fatalf("ApproveCycle: %v", err)
+	}
+
+	// The fortnight is approved.
+	if got := payableFor(t, p, cycle.ID, producer).Status; got != "APPROVED" {
+		t.Errorf("the fortnight's payable is %s after approval, want APPROVED", got)
+	}
+
+	// The correction is not.
+	after, err := svcclient.Call[getPayableReq, payableResp](
+		context.Background(), p.settlement(), settlementSvc+"/GetPayable",
+		getPayableReq{TenantID: p.tenant, ID: adj.Payable.ID}, p.opts())
+	if err != nil {
+		t.Fatalf("GetPayable: %v", err)
+	}
+	if after.Payable.Status != "PAYABLE" {
+		t.Errorf("the correction is %s after a bulk approval of the period it corrects; "+
+			"nobody approved it on its own", after.Payable.Status)
+	}
+	// And it therefore cannot be paid until somebody does.
+	if _, err := svcclient.Call[markPaidReq, payableResp](
+		context.Background(), p.settlement(), settlementSvc+"/MarkPaid",
+		markPaidReq{TenantID: p.tenant, ID: adj.Payable.ID, Actor: "e2e_cashier"}, p.opts()); err == nil {
+		t.Error("a correction nobody approved was paid")
 	}
 }

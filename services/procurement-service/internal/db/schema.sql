@@ -197,6 +197,30 @@ CREATE TABLE IF NOT EXISTS priced_collections (
     import_batch_id  VARCHAR(64),
     source_record_id VARCHAR(128),
 
+    -- Corrections. The same shape as observations: a correction is a new row,
+    -- the prior version keeps the instant it was believed, and both stay
+    -- readable.
+    --
+    -- This is not decoration. A fat reading entered as 4.1 when the analyser
+    -- said 4.2 is the commonest data-entry error in a dairy, and without a
+    -- correction path the unique index below makes the wrong figure permanent:
+    -- the row cannot be replaced and a second one cannot be added. A society
+    -- that could not fix a mistyped reading would keep its real ledger on paper,
+    -- which is the failure this whole platform exists to end.
+    superseded_at TIMESTAMPTZ,
+    superseded_by VARCHAR(26),
+    supersedes    VARCHAR(26),
+    -- Why the figure changed, required on any row that changes one. A
+    -- correction with no reason is indistinguishable from tampering, and it is
+    -- the row an auditor stops at.
+    correction_reason TEXT,
+
+    CONSTRAINT collection_supersession_is_attributed CHECK (
+        (superseded_at IS NULL AND superseded_by IS NULL) OR
+        (superseded_at IS NOT NULL AND superseded_by IS NOT NULL)),
+    CONSTRAINT collection_correction_has_a_reason CHECK (
+        supersedes IS NULL OR (correction_reason IS NOT NULL AND correction_reason <> '')),
+
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     created_by    VARCHAR(26) NOT NULL,
@@ -206,15 +230,38 @@ CREATE TABLE IF NOT EXISTS priced_collections (
     FOREIGN KEY (tenant_id, rate_card_id) REFERENCES rate_cards (tenant_id, id)
 );
 
+-- Added after the fact so an existing deployment gains them rather than needing
+-- the table rebuilt.
+DO $$
+BEGIN
+    ALTER TABLE priced_collections ADD COLUMN IF NOT EXISTS superseded_at TIMESTAMPTZ;
+    ALTER TABLE priced_collections ADD COLUMN IF NOT EXISTS superseded_by VARCHAR(26);
+    ALTER TABLE priced_collections ADD COLUMN IF NOT EXISTS supersedes VARCHAR(26);
+    ALTER TABLE priced_collections ADD COLUMN IF NOT EXISTS correction_reason TEXT;
+END
+$$;
+
 -- A producer delivers once in the morning and once in the evening. The same
 -- producer, day and shift arriving twice is the single commonest defect in
 -- imported dairy data and it means somebody is paid twice for one delivery.
 --
 -- Enforced here rather than checked at import, because an import is not the only
 -- way a row arrives and a check is only as good as the paths that run it.
-CREATE UNIQUE INDEX IF NOT EXISTS priced_collections_one_per_shift
+-- One LIVE collection per producer, day and shift.
+--
+-- "Live" is what makes a correction possible at all. The superseded version
+-- stays in the table and stops matching this index, so the corrected row can
+-- take its place without the two contradicting each other — which is the same
+-- arrangement observations use, for the same reason.
+--
+-- Dropped and recreated because the earlier version of this index did not
+-- exclude superseded rows, and CREATE UNIQUE INDEX IF NOT EXISTS is a no-op
+-- against an index of the same name however different its definition. An
+-- IF NOT EXISTS that silently keeps the old rule is worse than no statement.
+DROP INDEX IF EXISTS priced_collections_one_per_shift;
+CREATE UNIQUE INDEX priced_collections_one_per_shift
     ON priced_collections (tenant_id, producer_ref, collected_on, shift)
-    WHERE deleted_at IS NULL;
+    WHERE deleted_at IS NULL AND superseded_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS priced_collections_by_producer
     ON priced_collections (tenant_id, producer_ref, collected_on DESC);

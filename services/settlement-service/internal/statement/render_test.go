@@ -543,3 +543,87 @@ func TestDisplayWidthCountsColumnsAndNotBytes(t *testing.T) {
 		}
 	}
 }
+
+// A correction to a settled fortnight appears on the page, below the net and
+// separate from it.
+//
+// Folded into the net it would print a figure the member never received. The
+// net is what they were handed at the window; an adjustment is a second
+// movement afterwards, and somebody reconciling this against their own records
+// needs both events rather than their sum.
+func TestACorrectionToASettledFortnightIsShownSeparately(t *testing.T) {
+	s := sample(t)
+	paid := time.Date(2026, 3, 20, 0, 0, 0, 0, time.UTC)
+	s.Adjustments = []*domain.ProducerPayable{
+		{
+			ID: "ADJ1", Net: rs(t, "10.00"), Reason: "fat on 3 March restated 4.1 to 4.2",
+			Status: domain.PayablePaid, PaidAt: &paid,
+		},
+		{
+			ID: "ADJ2", Net: rs(t, "-25.00"), Reason: "dues recovered twice",
+			Status: domain.PayableApproved,
+		},
+	}
+
+	out := render(t, s, Options{Width: 80})
+
+	// The fortnight's own figures are untouched by the corrections.
+	if !strings.Contains(out, "971.65") {
+		t.Errorf("the net the member was handed is not on the page:\n%s", out)
+	}
+	if strings.Contains(out, "956.65") {
+		t.Errorf("the adjustments were folded into the net, printing a figure nobody was "+
+			"handed:\n%s", out)
+	}
+
+	for _, want := range []string{"10.00", "-25.00", "fat on 3 March restated", "dues recovered twice"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the page does not carry %q:\n%s", want, out)
+		}
+	}
+	// An adjustment not yet paid says so, because a member reading it needs to
+	// know whether the money has moved.
+	if !strings.Contains(out, "APPROVED") {
+		t.Errorf("an adjustment that has not been paid does not say so:\n%s", out)
+	}
+	// The corrections come after the net, not before it.
+	if strings.Index(out, "NET PAYABLE") > strings.Index(out, "fat on 3 March") {
+		t.Error("the corrections are printed above the net they correct")
+	}
+	// And still inside the page.
+	for i, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if w := displayWidth(line); w > 80 {
+			t.Errorf("line %d is %d columns: %q", i+1, w, line)
+		}
+	}
+}
+
+// A statement with no corrections carries no corrections section. An empty
+// heading on every page is noise on the one document a member actually reads.
+func TestAStatementWithNoCorrectionsSaysNothingAboutThem(t *testing.T) {
+	if out := render(t, sample(t), Options{Width: 80}); strings.Contains(out, "Adjustments") {
+		t.Errorf("a statement with no corrections shows the heading anyway:\n%s", out)
+	}
+}
+
+// A large correction widens the money column rather than being trimmed to fit
+// the column the deliveries needed.
+func TestALargeCorrectionWidensTheColumnRatherThanBeingTrimmed(t *testing.T) {
+	s := sample(t)
+	s.Adjustments = []*domain.ProducerPayable{
+		{ID: "ADJ1", Net: rs(t, "-1234567.89"), Reason: "a year of dues recovered in error",
+			Status: domain.PayablePaid},
+	}
+	out := render(t, s, Options{Width: 80})
+	if !strings.Contains(out, "-1234567.89") {
+		t.Errorf("the correction was not printed in full:\n%s", out)
+	}
+	// Every figure still ends at the margin, including the ones above it.
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if strings.HasSuffix(line, "430.00") || strings.HasSuffix(line, "-1234567.89") {
+			if w := displayWidth(line); w != 80 {
+				t.Errorf("%q ends at column %d, not at the margin", line, w)
+			}
+		}
+	}
+}

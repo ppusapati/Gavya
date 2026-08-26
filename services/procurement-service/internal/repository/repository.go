@@ -42,8 +42,16 @@ type Repository interface {
 	CardInForce(ctx context.Context, tenantID string, at time.Time) (*ratecard.Card, error)
 
 	SaveCollection(ctx context.Context, p *domain.PricedCollection) (*domain.PricedCollection, error)
+	// CorrectCollection supersedes one version and writes its replacement in the
+	// same transaction.
+	CorrectCollection(ctx context.Context, oldID string, p *domain.PricedCollection, reason string) (*domain.PricedCollection, error)
 	GetCollection(ctx context.Context, tenantID, id string) (*domain.PricedCollection, error)
-	ListCollections(ctx context.Context, tenantID, producerRef string, from, to time.Time, limit, offset int) ([]*domain.PricedCollection, error)
+	// ListCollections returns the live version of each collection in a period.
+	// includeSuperseded adds the corrected-away versions, which is what a
+	// history view wants and what a settlement must never see.
+	ListCollections(ctx context.Context, tenantID, producerRef string, from, to time.Time, limit, offset int, includeSuperseded bool) ([]*domain.PricedCollection, error)
+	// Versions returns one collection and every version of it, oldest first.
+	Versions(ctx context.Context, tenantID, id string) ([]*domain.PricedCollection, error)
 }
 
 type repo struct {
@@ -290,13 +298,104 @@ func (r *repo) SaveCollection(ctx context.Context, p *domain.PricedCollection) (
 	return p, nil
 }
 
+// CorrectCollection replaces a collection with a restated one.
+//
+// One transaction, and the supersession is written before the replacement. The
+// live-version index permits exactly one unsuperseded row per producer, day and
+// shift, so doing it the other way round would be refused by the database —
+// which is the index doing its job, and the reason the order here is not
+// arbitrary.
+func (r *repo) CorrectCollection(ctx context.Context, oldID string, p *domain.PricedCollection, reason string) (*domain.PricedCollection, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	// Locked and re-read rather than trusting what the service saw. Two
+	// operators correcting the same slip at once would otherwise both pass the
+	// current-version check and write two live corrections of one delivery.
+	var supersededAt *time.Time
+	var beforeAmount int64
+	var beforeScale int32
+	var beforeCurrency string
+	if err := tx.QueryRow(ctx,
+		`SELECT superseded_at, amount_minor_units, amount_scale, currency
+		 FROM priced_collections
+		 WHERE tenant_id=$1 AND id=$2 AND deleted_at IS NULL FOR UPDATE`,
+		p.TenantID, oldID).Scan(&supersededAt, &beforeAmount, &beforeScale, &beforeCurrency); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	if supersededAt != nil {
+		return nil, domain.ErrAlreadySuperseded
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE priced_collections SET superseded_at=NOW(), superseded_by=$3, updated_at=NOW(), updated_by=$4
+		 WHERE tenant_id=$1 AND id=$2`,
+		p.TenantID, oldID, p.ID, p.CreatedBy); err != nil {
+		return nil, fmt.Errorf("supersede collection %s: %w", oldID, err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO priced_collections
+			(id,tenant_id,producer_ref,society_code,collected_on,shift,
+			 quantity_value,quantity_scale,quantity_unit,
+			 fat_value,fat_scale,snf_value,snf_scale,
+			 rate_card_id,rate_numerator,rate_scale,
+			 currency,amount_scale,amount_minor_units,explanation,
+			 origin_kind,source_system_id,import_batch_id,source_record_id,
+			 supersedes,correction_reason,created_by,updated_by)
+		VALUES ($1,$2,$3,nullif($4,''),$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
+		        $17,$18,$19,$20,$21,nullif($22,''),nullif($23,''),nullif($24,''),$25,$26,$27,$27)`,
+		p.ID, p.TenantID, p.ProducerRef, p.SocietyCode, p.CollectedOn, string(p.Shift),
+		p.Quantity.Value, p.Quantity.Scale, string(p.Unit),
+		p.Fat.Value, p.Fat.Scale, p.SNF.Value, p.SNF.Scale,
+		p.RateCardID, p.Rate.Numerator, p.Rate.Scale,
+		p.Amount.Currency, p.Amount.Scale, p.Amount.Value, p.Explanation,
+		string(p.Origin.Kind), p.SourceSystemID, p.ImportBatchID, p.SourceRecordID,
+		oldID, reason, p.CreatedBy); err != nil {
+		if isUniqueViolation(err) {
+			return nil, ErrDuplicateCollection
+		}
+		return nil, fmt.Errorf("write the corrected collection: %w", err)
+	}
+
+	// Both figures on the record, because the question asked afterwards is
+	// always what it was before and what it is now.
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "correct_collection", ResourceType: "priced_collection", ResourceID: p.ID,
+		Before: map[string]any{
+			"collection_id": oldID,
+			"amount":        money.Money{Value: beforeAmount, Scale: beforeScale, Currency: beforeCurrency}.String(),
+		},
+		After: map[string]any{
+			"producer_ref": p.ProducerRef, "collected_on": p.CollectedOn.Format("2006-01-02"),
+			"shift": string(p.Shift), "quantity": p.Quantity.String(),
+			"rate": p.Rate.String(), "amount": p.Amount.String(),
+			"supersedes": oldID, "reason": reason,
+		},
+		ServiceName: "procurement-service",
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
 const collectionCols = `id,tenant_id,producer_ref,COALESCE(society_code,''),collected_on,shift,
 	quantity_value,quantity_scale,quantity_unit,
 	COALESCE(fat_value,0),COALESCE(fat_scale,0),COALESCE(snf_value,0),COALESCE(snf_scale,0),
 	rate_card_id,COALESCE(rate_numerator,0),COALESCE(rate_scale,0),
 	currency,amount_scale,amount_minor_units,explanation,
 	origin_kind,COALESCE(source_system_id,''),COALESCE(import_batch_id,''),
-	COALESCE(source_record_id,''),created_at,created_by`
+	COALESCE(source_record_id,''),created_at,created_by,
+	superseded_at,COALESCE(superseded_by,''),COALESCE(supersedes,''),COALESCE(correction_reason,'')`
 
 func (r *repo) GetCollection(ctx context.Context, tenantID, id string) (*domain.PricedCollection, error) {
 	return scanCollection(r.db.QueryRow(ctx,
@@ -304,14 +403,22 @@ func (r *repo) GetCollection(ctx context.Context, tenantID, id string) (*domain.
 		 WHERE tenant_id=$1 AND id=$2 AND deleted_at IS NULL`, tenantID, id))
 }
 
-func (r *repo) ListCollections(ctx context.Context, tenantID, producerRef string, from, to time.Time, limit, offset int) ([]*domain.PricedCollection, error) {
+// ListCollections returns a period's collections.
+//
+// Superseded versions are excluded unless asked for, and that default is the
+// one that matters: settlement gathers a fortnight through this call, and a
+// corrected collection returned alongside the version it corrected would pay
+// the producer for the same milk twice — once at the wrong figure and once at
+// the right one — with both lines looking entirely ordinary on the statement.
+func (r *repo) ListCollections(ctx context.Context, tenantID, producerRef string, from, to time.Time, limit, offset int, includeSuperseded bool) ([]*domain.PricedCollection, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT `+collectionCols+` FROM priced_collections
 		WHERE tenant_id=$1 AND deleted_at IS NULL
+		  AND ($7 OR superseded_at IS NULL)
 		  AND ($2='' OR producer_ref=$2)
 		  AND collected_on >= $3 AND collected_on <= $4
-		ORDER BY collected_on, producer_ref, shift
-		LIMIT $5 OFFSET $6`, tenantID, producerRef, from, to, limit, offset)
+		ORDER BY collected_on, producer_ref, shift, created_at
+		LIMIT $5 OFFSET $6`, tenantID, producerRef, from, to, limit, offset, includeSuperseded)
 	if err != nil {
 		return nil, err
 	}
@@ -326,6 +433,49 @@ func (r *repo) ListCollections(ctx context.Context, tenantID, producerRef string
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// Versions returns every version of a collection, oldest first.
+//
+// Reached by walking the supersedes chain in both directions from whichever
+// version was asked for, because the id a person has is usually the one printed
+// on a statement — which is the version that was current when it was printed,
+// not necessarily the first or the last.
+func (r *repo) Versions(ctx context.Context, tenantID, id string) ([]*domain.PricedCollection, error) {
+	rows, err := r.db.Query(ctx, `
+		WITH RECURSIVE back AS (
+			SELECT * FROM priced_collections WHERE tenant_id=$1 AND id=$2
+			UNION
+			SELECT c.* FROM priced_collections c JOIN back b ON c.id = b.supersedes
+				AND c.tenant_id = $1
+		), forward AS (
+			SELECT * FROM priced_collections WHERE tenant_id=$1 AND id=$2
+			UNION
+			SELECT c.* FROM priced_collections c JOIN forward f ON c.supersedes = f.id
+				AND c.tenant_id = $1
+		)
+		SELECT `+collectionCols+` FROM (
+			SELECT * FROM back UNION SELECT * FROM forward
+		) v ORDER BY created_at, id`, tenantID, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*domain.PricedCollection
+	for rows.Next() {
+		c, err := scanCollection(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return nil, ErrNotFound
+	}
+	return out, nil
 }
 
 type scanner interface{ Scan(dest ...any) error }
@@ -358,7 +508,8 @@ func scanCollection(s scanner) (*domain.PricedCollection, error) {
 		&p.RateCardID, &p.Rate.Numerator, &p.Rate.Scale,
 		&p.Amount.Currency, &p.Amount.Scale, &p.Amount.Value, &p.Explanation,
 		&originKind, &p.SourceSystemID, &p.ImportBatchID, &p.SourceRecordID,
-		&p.CreatedAt, &p.CreatedBy)
+		&p.CreatedAt, &p.CreatedBy,
+		&p.SupersededAt, &p.SupersededBy, &p.Supersedes, &p.CorrectionReason)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}

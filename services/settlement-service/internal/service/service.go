@@ -252,6 +252,43 @@ func (s *Service) MarkPaid(ctx context.Context, tenantID, id, reference, actor s
 	return s.repo.MarkPaid(ctx, tenantID, id, reference, actor, s.clock.Now())
 }
 
+// RaiseAdjustment records money owed after a cycle was already settled.
+//
+// This is the remedy the paid-is-final trigger names. That trigger refuses to
+// edit a payable that has been paid and says a payment that turned out to be
+// wrong is corrected by a further payment rather than by editing the record of
+// the one that happened — and until this existed, there was no further payment
+// to make, so the refusal named a remedy the platform did not have.
+func (s *Service) RaiseAdjustment(ctx context.Context, p *domain.ProducerPayable, actor string) (*domain.ProducerPayable, error) {
+	if actor == "" {
+		return nil, errors.New("actor is required: an adjustment moves money outside the " +
+			"settlement that computed it, so who raised it has to be on the record")
+	}
+	if p.ProducerRef == "" {
+		return nil, domain.ErrNoProducer
+	}
+	if p.Reason == "" {
+		return nil, domain.ErrNoAdjustmentReason
+	}
+	if p.Net.IsZero() {
+		return nil, domain.ErrZeroAdjustment
+	}
+	// Gross and deducted are the net for an adjustment: it is a bare amount,
+	// not a fortnight with recoveries taken out of it.
+	p.Gross, p.Deducted = p.Net, money.Zero(p.Net.Scale, p.Net.Currency)
+	p.CarriedForward = money.Zero(p.Net.Scale, p.Net.Currency)
+	return s.repo.RaiseAdjustment(ctx, p, actor)
+}
+
+// ApprovePayable signs off one payable, which is how an adjustment raised
+// against a finished cycle is approved.
+func (s *Service) ApprovePayable(ctx context.Context, tenantID, id, actor string) (*domain.ProducerPayable, error) {
+	if actor == "" {
+		return nil, errors.New("actor is required")
+	}
+	return s.repo.ApprovePayable(ctx, tenantID, id, actor)
+}
+
 func (s *Service) HoldPayable(ctx context.Context, tenantID, id, reason, actor string) (*domain.ProducerPayable, error) {
 	if actor == "" {
 		return nil, errors.New("actor is required")

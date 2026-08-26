@@ -93,6 +93,59 @@ type PricedCollection struct {
 
 	CreatedAt time.Time
 	CreatedBy string
+
+	// Corrections. A corrected collection keeps the instant it was believed and
+	// stays readable; the correction is a new row that names it.
+	SupersededAt     *time.Time
+	SupersededBy     string
+	Supersedes       string
+	CorrectionReason string
+}
+
+// IsCurrent reports whether this is the version in force.
+func (p *PricedCollection) IsCurrent() bool { return p.SupersededAt == nil }
+
+// Correction is a restatement of a collection that was recorded wrongly.
+//
+// Only the readings and the quantity may change. The producer, the day and the
+// shift identify which delivery this is about — changing one of those would not
+// be a correction, it would be a claim that a different delivery happened, and
+// that is a new collection plus the deletion of one that did not.
+type Correction struct {
+	TenantID string
+	// ID is the collection being corrected. It must be the current version: a
+	// chain of corrections is corrected at its head.
+	ID string
+
+	Quantity ratecard.Point
+	Unit     ratecard.Basis
+	Fat      ratecard.Point
+	SNF      ratecard.Point
+	FatKg    ratecard.Point
+	SNFKg    ratecard.Point
+
+	// Reason is required. A figure that changes with no reason recorded is
+	// indistinguishable from tampering, and it is the row an auditor stops at.
+	Reason string
+	Actor  string
+}
+
+func (c *Correction) Validate() error {
+	switch {
+	case c.TenantID == "":
+		return errors.New("tenant_id is required")
+	case c.ID == "":
+		return errors.New("a correction must say which collection it corrects")
+	case c.Quantity.Value <= 0:
+		return ErrNoQuantity
+	case c.Unit != ratecard.PerLitre && c.Unit != ratecard.PerKg:
+		return errors.New("a correction must say whether its quantity is litres or kilograms")
+	case c.Reason == "":
+		return ErrNoCorrectionReason
+	case c.Actor == "":
+		return errors.New("actor is required")
+	}
+	return nil
 }
 
 var (
@@ -100,6 +153,20 @@ var (
 	ErrNoQuantity = errors.New("a collection with no quantity records no milk")
 	ErrNoShift    = errors.New("a collection must say which of the day's two deliveries it is")
 	ErrNoCard     = errors.New("no rate card was in force when this milk was collected")
+
+	// ErrNoCorrectionReason refuses a restated figure with nothing said about
+	// why it changed.
+	ErrNoCorrectionReason = errors.New("a correction must say why the figure changed; a payment " +
+		"that moves with no reason recorded cannot be defended to the producer it moved for")
+
+	// ErrAlreadySuperseded refuses correcting a version that is not the current
+	// one, which would leave two live corrections of the same delivery.
+	ErrAlreadySuperseded = errors.New("that version of the collection has already been corrected; " +
+		"correct the current one")
+
+	// ErrNothingChanged refuses a correction that restates the same figures.
+	ErrNothingChanged = errors.New("this correction does not change any reading, so it would " +
+		"supersede a row with a copy of itself and add a version nobody can tell from the last")
 )
 
 // ErrNoCardInForce names the moment nothing priced.

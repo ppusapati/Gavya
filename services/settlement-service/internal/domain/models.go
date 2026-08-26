@@ -206,6 +206,20 @@ const (
 	PayableHeld PayableStatus = "HELD"
 )
 
+// PayableKind says whether this is a fortnight or a correction to one.
+type PayableKind string
+
+const (
+	// Settlement is the fortnight itself, computed by gathering.
+	KindSettlement PayableKind = "SETTLEMENT"
+	// Adjustment is money that turned out to be owed after the fortnight was
+	// paid — a collection corrected, a recovery taken in error, a figure
+	// disputed and found wrong. It may be negative, because corrections run
+	// both ways and a reading restated downwards means the producer was
+	// overpaid.
+	KindAdjustment PayableKind = "ADJUSTMENT"
+)
+
 // ProducerPayable is what one producer takes home from one cycle.
 type ProducerPayable struct {
 	ID          string
@@ -226,7 +240,15 @@ type ProducerPayable struct {
 	// statement can say why a debt did not go down as much as expected.
 	CarriedForward money.Money
 
+	Kind   PayableKind
 	Status PayableStatus
+
+	// AdjustsPayableID is the payment this one corrects, where it corrects a
+	// specific one. Reason is required on an adjustment: an unexplained payment
+	// to a producer outside the settlement that computed it is the single
+	// record here most worth explaining.
+	AdjustsPayableID string
+	Reason           string
 
 	ApprovedAt       *time.Time
 	ApprovedBy       string
@@ -248,6 +270,13 @@ type Statement struct {
 	Deductions []*Deduction
 	Payable    *ProducerPayable
 
+	// Adjustments are corrections raised against this cycle after it was
+	// settled. Kept beside the payable rather than folded into it: a member
+	// needs to see that the fortnight came to one figure and that a further
+	// amount was paid or recovered afterwards, with the reason. Folding them in
+	// would give a net nobody was ever actually handed.
+	Adjustments []*ProducerPayable
+
 	// LitresOrKg is the period's quantity, kept per unit rather than summed
 	// across them. A society that records some collections in litres and some in
 	// kilograms has a data problem, and adding the two would hide it behind a
@@ -264,6 +293,15 @@ var (
 	ErrNoPrincipal   = errors.New("a recovery of nothing is not a recovery")
 	ErrNoPriority    = errors.New("a recovery must say where it comes in the order; which debt is served first out of a short fortnight is a decision about money")
 	ErrOverRecovered = errors.New("this would recover more than is owed")
+
+	// ErrNoAdjustmentReason refuses money moved outside the settlement that
+	// computed it with nothing said about why.
+	ErrNoAdjustmentReason = errors.New("an adjustment must say why it exists; a payment to a " +
+		"producer outside the settlement that computed it is the record most worth explaining")
+
+	// ErrZeroAdjustment refuses a correction that corrects nothing.
+	ErrZeroAdjustment = errors.New("an adjustment of zero moves no money and puts a line on a " +
+		"producer's statement saying nothing happened")
 )
 
 // ErrWrongStatus names a transition that was refused and why.

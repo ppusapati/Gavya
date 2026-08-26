@@ -267,7 +267,7 @@ CREATE TABLE IF NOT EXISTS producer_payables (
     currency      CHAR(3) NOT NULL,
     amount_scale  SMALLINT NOT NULL CHECK (amount_scale BETWEEN 0 AND 9),
 
-    gross_minor_units    BIGINT NOT NULL CHECK (gross_minor_units >= 0),
+    gross_minor_units    BIGINT NOT NULL,
     deducted_minor_units BIGINT NOT NULL CHECK (deducted_minor_units >= 0),
     -- Net may be negative: a society whose policy allows it hands the producer a
     -- bill rather than a payment.
@@ -284,6 +284,55 @@ CREATE TABLE IF NOT EXISTS producer_payables (
 
     status        VARCHAR(16) NOT NULL
                   CHECK (status IN ('PAYABLE', 'APPROVED', 'PAID', 'HELD')),
+
+    -- What kind of money this is.
+    --
+    -- SETTLEMENT is the fortnight itself, computed by gathering. ADJUSTMENT is
+    -- money that turned out to be owed after that fortnight was paid: a
+    -- collection corrected, a recovery taken in error, a figure disputed and
+    -- found wrong.
+    --
+    -- The trigger below refuses to edit a payable that has been paid, and its
+    -- message says a payment that turned out to be wrong is corrected by a
+    -- further payment rather than by editing the record of the one that
+    -- happened. This column is that further payment. Without it the refusal
+    -- names a remedy the platform does not have, and the only way to fix a
+    -- wrong payment is the one thing the database will not allow.
+    kind          VARCHAR(16) NOT NULL DEFAULT 'SETTLEMENT'
+                  CHECK (kind IN ('SETTLEMENT', 'ADJUSTMENT')),
+
+    -- Which payment this one corrects, where it corrects a specific one.
+    adjusts_payable_id VARCHAR(26),
+
+    -- Why an adjustment exists. Required for one, because an unexplained
+    -- payment to a producer outside the settlement that computed it is the
+    -- single row in this schema most worth explaining.
+    reason        TEXT,
+    CONSTRAINT producer_payables_adjustment_has_a_reason CHECK (
+        kind <> 'ADJUSTMENT' OR (reason IS NOT NULL AND reason <> '')),
+    CONSTRAINT producer_payables_only_adjustments_adjust CHECK (
+        adjusts_payable_id IS NULL OR kind = 'ADJUSTMENT'),
+    -- An adjustment of zero moves no money and puts a line on a producer's
+    -- statement saying nothing happened.
+    CONSTRAINT producer_payables_adjustment_is_not_zero CHECK (
+        kind <> 'ADJUSTMENT' OR net_minor_units <> 0),
+
+    -- A fortnight cannot earn a negative amount of milk money, and a settlement
+    -- row whose gross is below zero means the gathering arithmetic went wrong.
+    --
+    -- An adjustment can. Corrections run both ways: a fat reading restated
+    -- downwards means the producer was overpaid, and the money comes back. A
+    -- blanket "gross is never negative" reads as prudent and makes half of what
+    -- adjustments are for impossible — which is what it did here until an
+    -- overpayment was tried against it.
+    CONSTRAINT producer_payables_settlement_gross_is_not_negative CHECK (
+        kind <> 'SETTLEMENT' OR gross_minor_units >= 0),
+
+    -- An adjustment is a bare amount. Recovering a debt out of one would hide a
+    -- deduction on a line whose reason says something else; a debt is recovered
+    -- through a recovery, in the settlement that serves it.
+    CONSTRAINT producer_payables_adjustment_deducts_nothing CHECK (
+        kind <> 'ADJUSTMENT' OR deducted_minor_units = 0),
 
     approved_at   TIMESTAMPTZ,
     approved_by   VARCHAR(26),
@@ -305,12 +354,36 @@ CREATE TABLE IF NOT EXISTS producer_payables (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    FOREIGN KEY (tenant_id, cycle_id) REFERENCES payment_cycles (tenant_id, id),
-
-    -- One payable per producer per cycle. Two is one producer paid twice for one
-    -- fortnight.
-    UNIQUE (tenant_id, cycle_id, producer_ref)
+    FOREIGN KEY (tenant_id, cycle_id) REFERENCES payment_cycles (tenant_id, id)
 );
+
+DO $$
+BEGIN
+    ALTER TABLE producer_payables ADD COLUMN IF NOT EXISTS kind VARCHAR(16) NOT NULL DEFAULT 'SETTLEMENT';
+    ALTER TABLE producer_payables ADD COLUMN IF NOT EXISTS adjusts_payable_id VARCHAR(26);
+    ALTER TABLE producer_payables ADD COLUMN IF NOT EXISTS reason TEXT;
+    -- Dropped by its generated name: it forbids the negative adjustment that
+    -- an overpayment has to be recorded as.
+    ALTER TABLE producer_payables DROP CONSTRAINT IF EXISTS producer_payables_gross_minor_units_check;
+END
+$$;
+
+-- One SETTLEMENT payable per producer per cycle. Two is one producer paid twice
+-- for one fortnight.
+--
+-- A partial unique index rather than a table constraint, because adjustments
+-- share the table and there may legitimately be several of them: a fortnight
+-- can be wrong more than once. Restricting the rule to the settlement row keeps
+-- the guarantee that matters — the fortnight itself is computed once — without
+-- forbidding the corrections to it.
+--
+-- The table constraint it replaces is dropped by name, because a UNIQUE
+-- constraint covering every kind would refuse the first adjustment ever raised.
+ALTER TABLE producer_payables
+    DROP CONSTRAINT IF EXISTS producer_payables_tenant_id_cycle_id_producer_ref_key;
+CREATE UNIQUE INDEX IF NOT EXISTS producer_payables_one_settlement_per_producer
+    ON producer_payables (tenant_id, cycle_id, producer_ref)
+    WHERE kind = 'SETTLEMENT';
 
 CREATE INDEX IF NOT EXISTS producer_payables_by_cycle
     ON producer_payables (tenant_id, cycle_id, producer_ref);

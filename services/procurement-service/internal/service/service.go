@@ -119,11 +119,95 @@ func (s *Service) RecordCollection(ctx context.Context, in domain.Collection) (*
 	})
 }
 
+// CorrectCollection restates a delivery that was recorded wrongly.
+//
+// Re-priced rather than re-using the old rate. The readings are what a chart is
+// indexed by, so a corrected fat reading lands in a different cell and the rate
+// changes with it — carrying the old rate forward would produce a row whose
+// readings and whose rate disagree, and nobody looking at it later could say
+// which was the mistake.
+//
+// The card is still the one in force on the collection day, not today's. A
+// correction to last fortnight's milk is a restatement of what that milk was
+// worth then.
+func (s *Service) CorrectCollection(ctx context.Context, in domain.Correction) (*domain.PricedCollection, error) {
+	if err := in.Validate(); err != nil {
+		return nil, err
+	}
+	before, err := s.repo.GetCollection(ctx, in.TenantID, in.ID)
+	if err != nil {
+		return nil, err
+	}
+	if !before.IsCurrent() {
+		return nil, domain.ErrAlreadySuperseded
+	}
+
+	card, err := s.repo.CardInForce(ctx, in.TenantID, before.CollectedOn)
+	if err != nil {
+		return nil, err
+	}
+	priced, err := ratecard.Price(card, ratecard.Collection{
+		Quantity: in.Quantity, Unit: in.Unit,
+		Fat: in.Fat, SNF: in.SNF,
+		FatKg: in.FatKg, SNFKg: in.SNFKg,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// A restatement that restates nothing is refused. It would add a version
+	// indistinguishable from the one before it, and a chain of those makes the
+	// history unreadable for the corrections that did change something.
+	if in.Quantity == before.Quantity && in.Unit == before.Unit &&
+		in.Fat == before.Fat && in.SNF == before.SNF &&
+		priced.Amount.Value == before.Amount.Value {
+		return nil, domain.ErrNothingChanged
+	}
+
+	return s.repo.CorrectCollection(ctx, in.ID, &domain.PricedCollection{
+		ID:       s.ids.New(),
+		TenantID: in.TenantID,
+
+		// Taken from the collection being corrected, never from the request. A
+		// correction restates the readings of a delivery; it does not move that
+		// delivery to another producer, day or shift. Allowing it to would let
+		// one member's milk be reassigned to another with a reason field that
+		// says "correction".
+		ProducerRef: before.ProducerRef,
+		SocietyCode: before.SocietyCode,
+		CollectedOn: before.CollectedOn,
+		Shift:       before.Shift,
+
+		Quantity: in.Quantity, Unit: in.Unit, Fat: in.Fat, SNF: in.SNF,
+
+		RateCardID:  card.ID,
+		Rate:        priced.Rate,
+		Amount:      priced.Amount,
+		Explanation: priced.Explanation,
+
+		Origin:         before.Origin,
+		SourceSystemID: before.SourceSystemID,
+		ImportBatchID:  before.ImportBatchID,
+		SourceRecordID: before.SourceRecordID,
+
+		Supersedes:       in.ID,
+		CorrectionReason: in.Reason,
+
+		CreatedAt: s.clock.Now(),
+		CreatedBy: in.Actor,
+	}, in.Reason)
+}
+
+// Versions returns every version of a collection, oldest first.
+func (s *Service) Versions(ctx context.Context, tenantID, id string) ([]*domain.PricedCollection, error) {
+	return s.repo.Versions(ctx, tenantID, id)
+}
+
 func (s *Service) GetCollection(ctx context.Context, tenantID, id string) (*domain.PricedCollection, error) {
 	return s.repo.GetCollection(ctx, tenantID, id)
 }
 
-func (s *Service) ListCollections(ctx context.Context, tenantID, producerRef string, from, to time.Time, limit, offset int) ([]*domain.PricedCollection, error) {
+func (s *Service) ListCollections(ctx context.Context, tenantID, producerRef string, from, to time.Time, limit, offset int, includeSuperseded bool) ([]*domain.PricedCollection, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 200
 	}
@@ -137,5 +221,5 @@ func (s *Service) ListCollections(ctx context.Context, tenantID, producerRef str
 	if to.Before(from) {
 		return nil, fmt.Errorf("the period ends before it starts")
 	}
-	return s.repo.ListCollections(ctx, tenantID, producerRef, domain.Day(from), domain.Day(to), limit, offset)
+	return s.repo.ListCollections(ctx, tenantID, producerRef, domain.Day(from), domain.Day(to), limit, offset, includeSuperseded)
 }

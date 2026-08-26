@@ -44,6 +44,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	route("GetPayable", connectjson.Unary(h.GetPayable))
 	route("MarkPaid", connectjson.Unary(h.MarkPaid))
 	route("HoldPayable", connectjson.Unary(h.HoldPayable))
+	route("RaiseAdjustment", connectjson.Unary(h.RaiseAdjustment))
+	route("ApprovePayable", connectjson.Unary(h.ApprovePayable))
 
 	route("GetProducerStatement", connectjson.Unary(h.GetProducerStatement))
 	route("PrintProducerStatement", connectjson.Unary(h.PrintProducerStatement))
@@ -327,6 +329,10 @@ type PayableProto struct {
 	DeductedMinorUnits int64 `json:"deducted_minor_units"`
 	NetMinorUnits      int64 `json:"net_minor_units"`
 
+	Kind             string `json:"kind"`
+	AdjustsPayableID string `json:"adjusts_payable_id,omitempty"`
+	Reason           string `json:"reason,omitempty"`
+
 	Status           string `json:"status"`
 	ApprovedAt       string `json:"approved_at,omitempty"`
 	ApprovedBy       string `json:"approved_by,omitempty"`
@@ -486,6 +492,21 @@ type StatementProto struct {
 	PaidAt           string `json:"paid_at,omitempty"`
 	PaymentReference string `json:"payment_reference,omitempty"`
 	HeldReason       string `json:"held_reason,omitempty"`
+
+	// Adjustments raised against this cycle after it was settled, kept separate
+	// from the fortnight's own figures. A member needs to see that the period
+	// came to one number and that a further amount moved afterwards, with the
+	// reason; folding them together would show a net nobody was handed.
+	Adjustments []StatementAdjustmentProto `json:"adjustments,omitempty"`
+}
+
+// StatementAdjustmentProto is one correction to a settled fortnight.
+type StatementAdjustmentProto struct {
+	ID     string `json:"id"`
+	Amount string `json:"amount"`
+	Reason string `json:"reason"`
+	Status string `json:"status"`
+	PaidAt string `json:"paid_at,omitempty"`
 }
 
 type GetProducerStatementResponse struct {
@@ -533,6 +554,15 @@ func (h *Handler) GetProducerStatement(ctx context.Context, req *connect.Request
 		if p.PaidAt != nil {
 			out.PaidAt = p.PaidAt.UTC().Format(time.RFC3339)
 		}
+	}
+	for _, a := range s.Adjustments {
+		row := StatementAdjustmentProto{
+			ID: a.ID, Amount: a.Net.String(), Reason: a.Reason, Status: string(a.Status),
+		}
+		if a.PaidAt != nil {
+			row.PaidAt = a.PaidAt.UTC().Format(time.RFC3339)
+		}
+		out.Adjustments = append(out.Adjustments, row)
 	}
 	return connect.NewResponse(&GetProducerStatementResponse{Statement: out}), nil
 }
@@ -583,6 +613,9 @@ func fromPayable(p *domain.ProducerPayable) *PayableProto {
 		GrossMinorUnits:    p.Gross.Value,
 		DeductedMinorUnits: p.Deducted.Value,
 		NetMinorUnits:      p.Net.Value,
+		Kind:               string(p.Kind),
+		AdjustsPayableID:   p.AdjustsPayableID,
+		Reason:             p.Reason,
 		Status:             string(p.Status),
 		ApprovedBy:         p.ApprovedBy, PaidBy: p.PaidBy,
 		PaymentReference: p.PaymentReference, HeldReason: p.HeldReason,
@@ -646,6 +679,7 @@ func classify(err error) error {
 		errors.Is(err, domain.ErrBackwards), errors.Is(err, domain.ErrNoPolicy),
 		errors.Is(err, domain.ErrNoProducer), errors.Is(err, domain.ErrNoPrincipal),
 		errors.Is(err, domain.ErrNoPriority),
+		errors.Is(err, domain.ErrNoAdjustmentReason), errors.Is(err, domain.ErrZeroAdjustment),
 		errors.Is(err, money.ErrCurrencyMismatch), errors.Is(err, money.ErrScaleMismatch):
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
@@ -799,4 +833,56 @@ func setLabel(l *statement.Labels, key, value string) {
 	case "no_milk":
 		l.NoMilk = value
 	}
+}
+
+type RaiseAdjustmentRequest struct {
+	TenantID    string `json:"tenant_id"`
+	CycleID     string `json:"cycle_id"`
+	ProducerRef string `json:"producer_ref"`
+
+	Currency    string `json:"currency"`
+	AmountScale int32  `json:"amount_scale"`
+	// Amount may be negative. A reading restated downwards means the producer
+	// was overpaid and the money comes back, and refusing to record that would
+	// leave half of what adjustments are for impossible.
+	Amount string `json:"amount"`
+
+	// AdjustsPayableID is the payment this corrects, where it corrects one.
+	AdjustsPayableID string `json:"adjusts_payable_id,omitempty"`
+	// Reason is required and goes on the producer's statement.
+	Reason string `json:"reason"`
+	Actor  string `json:"actor"`
+}
+
+// RaiseAdjustment records money owed after a cycle was already paid.
+func (h *Handler) RaiseAdjustment(ctx context.Context, req *connect.Request[RaiseAdjustmentRequest]) (*connect.Response[PayableResponse], error) {
+	m := req.Msg
+	amount, err := money.Parse(m.Amount, m.AmountScale, m.Currency)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("amount: "+err.Error()))
+	}
+	p, err := h.svc.RaiseAdjustment(ctx, &domain.ProducerPayable{
+		TenantID: m.TenantID, CycleID: m.CycleID, ProducerRef: m.ProducerRef,
+		Net: amount, AdjustsPayableID: m.AdjustsPayableID, Reason: m.Reason,
+	}, m.Actor)
+	if err != nil {
+		return nil, classify(err)
+	}
+	return connect.NewResponse(&PayableResponse{Payable: fromPayable(p)}), nil
+}
+
+type ApprovePayableRequest struct {
+	TenantID string `json:"tenant_id"`
+	ID       string `json:"id"`
+	Actor    string `json:"actor"`
+}
+
+// ApprovePayable signs off one payable. ApproveCycle handles a whole gathered
+// fortnight; this is for an adjustment raised against one that is finished.
+func (h *Handler) ApprovePayable(ctx context.Context, req *connect.Request[ApprovePayableRequest]) (*connect.Response[PayableResponse], error) {
+	p, err := h.svc.ApprovePayable(ctx, req.Msg.TenantID, req.Msg.ID, req.Msg.Actor)
+	if err != nil {
+		return nil, classify(err)
+	}
+	return connect.NewResponse(&PayableResponse{Payable: fromPayable(p)}), nil
 }
