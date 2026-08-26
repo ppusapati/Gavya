@@ -217,11 +217,20 @@ func tenantFromBody(msg any) string {
 	if v.Kind() != reflect.Struct {
 		return ""
 	}
-	idx, ok := tenantFieldOf(v.Type())
+	path, ok := tenantFieldOf(v.Type())
 	if !ok {
 		return ""
 	}
-	f := v.Field(idx)
+	f := v
+	for _, i := range path {
+		for f.Kind() == reflect.Pointer {
+			if f.IsNil() {
+				return ""
+			}
+			f = f.Elem()
+		}
+		f = f.Field(i)
+	}
 	if f.Kind() != reflect.String {
 		return ""
 	}
@@ -230,23 +239,55 @@ func tenantFromBody(msg any) string {
 
 // tenantFields caches the lookup, so the reflection happens once per request
 // type rather than once per request.
-var tenantFields sync.Map // reflect.Type -> int, or -1 for none
+var tenantFields sync.Map // reflect.Type -> []int, or nil for none
 
-func tenantFieldOf(t reflect.Type) (int, bool) {
+// tenantFieldOf finds the tenant field, following embedded structs.
+//
+// The embedded case is not hypothetical and it fails silently. A request that
+// embeds a shared struct — a rate card, say, with the tenant on it — has no
+// tenant_id among its own fields, so a search that only looked at those found
+// nothing, left the context unscoped, and the request went on to be refused
+// several layers down by whatever first needed a tenant. Failing closed, but
+// with an error that names none of the cause.
+//
+// Only embedded fields are followed. A named struct member is a nested object on
+// the wire with its own tenant_id, which is a different field about a different
+// thing, and reaching into it would pick up a tenant nobody meant.
+func tenantFieldOf(t reflect.Type) ([]int, bool) {
 	if cached, ok := tenantFields.Load(t); ok {
-		i := cached.(int)
-		return i, i >= 0
+		path, _ := cached.([]int)
+		return path, path != nil
 	}
-	found := -1
+	path := findTenantField(t, nil)
+	tenantFields.Store(t, path)
+	return path, path != nil
+}
+
+func findTenantField(t reflect.Type, prefix []int) []int {
 	for i := 0; i < t.NumField(); i++ {
-		name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
+		f := t.Field(i)
+		name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
 		if name == "tenant_id" {
-			found = i
-			break
+			return append(append([]int(nil), prefix...), i)
 		}
 	}
-	tenantFields.Store(t, found)
-	return found, found >= 0
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if !f.Anonymous {
+			continue
+		}
+		ft := f.Type
+		for ft.Kind() == reflect.Pointer {
+			ft = ft.Elem()
+		}
+		if ft.Kind() != reflect.Struct {
+			continue
+		}
+		if found := findTenantField(ft, append(prefix, i)); found != nil {
+			return found
+		}
+	}
+	return nil
 }
 
 // withActor puts who is acting on the context, from the headers the gateway set

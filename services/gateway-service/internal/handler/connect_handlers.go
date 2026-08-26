@@ -69,6 +69,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 		// Platform.
 		{"/gavya.identity.v1.", h.cfg.IdentityServiceURL},
+		{"/procurement.v1.", h.cfg.ProcurementServiceURL},
 		{"/tenant.v1.", h.cfg.TenantServiceURL},
 		{"/notification.v1.", h.cfg.NotificationServiceURL},
 		{"/reporting.v1.", h.cfg.ReportingServiceURL},

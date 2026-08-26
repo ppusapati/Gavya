@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+
+	"github.com/ppusapati/gavya/libs/integrity/connectjson"
 )
 
 const (
@@ -107,10 +109,24 @@ func New(cfg Config) *Client {
 	}
 }
 
-// CallOptions carries the correlation data every service logs against.
+// CallOptions carries the correlation data every service logs against, and who
+// the call is being made as.
 type CallOptions struct {
 	TenantID  string
 	RequestID string
+
+	// Tenant and Actor are what the gateway sets after verifying a session, and
+	// what the audit trail attributes a change to. A service-to-service caller
+	// sets them itself because there is no gateway between two services — and
+	// the point of them being headers rather than body fields still holds: the
+	// receiving service reads who is acting from the transport, never from the
+	// payload it was handed.
+	Tenant string
+	// Actor is a person. ServiceIdentity is a service. Exactly one should be
+	// set: a service borrowing a person's name produces a trail that attributes
+	// its actions to somebody who was not there.
+	Actor           string
+	ServiceIdentity string
 }
 
 // Call performs one unary procedure call.
@@ -163,6 +179,15 @@ func (c *Client) attempt(ctx context.Context, url, procedure string, body []byte
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	if opts.Tenant != "" {
+		req.Header.Set(connectjson.TenantHeader, opts.Tenant)
+	}
+	if opts.Actor != "" {
+		req.Header.Set(connectjson.UserHeader, opts.Actor)
+	}
+	if opts.ServiceIdentity != "" {
+		req.Header.Set(connectjson.ServiceIdentityHeader, opts.ServiceIdentity)
+	}
 	if opts.TenantID != "" {
 		req.Header.Set(HeaderTenantID, opts.TenantID)
 	}

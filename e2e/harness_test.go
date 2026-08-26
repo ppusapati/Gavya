@@ -44,6 +44,12 @@ type service struct {
 	env []string
 }
 
+// sharedSchemas are applied to every service's database, because every service
+// needs them present on its own connection.
+var sharedSchemas = []string{
+	"services/audit-service/internal/db/schema.sql",
+}
+
 var services = []service{
 	{name: "canonical-service", database: "e2e_canonical", schema: "services/canonical-service/internal/db/schema.sql"},
 	{name: "shadow-settlement-service", database: "e2e_shadow", schema: "services/shadow-settlement-service/internal/db/schema.sql"},
@@ -62,6 +68,9 @@ var services = []service{
 	// run end to end — every part of it was unit-tested and none of it had been
 	// joined up.
 	{name: "pooling-service", database: "e2e_pooling", schema: "services/pooling-service/internal/db/schema.sql"},
+	// Procurement is the native path: a society prices its own collections from
+	// its own chart, rather than the platform recomputing somebody else's.
+	{name: "procurement-service", database: "e2e_procurement", schema: "services/procurement-service/internal/db/schema.sql"},
 }
 
 // platform is a running set of services, addressed by name.
@@ -219,22 +228,32 @@ func prepareDatabase(t *testing.T, svc service) {
 			}
 		}
 
-		sql, err := os.ReadFile(filepath.Join(repoRoot(t), svc.schema))
-		if err != nil {
-			return fmt.Errorf("read schema: %w", err)
-		}
-
 		conn, err := pgx.Connect(ctx, dsn(t, svc.database))
 		if err != nil {
 			return fmt.Errorf("connect to %s: %w", svc.database, err)
 		}
 		defer conn.Close(ctx)
 
-		// Every schema here is written with IF NOT EXISTS, so applying it to a
-		// database left behind by an earlier run is a no-op rather than a
-		// failure.
-		if _, err := conn.Exec(ctx, string(sql)); err != nil {
-			return fmt.Errorf("apply schema to %s: %w", svc.database, err)
+		// The audit trail is written into the caller's transaction, so
+		// audit_logs has to be reachable from every service's own connection.
+		// That is a real deployment constraint — the platform runs one database
+		// for all services — and applying it here is what makes this harness
+		// reflect it rather than contradict it.
+		//
+		// Without this a service that records an audit row works under compose
+		// and fails here, which is the wrong way round for a harness to be
+		// wrong.
+		for _, path := range append(sharedSchemas, svc.schema) {
+			sql, err := os.ReadFile(filepath.Join(repoRoot(t), path))
+			if err != nil {
+				return fmt.Errorf("read %s: %w", path, err)
+			}
+			// Every schema here is written with IF NOT EXISTS, so applying it to
+			// a database left behind by an earlier run is a no-op rather than a
+			// failure.
+			if _, err := conn.Exec(ctx, string(sql)); err != nil {
+				return fmt.Errorf("apply %s to %s: %w", path, svc.database, err)
+			}
 		}
 		return nil
 	}()
@@ -267,7 +286,17 @@ func (p *platform) observation() *svcclient.Client {
 	return p.clients["observation-service"]
 }
 func (p *platform) pooling() *svcclient.Client { return p.clients["pooling-service"] }
+func (p *platform) procurement() *svcclient.Client {
+	return p.clients["procurement-service"]
+}
 
 func (p *platform) opts() svcclient.CallOptions {
-	return svcclient.CallOptions{TenantID: p.tenant, RequestID: newID("req")}
+	// Tenant and Actor are what the gateway sets from a verified session. These
+	// tests call services directly, so the harness sets them — which is what a
+	// service-to-service caller does too, and keeps the rule that a service
+	// reads who is acting from the transport rather than from the payload.
+	return svcclient.CallOptions{
+		TenantID: p.tenant, RequestID: newID("req"),
+		Tenant: p.tenant, Actor: "US_E2E_HARNESS_0000000000",
+	}
 }

@@ -135,3 +135,42 @@ func TestATenantThatCannotBeOneIsRejectedAtTheEdge(t *testing.T) {
 		t.Errorf("the procedure ran scoped to %q", seen)
 	}
 }
+
+// A request that embeds a shared struct carrying the tenant.
+//
+// This is not hypothetical: procurement's DeclareRateCard embeds a rate card,
+// and the tenant is on the card. A search that looked only at the request's own
+// fields found nothing, left the context unscoped, and the request was refused
+// several layers down by the first thing that needed a tenant — failing closed,
+// with an error that named none of the cause.
+type embeddedCard struct {
+	TenantID string `json:"tenant_id"`
+	Name     string `json:"name"`
+}
+
+type reqEmbedding struct {
+	embeddedCard
+	Actor string `json:"actor"`
+}
+
+func TestATenantOnAnEmbeddedStructIsFound(t *testing.T) {
+	_, seen := serve[reqEmbedding](t, `{"tenant_id":"T_EMBEDDED","name":"February","actor":"x"}`, nil)
+	if seen != "T_EMBEDDED" {
+		t.Errorf("the procedure saw tenant %q; a tenant on an embedded struct was not found", seen)
+	}
+}
+
+// A named struct member is a nested object with its own tenant_id, which is a
+// different field about a different thing. Reaching into it would pick up a
+// tenant nobody meant.
+type reqWithNested struct {
+	Actor  string       `json:"actor"`
+	Nested embeddedCard `json:"nested"`
+}
+
+func TestATenantInsideANamedMemberIsNotTreatedAsTheRequestsOwn(t *testing.T) {
+	_, seen := serve[reqWithNested](t, `{"actor":"x","nested":{"tenant_id":"T_SOMEBODY_ELSE"}}`, nil)
+	if seen != "" {
+		t.Errorf("the procedure was scoped to %q, taken from a nested object", seen)
+	}
+}

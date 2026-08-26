@@ -85,6 +85,31 @@ BEGIN
         ('order_items',       'sku_id',       'skus',       true, 'an order line is for a stock item'),
         ('order_items',       'product_id',   'products',   true, 'an order line is for a product'),
 
+        -- The two that name a rate card and are not references to one, at least
+        -- not yet. Both became visible only when procurement-service introduced
+        -- a rate_cards table for them to point at, which is this check doing its
+        -- job: a new table turned two columns into apparent references and made
+        -- somebody decide.
+        --
+        -- pools.rate_card_id is NOT NULL DEFAULT '', so most pools carry an
+        -- empty string. A pool is valued from component prices handed in at the
+        -- time; the column records which card those came from when there was
+        -- one. Enforcing it would reject every pool that names none, and the fix
+        -- is to make the column nullable first -- a change to pooling's schema,
+        -- not a constraint to add here.
+        ('pools', 'rate_card_id', 'rate_cards', false,
+            'NOT NULL DEFAULT empty string, so most pools name no card and a reference would '
+            'reject them; make the column nullable before enforcing this'),
+
+        -- shadow_settlement_computations.rate_card_id records which card a
+        -- recomputation used. In shadow mode that is frequently the incumbent's
+        -- own card, which by definition is not in this platform's registry --
+        -- that is the point of shadow mode. A reference here would refuse to
+        -- record exactly the comparisons the product exists to make.
+        ('shadow_settlement_computations', 'rate_card_id', 'rate_cards', false,
+            'a shadow recomputation often cites the incumbent own card, which is not in this '
+            'platform registry and is not supposed to be'),
+
         -- And the one that must not be enforced.
         --
         -- quarantined_records holds what failed validation on the way in, and
