@@ -617,43 +617,6 @@ func TestARecordFromAnUnregisteredDeviceCanStillBeQuarantined(t *testing.T) {
 	}
 }
 
-// The list of decisions is the one thing here that is written out rather than
-// derived, so it is made self-checking: a reference-shaped column nobody has
-// decided about turns up here rather than staying quiet.
-func TestEveryReferenceShapedColumnHasADecision(t *testing.T) {
-	owner, _ := isolated(t)
-
-	rows, err := owner.Query(context.Background(),
-		"SELECT table_name, column_name, probably_references FROM gavya_undecided_references")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	var n int
-	for rows.Next() {
-		var table, column, target string
-		if err := rows.Scan(&table, &column, &target); err != nil {
-			t.Fatal(err)
-		}
-		n++
-		t.Errorf("%s.%s looks like a reference to %s and nobody has recorded whether it is one",
-			table, column, target)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-
-	var decided int
-	if err := owner.QueryRow(context.Background(),
-		"SELECT count(*) FROM gavya_reference_decisions()").Scan(&decided); err != nil {
-		t.Fatal(err)
-	}
-	if decided == 0 {
-		t.Fatal("no decisions are recorded, so this test would pass vacuously")
-	}
-	t.Logf("%d decisions recorded, %d columns undecided", decided, n)
-}
-
 // Adding a constraint over data that already violates it must say how much is
 // wrong, not fail on the first row. One bad import and half a table call for
 // different responses, and ALTER TABLE names one row either way.
@@ -688,5 +651,132 @@ func TestEnforcingAReferenceOverBadDataSaysHowMuchIsBad(t *testing.T) {
 	}
 	if !strings.Contains(outcome, "3 row") {
 		t.Errorf("outcome = %q, want it to say how many rows are wrong", outcome)
+	}
+}
+
+// Every reference-shaped column has a decision recorded against it.
+//
+// This is the guard that keeps sixty-three decisions from becoming sixty-two
+// and then a habit. A column ending in _id with no foreign key is guaranteed by
+// nothing — it can name a row that was never issued, one that belonged to
+// another tenant, or one deleted last year — and for most of them in this
+// schema that is correct, because they name something outside it. What is not
+// correct is nobody having looked.
+//
+// The failure mode this replaces is specific. gavya_undecided_references only
+// asks about columns whose target can be guessed from the name, which is the
+// minority; the majority were invisible to it, so the check reported success
+// over a gap of sixty-three columns. Both views are asserted here.
+func TestEveryReferenceShapedColumnHasADecision(t *testing.T) {
+	owner, _ := isolated(t)
+	ctx := context.Background()
+
+	for _, v := range []struct {
+		view string
+		why  string
+	}{
+		{"gavya_undecided_references",
+			"its target can be guessed from the column name and nobody said whether it is one"},
+		{"gavya_unguessable_references",
+			"its target cannot be guessed, which is where most of this schema's references live"},
+	} {
+		rows, err := owner.Query(ctx,
+			`SELECT table_name || '.' || column_name FROM `+v.view+` ORDER BY 1`)
+		if err != nil {
+			t.Fatalf("%s: %v", v.view, err)
+		}
+		var missing []string
+		for rows.Next() {
+			var col string
+			if err := rows.Scan(&col); err != nil {
+				rows.Close()
+				t.Fatal(err)
+			}
+			missing = append(missing, col)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		if len(missing) > 0 {
+			t.Errorf("%d column(s) have no decision recorded (%s):\n  %s\n"+
+				"Add each to gavya_reference_decisions in libs/integrity/isolation/references.sql, "+
+				"saying whether it is a reference and why.",
+				len(missing), v.why, strings.Join(missing, "\n  "))
+		}
+	}
+
+	// Two empty views are also what a database with no decisions and no schema
+	// looks like, so the counts are checked rather than assumed.
+	var decided, shaped int
+	if err := owner.QueryRow(ctx,
+		`SELECT (SELECT count(*) FROM gavya_reference_decisions()),
+		        (SELECT count(*) FROM gavya_unconstrained_reference_report)`).
+		Scan(&decided, &shaped); err != nil {
+		t.Fatal(err)
+	}
+	if decided == 0 {
+		t.Fatal("no decisions are recorded, so this test would pass vacuously")
+	}
+	if shaped == 0 {
+		t.Fatal("no reference-shaped columns were found at all, so the views are empty for the " +
+			"wrong reason and this test proves nothing")
+	}
+	t.Logf("%d decisions recorded; %d reference-shaped columns enforced by nothing, "+
+		"every one of them on purpose", decided, shaped)
+}
+
+// Every decision that says "enforce" produced a key, and none was refused
+// because the data already violated it.
+//
+// A decision recorded and not applied is worse than no decision: the list says
+// the reference is guaranteed and the database does not guarantee it, so anyone
+// reading the list is misled in the direction of believing a check exists.
+func TestEveryEnforcedDecisionBecameAKey(t *testing.T) {
+	owner, _ := isolated(t)
+	ctx := context.Background()
+
+	rows, err := owner.Query(ctx, `
+		SELECT d.table_name, d.column_name
+		FROM gavya_reference_decisions() d
+		WHERE d.enforce
+		  AND NOT EXISTS (
+		      SELECT 1 FROM pg_constraint k
+		      JOIN pg_class c ON c.oid = k.conrelid
+		      JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = d.column_name
+		      WHERE k.contype = 'f' AND c.relname = d.table_name
+		        AND a.attnum = ANY (k.conkey))
+		ORDER BY 1, 2`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var table, column string
+		if err := rows.Scan(&table, &column); err != nil {
+			t.Fatal(err)
+		}
+		t.Errorf("%s.%s is recorded as enforced and has no foreign key, so the decision list "+
+			"claims a guarantee the database does not make", table, column)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	refused, err := owner.Query(ctx,
+		`SELECT constraint_name, outcome FROM gavya_enforce_references() WHERE outcome LIKE 'REFUSED%'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer refused.Close()
+	for refused.Next() {
+		var name, outcome string
+		if err := refused.Scan(&name, &outcome); err != nil {
+			t.Fatal(err)
+		}
+		t.Errorf("%s could not be enforced: %s", name, outcome)
+	}
+	if err := refused.Err(); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -58,14 +58,28 @@ echo "gavya: enforcing the declared references"
 "${psql[@]}" --file /repo/libs/integrity/isolation/references.sql
 "${psql[@]}" --command "SELECT constraint_name, outcome FROM gavya_enforce_references();" > /dev/null
 
-# A reference-shaped column nobody has decided about. Not a failure — it may well
-# not be a reference — but a question that has to reach somebody rather than
-# answer itself by staying quiet.
+# A reference-shaped column nobody has decided about.
+#
+# This is now a failure, and it was a warning until the backlog behind it was
+# cleared. Both are defensible positions and only one of them is defensible at a
+# time: while sixty-three columns had no decision, failing here would have meant
+# a deployment that never finished and a check somebody switched off. With the
+# backlog at zero, warning would mean the sixty-fourth arrives unnoticed and the
+# work is undone one column at a time.
+#
+# Both views are counted. The first asks about columns whose target can be
+# guessed from the name; the second about the ones where it cannot, which is the
+# majority and was invisible until it was counted.
 undecided=$("${psql[@]}" --tuples-only --no-align --command \
-    "SELECT count(*) FROM gavya_undecided_references")
+    "SELECT (SELECT count(*) FROM gavya_undecided_references)
+          + (SELECT count(*) FROM gavya_unguessable_references)")
 if [ "$undecided" != "0" ]; then
-    echo "gavya: $undecided reference-shaped column(s) have no decision recorded:" >&2
+    echo "gavya: $undecided reference-shaped column(s) have no decision recorded." >&2
+    echo "gavya: add each to gavya_reference_decisions in " \
+         "libs/integrity/isolation/references.sql, saying whether it is a reference and why." >&2
     "${psql[@]}" --command "SELECT * FROM gavya_undecided_references" >&2
+    "${psql[@]}" --command "SELECT * FROM gavya_unguessable_references" >&2
+    exit 1
 fi
 
 # Some tables cannot be isolated by a tenant column because they do not have
@@ -157,8 +171,6 @@ keys=$("${psql[@]}" --tuples-only --no-align --command "
 # informs.
 loose=$("${psql[@]}" --tuples-only --no-align --command "
     SELECT count(*) FROM gavya_unconstrained_reference_report")
-unguessable=$("${psql[@]}" --tuples-only --no-align --command "
-    SELECT count(*) FROM gavya_unguessable_references")
 refused=$("${psql[@]}" --tuples-only --no-align --command "
     SELECT count(*) FROM gavya_enforce_references() WHERE outcome LIKE 'REFUSED%'")
 if [ "$refused" != "0" ]; then
@@ -171,10 +183,7 @@ echo "gavya: $protected tables isolated, $keys foreign keys carry the tenant; se
 # Not a failure. It is a standing count of references nothing enforces, printed
 # so it is not discovered later as a surprise.
 echo "gavya: note — $loose reference-shaped columns are enforced by nothing; see gavya_unconstrained_reference_report"
-# Of those, the ones the decision list cannot even ask about, because their
-# target cannot be guessed from the column name. These are the gap in the check
-# above rather than in the schema, and saying so is the point.
-if [ "$unguessable" != "0" ]; then
-    echo "gavya: note — $unguessable of them point at a table no rule can guess, so no decision " \
-         "has been demanded for them; see gavya_unguessable_references"
-fi
+# The count above is columns nothing enforces, which is not the same as columns
+# nobody decided: the check earlier in this script has already refused to finish
+# if any lacked a decision. Every one of these is unenforced on purpose, and
+# gavya_reference_decisions says why for each.
