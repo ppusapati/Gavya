@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ppusapati/gavya/libs/integrity/money"
+
 	"github.com/ppusapati/gavya/services/material-service/internal/domain"
 	"github.com/ppusapati/gavya/services/material-service/internal/repository"
 )
@@ -135,6 +137,47 @@ func (s *Service) Abandon(ctx context.Context, tenantID, id, reason, actor strin
 
 func (s *Service) GetMovement(ctx context.Context, tenantID, id string) (*domain.Movement, error) {
 	return s.repo.GetMovement(ctx, tenantID, id)
+}
+
+func (s *Service) RegisterInstrument(ctx context.Context, i *domain.Instrument, actor string) (*domain.Instrument, error) {
+	if actor == "" {
+		return nil, errors.New("actor is required: an instrument's uncertainty weights a " +
+			"settlement, so who declared it has to be on the record")
+	}
+	if _, err := s.repo.GetNode(ctx, i.TenantID, i.NodeID); err != nil {
+		return nil, fmt.Errorf("the node this instrument is at: %w", err)
+	}
+	return s.repo.RegisterInstrument(ctx, i, actor)
+}
+
+func (s *Service) ListInstruments(ctx context.Context, tenantID string) ([]*domain.Instrument, error) {
+	return s.repo.ListInstruments(ctx, tenantID)
+}
+
+// ProposeFlows shapes a period's movements for balance-service.
+//
+// The rounding mode is required rather than defaulted: a relative uncertainty
+// is a multiplication and multiplication rounds. It is a small effect on one
+// flow and it decides which of two nearly-equal legs the reconciler blames when
+// a window does not close.
+func (s *Service) ProposeFlows(ctx context.Context, tenantID string, from, to time.Time, mode money.RoundingMode) ([]domain.Flow, error) {
+	if mode == "" {
+		return nil, errors.New("a relative uncertainty is a multiplication and multiplication " +
+			"rounds, so the rounding mode has to be stated rather than assumed")
+	}
+	movements, err := s.ListMovements(ctx, tenantID, "", from, to, 1000)
+	if err != nil {
+		return nil, err
+	}
+	instruments, err := s.repo.ListInstruments(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	byNodeMethod := make(map[string]*domain.Instrument, len(instruments))
+	for _, i := range instruments {
+		byNodeMethod[i.NodeID+"|"+string(i.Method)] = i
+	}
+	return domain.ProposeFlows(movements, byNodeMethod, mode)
 }
 
 func (s *Service) ListMovements(ctx context.Context, tenantID, nodeID string, from, to time.Time, limit int) ([]*domain.Movement, error) {

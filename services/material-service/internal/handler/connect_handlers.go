@@ -38,6 +38,10 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	route("AbandonMovement", connectjson.Unary(h.AbandonMovement))
 	route("GetMovement", connectjson.Unary(h.GetMovement))
 	route("ListMovements", connectjson.Unary(h.ListMovements))
+
+	route("RegisterInstrument", connectjson.Unary(h.RegisterInstrument))
+	route("ListInstruments", connectjson.Unary(h.ListInstruments))
+	route("ProposeFlows", connectjson.Unary(h.ProposeFlows))
 }
 
 // QuantityProto is an amount with its unit.
@@ -426,6 +430,10 @@ func parseTime(s, field string) (time.Time, error) {
 // classify maps a failure onto the code that describes it.
 func classify(err error) error {
 	var busy *domain.ErrTankerBusy
+	var mixed *domain.ErrMixedUnits
+	if errors.As(err, &mixed) {
+		return connect.NewError(connect.CodeFailedPrecondition, err)
+	}
 	switch {
 	case errors.Is(err, repository.ErrNotFound):
 		return connect.NewError(connect.CodeNotFound, err)
@@ -437,6 +445,9 @@ func classify(err error) error {
 		errors.Is(err, repository.ErrReceivedIsFinal),
 		errors.Is(err, domain.ErrArrivedBefore):
 		return connect.NewError(connect.CodeFailedPrecondition, err)
+	case errors.Is(err, domain.ErrNoUncertainty), errors.Is(err, domain.ErrTwoUncertainties),
+		errors.Is(err, domain.ErrNoCertificate), errors.Is(err, domain.ErrNoExpiry):
+		return connect.NewError(connect.CodeInvalidArgument, err)
 	case errors.Is(err, domain.ErrNoNodes), errors.Is(err, domain.ErrSameNode),
 		errors.Is(err, domain.ErrNoQuantity), errors.Is(err, domain.ErrNoMethod),
 		errors.Is(err, domain.ErrNoReason),
@@ -445,4 +456,185 @@ func classify(err error) error {
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	return connect.NewError(connect.CodeInternal, err)
+}
+
+// ---------------------------------------------------------------------------
+// Instruments and flows
+// ---------------------------------------------------------------------------
+
+type InstrumentProto struct {
+	ID       string `json:"id"`
+	TenantID string `json:"tenant_id"`
+	NodeID   string `json:"node_id"`
+	Method   string `json:"method"`
+	Label    string `json:"label"`
+
+	// Exactly one of these. RelativePPM is parts per million of the reading,
+	// which is how a flowmeter certificate reads; Absolute is a fixed quantity,
+	// which is how a weighbridge certificate reads. An instrument specified the
+	// wrong way round is wrong at one end of its range.
+	RelativePPM int64          `json:"relative_ppm,omitempty"`
+	Absolute    *QuantityProto `json:"absolute,omitempty"`
+
+	CertificateRef string `json:"certificate_ref"`
+	CalibratedOn   string `json:"calibrated_on"`
+	ValidUntil     string `json:"valid_until"`
+}
+
+type RegisterInstrumentRequest struct {
+	TenantID string `json:"tenant_id"`
+	NodeID   string `json:"node_id"`
+	Method   string `json:"method"`
+	Label    string `json:"label"`
+
+	RelativePPM int64          `json:"relative_ppm,omitempty"`
+	Absolute    *QuantityProto `json:"absolute,omitempty"`
+
+	CertificateRef string `json:"certificate_ref"`
+	CalibratedOn   string `json:"calibrated_on"`
+	ValidUntil     string `json:"valid_until"`
+	Actor          string `json:"actor"`
+}
+
+type InstrumentResponse struct {
+	Instrument *InstrumentProto `json:"instrument"`
+}
+
+func (h *Handler) RegisterInstrument(ctx context.Context, req *connect.Request[RegisterInstrumentRequest]) (*connect.Response[InstrumentResponse], error) {
+	m := req.Msg
+	calibrated, err := parseTime(m.CalibratedOn, "calibrated_on")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	until, err := parseTime(m.ValidUntil, "valid_until")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	i := &domain.Instrument{
+		TenantID: m.TenantID, NodeID: m.NodeID, Method: domain.Method(m.Method),
+		Label: m.Label, RelativePPM: m.RelativePPM,
+		CertificateRef: m.CertificateRef, CalibratedOn: calibrated, ValidUntil: until,
+	}
+	if m.Absolute != nil {
+		q, err := m.Absolute.quantity()
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("absolute: "+err.Error()))
+		}
+		i.Absolute = &q
+	}
+	saved, err := h.svc.RegisterInstrument(ctx, i, m.Actor)
+	if err != nil {
+		return nil, classify(err)
+	}
+	return connect.NewResponse(&InstrumentResponse{Instrument: fromInstrument(saved)}), nil
+}
+
+type ListInstrumentsRequest struct {
+	TenantID string `json:"tenant_id"`
+}
+
+type ListInstrumentsResponse struct {
+	Instruments []*InstrumentProto `json:"instruments"`
+	// Expired is how many of them were out of calibration as at AsOf. A society
+	// reconciling with instruments nobody has re-certified should be told, and a
+	// count of zero read from an empty list is not the same as a count of zero
+	// read from a list.
+	Expired int32  `json:"expired"`
+	AsOf    string `json:"as_of"`
+}
+
+func (h *Handler) ListInstruments(ctx context.Context, req *connect.Request[ListInstrumentsRequest]) (*connect.Response[ListInstrumentsResponse], error) {
+	list, err := h.svc.ListInstruments(ctx, req.Msg.TenantID)
+	if err != nil {
+		return nil, classify(err)
+	}
+	now := time.Now().UTC()
+	out := &ListInstrumentsResponse{
+		Instruments: make([]*InstrumentProto, 0, len(list)),
+		AsOf:        now.Format("2006-01-02"),
+	}
+	for _, i := range list {
+		out.Instruments = append(out.Instruments, fromInstrument(i))
+		if !i.InCalibrationOn(now) {
+			out.Expired++
+		}
+	}
+	return connect.NewResponse(out), nil
+}
+
+type FlowProto struct {
+	FlowID     string `json:"flow_id"`
+	FromNodeID string `json:"from_node_id"`
+	ToNodeID   string `json:"to_node_id"`
+
+	Measured    QuantityProto  `json:"measured"`
+	Uncertainty *QuantityProto `json:"standard_uncertainty,omitempty"`
+
+	Unmeasured       bool   `json:"unmeasured"`
+	UnmeasuredReason string `json:"unmeasured_reason,omitempty"`
+
+	MovementID string `json:"movement_id"`
+}
+
+type ProposeFlowsRequest struct {
+	TenantID string `json:"tenant_id"`
+	From     string `json:"from"`
+	To       string `json:"to"`
+	// Rounding applies to relative uncertainties, which are a multiplication. No
+	// default: it is a small effect on one flow and it decides which of two
+	// nearly-equal legs the reconciler blames when a window does not close.
+	Rounding string `json:"rounding"`
+}
+
+type ProposeFlowsResponse struct {
+	Flows []*FlowProto `json:"flows"`
+	// Unmeasured is how many legs the reconciler will have to solve for rather
+	// than weight. A window mostly made of these is one whose answer is mostly
+	// inference, and the caller should know that before reading the result.
+	Unmeasured int32 `json:"unmeasured"`
+}
+
+// ProposeFlows shapes a period's movements for balance-service.
+func (h *Handler) ProposeFlows(ctx context.Context, req *connect.Request[ProposeFlowsRequest]) (*connect.Response[ProposeFlowsResponse], error) {
+	m := req.Msg
+	from, err := parseTime(m.From, "from")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	to, err := parseTime(m.To, "to")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	flows, err := h.svc.ProposeFlows(ctx, m.TenantID, from, to, money.RoundingMode(m.Rounding))
+	if err != nil {
+		return nil, classify(err)
+	}
+	out := &ProposeFlowsResponse{Flows: make([]*FlowProto, 0, len(flows))}
+	for _, f := range flows {
+		p := &FlowProto{
+			FlowID: f.FlowID, FromNodeID: f.FromNodeID, ToNodeID: f.ToNodeID,
+			Measured:   *fromQuantity(&f.Measured),
+			Unmeasured: f.Unmeasured, UnmeasuredReason: f.UnmeasuredReason,
+			MovementID: f.MovementID,
+		}
+		if !f.Unmeasured {
+			u := f.Uncertainty
+			p.Uncertainty = fromQuantity(&u)
+		} else {
+			out.Unmeasured++
+		}
+		out.Flows = append(out.Flows, p)
+	}
+	return connect.NewResponse(out), nil
+}
+
+func fromInstrument(i *domain.Instrument) *InstrumentProto {
+	return &InstrumentProto{
+		ID: i.ID, TenantID: i.TenantID, NodeID: i.NodeID,
+		Method: string(i.Method), Label: i.Label,
+		RelativePPM: i.RelativePPM, Absolute: fromQuantity(i.Absolute),
+		CertificateRef: i.CertificateRef,
+		CalibratedOn:   i.CalibratedOn.UTC().Format("2006-01-02"),
+		ValidUntil:     i.ValidUntil.UTC().Format("2006-01-02"),
+	}
 }

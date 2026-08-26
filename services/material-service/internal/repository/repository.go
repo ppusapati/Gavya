@@ -42,6 +42,9 @@ type Repository interface {
 	Receive(ctx context.Context, m *domain.Movement, actor string) (*domain.Movement, error)
 	Abandon(ctx context.Context, tenantID, id, reason, actor string) (*domain.Movement, error)
 	ListMovements(ctx context.Context, tenantID, nodeID string, from, to time.Time, limit int) ([]*domain.Movement, error)
+
+	RegisterInstrument(ctx context.Context, i *domain.Instrument, actor string) (*domain.Instrument, error)
+	ListInstruments(ctx context.Context, tenantID string) ([]*domain.Instrument, error)
 }
 
 type repo struct {
@@ -346,6 +349,100 @@ func (r *repo) ListMovements(ctx context.Context, tenantID, nodeID string, from,
 			return nil, err
 		}
 		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// ---------------------------------------------------------------------------
+// Instruments
+// ---------------------------------------------------------------------------
+
+func (r *repo) RegisterInstrument(ctx context.Context, i *domain.Instrument, actor string) (*domain.Instrument, error) {
+	if err := i.Validate(); err != nil {
+		return nil, err
+	}
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	i.ID = r.ids.New()
+	var relative *int64
+	var absValue *int64
+	var absUnit *string
+	if i.RelativePPM > 0 {
+		v := i.RelativePPM
+		relative = &v
+	}
+	if i.Absolute != nil {
+		v, u := i.Absolute.Value(), string(i.Absolute.Unit)
+		absValue, absUnit = &v, &u
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO material_instruments
+			(id,tenant_id,node_id,method,label,relative_ppm,absolute_value,absolute_unit,
+			 certificate_ref,calibrated_on,valid_until,created_by,updated_by)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12)`,
+		i.ID, i.TenantID, i.NodeID, string(i.Method), i.Label,
+		relative, absValue, absUnit,
+		i.CertificateRef, i.CalibratedOn, i.ValidUntil, actor); err != nil {
+		if sqlState(err) == "23505" {
+			return nil, fmt.Errorf("%w: %s already has an instrument for %s measurement",
+				ErrDuplicateCode, i.NodeID, i.Method)
+		}
+		return nil, fmt.Errorf("register instrument: %w", err)
+	}
+
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "register_instrument", ResourceType: "material_instrument", ResourceID: i.ID,
+		After: map[string]any{
+			"node_id": i.NodeID, "method": string(i.Method), "label": i.Label,
+			"certificate_ref": i.CertificateRef,
+			"calibrated_on":   i.CalibratedOn.Format("2006-01-02"),
+			"valid_until":     i.ValidUntil.Format("2006-01-02"),
+		},
+		ServiceName: serviceName,
+	}); err != nil {
+		return nil, err
+	}
+	return i, tx.Commit(ctx)
+}
+
+const instrumentCols = `id,tenant_id,node_id,method,label,relative_ppm,absolute_value,absolute_unit,
+	certificate_ref,calibrated_on,valid_until`
+
+func (r *repo) ListInstruments(ctx context.Context, tenantID string) ([]*domain.Instrument, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT `+instrumentCols+` FROM material_instruments
+		 WHERE tenant_id=$1 AND deleted_at IS NULL ORDER BY node_id, method`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*domain.Instrument
+	for rows.Next() {
+		var i domain.Instrument
+		var method string
+		var relative, absValue *int64
+		var absUnit *string
+		if err := rows.Scan(&i.ID, &i.TenantID, &i.NodeID, &method, &i.Label,
+			&relative, &absValue, &absUnit,
+			&i.CertificateRef, &i.CalibratedOn, &i.ValidUntil); err != nil {
+			return nil, err
+		}
+		i.Method = domain.Method(method)
+		if relative != nil {
+			i.RelativePPM = *relative
+		}
+		if absValue != nil && absUnit != nil {
+			q, err := quantity.New(*absValue, quantity.Unit(*absUnit))
+			if err != nil {
+				return nil, err
+			}
+			i.Absolute = &q
+		}
+		out = append(out, &i)
 	}
 	return out, rows.Err()
 }

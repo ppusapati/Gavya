@@ -280,3 +280,81 @@ DROP TRIGGER IF EXISTS material_movements_final_once_received ON material_moveme
 CREATE TRIGGER material_movements_final_once_received
     BEFORE UPDATE ON material_movements
     FOR EACH ROW EXECUTE FUNCTION gavya_movement_is_final_once_received();
+
+-- ---------------------------------------------------------------------------
+-- Instruments
+-- ---------------------------------------------------------------------------
+
+-- What measures at a node, and how well it is known.
+--
+-- balance-service weights a reconciliation by each flow's standard uncertainty:
+-- a stream measured by a verified instrument pulls the solution harder than an
+-- estimated one. Until now nothing could supply that figure, because it is not a
+-- property of the method — a dipstick is not a number — it is a property of the
+-- particular instrument at the particular node, and it comes off a calibration
+-- certificate.
+--
+-- So there is no table of typical uncertainties by method here, and there will
+-- not be one. A weighbridge is around a tenth of a per cent and a society's
+-- weighbridge is whatever its certificate says. Inventing the first would put a
+-- number nobody measured into the weighting of a settlement.
+CREATE TABLE IF NOT EXISTS material_instruments (
+    id          VARCHAR(26) PRIMARY KEY,
+    tenant_id   VARCHAR(26) NOT NULL,
+
+    node_id     VARCHAR(26) NOT NULL,
+    -- The method this instrument is the instrument for. A node that dips and
+    -- also has a flowmeter has two rows, because they are two instruments and
+    -- they are known to different precisions.
+    method      VARCHAR(20) NOT NULL CHECK (method IN ('DIP', 'FLOWMETER', 'WEIGHBRIDGE', 'DECLARED')),
+
+    -- The society's own name for it, so a certificate can be matched to a row.
+    label       VARCHAR(120) NOT NULL,
+
+    -- The standard uncertainty, one way or the other and never both.
+    --
+    -- An instrument's specification is written one of two ways and the
+    -- difference matters across the range: a weighbridge is a fixed number of
+    -- kilograms whatever the load, a flowmeter is a percentage of the reading.
+    -- Storing only one shape would make every instrument of the other kind wrong
+    -- at one end of its range.
+    relative_ppm  BIGINT CHECK (relative_ppm IS NULL OR relative_ppm > 0),
+    absolute_value BIGINT CHECK (absolute_value IS NULL OR absolute_value > 0),
+    absolute_unit  VARCHAR(16) CHECK (absolute_unit IS NULL OR absolute_unit IN ('LITRES', 'KILOGRAMS')),
+    CONSTRAINT material_instruments_absolute_is_whole CHECK (
+        (absolute_value IS NULL) = (absolute_unit IS NULL)),
+    CONSTRAINT material_instruments_one_kind_of_uncertainty CHECK (
+        (relative_ppm IS NOT NULL AND absolute_value IS NULL) OR
+        (relative_ppm IS NULL AND absolute_value IS NOT NULL)),
+
+    -- Where the figure came from. An uncertainty with no certificate behind it
+    -- is a number somebody remembered, and this one weights money.
+    certificate_ref VARCHAR(120) NOT NULL,
+    calibrated_on   DATE NOT NULL,
+    -- When the calibration stops being current.
+    --
+    -- Not optional. Every calibration expires, and one recorded with no expiry
+    -- is one that never does — which is how an instrument nobody has checked in
+    -- three years goes on pulling a settlement towards its own reading.
+    valid_until     DATE NOT NULL,
+    CONSTRAINT material_instruments_calibration_is_forwards CHECK (valid_until > calibrated_on),
+
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_by  VARCHAR(26) NOT NULL,
+    updated_by  VARCHAR(26) NOT NULL,
+    deleted_at  TIMESTAMPTZ,
+
+    FOREIGN KEY (tenant_id, node_id) REFERENCES material_nodes (tenant_id, id)
+);
+
+-- One instrument per node per method at a time.
+--
+-- Two rows would mean the platform holds two uncertainties for the same
+-- measurement and picks one, and which it picked would be invisible in the
+-- reconciliation that used it.
+CREATE UNIQUE INDEX IF NOT EXISTS material_instruments_one_per_node_method
+    ON material_instruments (tenant_id, node_id, method) WHERE deleted_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS material_instruments_by_expiry
+    ON material_instruments (tenant_id, valid_until) WHERE deleted_at IS NULL;

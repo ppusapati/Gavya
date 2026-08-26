@@ -96,6 +96,10 @@ var services = []service{
 	// is a cooler with a code and a tanker with a registration rather than a
 	// string, and a movement is measured at both ends.
 	{name: "material-service", database: "e2e_material", schema: "services/material-service/internal/db/schema.sql"},
+	// balance-service is the mathematics material-service supplies the physical
+	// model for. It was not in this harness, so the join between the two — the
+	// only place either of them means anything — had never run.
+	{name: "balance-service", database: "e2e_balance", schema: "services/balance-service/internal/db/schema.sql"},
 }
 
 // platform is a running set of services, addressed by name.
@@ -402,6 +406,9 @@ func (p *platform) settlement() *svcclient.Client {
 }
 func (p *platform) material() *svcclient.Client {
 	return p.clients["material-service"]
+}
+func (p *platform) balance() *svcclient.Client {
+	return p.clients["balance-service"]
 }
 
 func (p *platform) opts() svcclient.CallOptions {

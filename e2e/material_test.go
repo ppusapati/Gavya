@@ -688,3 +688,523 @@ func TestAMeasurementWithNoMethodIsRefused(t *testing.T) {
 		t.Error("a quantity with no unit was accepted and would have been taken as litres")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// The join to the reconciler
+// ---------------------------------------------------------------------------
+
+const balanceSvc = "balance.v1.BalanceService"
+
+type registerInstrumentReq struct {
+	TenantID       string         `json:"tenant_id"`
+	NodeID         string         `json:"node_id"`
+	Method         string         `json:"method"`
+	Label          string         `json:"label"`
+	RelativePPM    int64          `json:"relative_ppm,omitempty"`
+	Absolute       *quantityProto `json:"absolute,omitempty"`
+	CertificateRef string         `json:"certificate_ref"`
+	CalibratedOn   string         `json:"calibrated_on"`
+	ValidUntil     string         `json:"valid_until"`
+	Actor          string         `json:"actor"`
+}
+
+type instrumentProto struct {
+	ID             string `json:"id"`
+	NodeID         string `json:"node_id"`
+	Method         string `json:"method"`
+	Label          string `json:"label"`
+	RelativePPM    int64  `json:"relative_ppm,omitempty"`
+	CertificateRef string `json:"certificate_ref"`
+	ValidUntil     string `json:"valid_until"`
+}
+
+type instrumentResp struct {
+	Instrument *instrumentProto `json:"instrument"`
+}
+
+type flowProto struct {
+	FlowID           string         `json:"flow_id"`
+	FromNodeID       string         `json:"from_node_id"`
+	ToNodeID         string         `json:"to_node_id"`
+	Measured         quantityProto  `json:"measured"`
+	Uncertainty      *quantityProto `json:"standard_uncertainty,omitempty"`
+	Unmeasured       bool           `json:"unmeasured"`
+	UnmeasuredReason string         `json:"unmeasured_reason,omitempty"`
+	MovementID       string         `json:"movement_id"`
+}
+
+type proposeFlowsReq struct {
+	TenantID string `json:"tenant_id"`
+	From     string `json:"from"`
+	To       string `json:"to"`
+	Rounding string `json:"rounding"`
+}
+
+type proposeFlowsResp struct {
+	Flows      []*flowProto `json:"flows"`
+	Unmeasured int32        `json:"unmeasured"`
+}
+
+type createWindowReq struct {
+	TenantID    string `json:"tenant_id"`
+	RouteRef    string `json:"route_ref"`
+	PeriodStart string `json:"period_start"`
+	PeriodEnd   string `json:"period_end"`
+	Unit        string `json:"unit"`
+	Actor       string `json:"actor"`
+}
+
+type windowProto struct {
+	ID     string `json:"id"`
+	Unit   string `json:"unit"`
+	Status string `json:"status"`
+}
+
+type createWindowResp struct {
+	Window *windowProto `json:"window"`
+}
+
+type addFlowReq struct {
+	TenantID            string `json:"tenant_id"`
+	WindowID            string `json:"window_id"`
+	FlowID              string `json:"flow_id"`
+	FromNode            string `json:"from_node"`
+	FromNodeKind        string `json:"from_node_kind,omitempty"`
+	ToNode              string `json:"to_node"`
+	ToNodeKind          string `json:"to_node_kind,omitempty"`
+	Measured            string `json:"measured"`
+	StandardUncertainty string `json:"standard_uncertainty,omitempty"`
+	Unmeasured          bool   `json:"unmeasured,omitempty"`
+	ObservationRef      string `json:"observation_ref,omitempty"`
+	Actor               string `json:"actor"`
+}
+
+type addFlowResp struct {
+	Flow map[string]any `json:"flow"`
+}
+
+type reconcileReq struct {
+	TenantID string `json:"tenant_id"`
+	WindowID string `json:"window_id"`
+	Actor    string `json:"actor"`
+}
+
+type runProto struct {
+	ID             string `json:"id"`
+	Converged      bool   `json:"converged"`
+	ResidualBefore string `json:"residual_before"`
+	Reason         string `json:"reason,omitempty"`
+}
+
+type reconcileResp struct {
+	Run *runProto `json:"run"`
+}
+
+func registerInstrument(t *testing.T, p *platform, in registerInstrumentReq) (*instrumentProto, error) {
+	t.Helper()
+	in.TenantID = p.tenant
+	if in.Actor == "" {
+		in.Actor = "e2e_metrology"
+	}
+	resp, err := svcclient.Call[registerInstrumentReq, instrumentResp](
+		context.Background(), p.material(), materialSvc+"/RegisterInstrument", in, p.opts())
+	if err != nil {
+		return nil, err
+	}
+	return resp.Instrument, nil
+}
+
+// The join: material proposes the network, balance reconciles it, and the two
+// agree about the milk.
+//
+// This is the only place either service means anything. balance-service had the
+// mathematics and no way to know whether a node was a real cooler;
+// material-service knows the coolers and does not reconcile. Until this ran,
+// nothing had ever carried a reading from one to the other.
+//
+// The morning: a cooler loads 5000 litres into a tanker, the tanker's flowmeter
+// reads 4990 on arrival, and the tanker then delivers that 4990 to the plant,
+// where the dock dips 4900.
+//
+// Only the tanker both receives and sends, so it is the one node this window can
+// test. Its balance is 5000 in less 4990 out, which is the ten litres the
+// loading variance already reported — the same subtraction reached twice, by two
+// services, through different code.
+func TestTheNetworkMaterialProposesIsTheNetworkBalanceReconciles(t *testing.T) {
+	p := startPlatform(t)
+
+	cooler := mustNode(t, p, "BMC-71", "Kothapalli cooler", "BULK_COOLER")
+	tanker := mustNode(t, p, "TS09-UA-3300", "Tanker 7", "TANKER")
+	plant := mustNode(t, p, "PLANT-9", "Sangam plant", "PLANT")
+
+	// Both sending instruments certified and current.
+	for _, in := range []registerInstrumentReq{
+		{NodeID: cooler.ID, Method: "DIP", Label: "Dipstick BMC-71",
+			RelativePPM: 5000, CertificateRef: "CERT-DIP-71",
+			CalibratedOn: "2026-01-01", ValidUntil: "2027-01-01"},
+		{NodeID: tanker.ID, Method: "FLOWMETER", Label: "Flowmeter TS09-UA-3300",
+			RelativePPM: 2000, CertificateRef: "CERT-FM-3300",
+			CalibratedOn: "2026-01-01", ValidUntil: "2027-01-01"},
+	} {
+		if _, err := registerInstrument(t, p, in); err != nil {
+			t.Fatalf("RegisterInstrument %s: %v", in.Label, err)
+		}
+	}
+
+	load, err := dispatch(t, p, dispatchReq{
+		FromNodeID: cooler.ID, ToNodeID: tanker.ID,
+		At: "2026-04-01T05:00:00Z", Quantity: litres("5000.000"), Method: "DIP",
+	})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	loaded, err := receive(t, p, receiveReq{
+		MovementID: load.ID, At: "2026-04-01T05:40:00Z",
+		Quantity: litres("4990.000"), Method: "FLOWMETER",
+	})
+	if err != nil {
+		t.Fatalf("Receive: %v", err)
+	}
+	if loaded.Variance == nil || loaded.Variance.Value != "10.000" {
+		t.Fatalf("the loading variance is %v, want 10.000 litres", loaded.Variance)
+	}
+
+	haul, err := dispatch(t, p, dispatchReq{
+		FromNodeID: tanker.ID, ToNodeID: plant.ID,
+		At: "2026-04-01T06:00:00Z", Quantity: litres("4990.000"), Method: "FLOWMETER",
+	})
+	if err != nil {
+		t.Fatalf("Dispatch haul: %v", err)
+	}
+	if _, err := receive(t, p, receiveReq{
+		MovementID: haul.ID, At: "2026-04-01T08:30:00Z",
+		Quantity: litres("4900.000"), Method: "DIP",
+	}); err != nil {
+		t.Fatalf("Receive haul: %v", err)
+	}
+
+	proposed, err := svcclient.Call[proposeFlowsReq, proposeFlowsResp](
+		context.Background(), p.material(), materialSvc+"/ProposeFlows",
+		proposeFlowsReq{TenantID: p.tenant, From: "2026-04-01", To: "2026-04-02",
+			Rounding: "HALF_UP"}, p.opts())
+	if err != nil {
+		t.Fatalf("ProposeFlows: %v", err)
+	}
+	if len(proposed.Flows) != 2 {
+		t.Fatalf("%d flows proposed, want the two legs", len(proposed.Flows))
+	}
+	if proposed.Unmeasured != 0 {
+		t.Errorf("%d legs came back unmeasured with both instruments in calibration",
+			proposed.Unmeasured)
+	}
+
+	// The cooler only sends and the plant only receives, so both are outside
+	// what this window can test.
+	byFlow := map[string]*flowProto{}
+	for _, f := range proposed.Flows {
+		byFlow[f.MovementID] = f
+	}
+	if got := byFlow[load.ID].FromNodeID; got != "" {
+		t.Errorf("the cooler is %q; it only sends in this window", got)
+	}
+	if got := byFlow[load.ID].ToNodeID; got != tanker.ID {
+		t.Errorf("the loading flow arrives at %q, want the tanker", got)
+	}
+	if got := byFlow[haul.ID].ToNodeID; got != "" {
+		t.Errorf("the plant is %q; it only receives in this window", got)
+	}
+	// The uncertainties came off the certificates: 5000 ppm of 5000 is 25, and
+	// 2000 ppm of 4990 is 9.98.
+	if got := byFlow[load.ID].Uncertainty; got == nil || got.Value != "25.000" {
+		t.Errorf("the loading uncertainty is %v, want 25.000 litres from the dipstick certificate", got)
+	}
+	if got := byFlow[haul.ID].Uncertainty; got == nil || got.Value != "9.980" {
+		t.Errorf("the haul uncertainty is %v, want 9.980 litres from the flowmeter certificate", got)
+	}
+
+	// Hand the proposal to the reconciler, unchanged.
+	window, err := svcclient.Call[createWindowReq, createWindowResp](
+		context.Background(), p.balance(), balanceSvc+"/CreateWindow",
+		createWindowReq{TenantID: p.tenant, RouteRef: "ROUTE-7",
+			PeriodStart: "2026-04-01T00:00:00Z", PeriodEnd: "2026-04-02T00:00:00Z",
+			Unit: "LITRES", Actor: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("CreateWindow: %v", err)
+	}
+	for _, f := range proposed.Flows {
+		in := addFlowReq{
+			TenantID: p.tenant, WindowID: window.Window.ID, FlowID: f.FlowID,
+			FromNode: f.FromNodeID, ToNode: f.ToNodeID,
+			Measured: f.Measured.Value, Unmeasured: f.Unmeasured,
+			ObservationRef: f.MovementID, Actor: "e2e",
+		}
+		if f.Uncertainty != nil {
+			in.StandardUncertainty = f.Uncertainty.Value
+		}
+		// The node kinds balance-service wants: it refuses a non-boundary node
+		// with no kind, and the boundary must carry none.
+		if f.FromNodeID != "" {
+			in.FromNodeKind = "TANKER"
+		}
+		if f.ToNodeID != "" {
+			in.ToNodeKind = "TANKER"
+		}
+		if _, err := svcclient.Call[addFlowReq, addFlowResp](
+			context.Background(), p.balance(), balanceSvc+"/AddFlow", in, p.opts()); err != nil {
+			t.Fatalf("AddFlow %s: %v", f.FlowID, err)
+		}
+	}
+
+	run, err := svcclient.Call[reconcileReq, reconcileResp](
+		context.Background(), p.balance(), balanceSvc+"/Reconcile",
+		reconcileReq{TenantID: p.tenant, WindowID: window.Window.ID, Actor: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	// The claim. The tanker's balance is 5000 in less 4990 out, and the loading
+	// variance material computed movement-by-movement was 10.000. The same
+	// subtraction, reached twice, by two services, through different code.
+	if run.Run.ResidualBefore != "10.000" {
+		t.Errorf("the reconciler puts the tanker's imbalance at %s and material put the "+
+			"loading variance at %s; two services disagree about the same milk",
+			run.Run.ResidualBefore, loaded.Variance.Value)
+	}
+	// The ML tier is not in this harness, and that is a supported deployment:
+	// the imbalance is computed locally and an investigation is never blocked by
+	// a model being unreachable.
+	if run.Run.Converged {
+		t.Error("the run reports convergence with no reconciler configured")
+	}
+	if !strings.Contains(run.Run.Reason, "locally") {
+		t.Errorf("the run does not say the imbalance was computed without a model: %q",
+			run.Run.Reason)
+	}
+}
+
+// An expired calibration reaches the reconciler as a leg to solve for, not as a
+// weighted reading.
+//
+// This is the whole point of registering instruments. Weighting a settlement by
+// an instrument nobody has checked in three years is worse than solving for the
+// leg: the reconciler pulls the entire solution towards a number no one can
+// defend, and every other reading absorbs the difference.
+func TestAnExpiredCertificateReachesTheReconcilerAsAnUnmeasuredLeg(t *testing.T) {
+	p := startPlatform(t)
+
+	cooler := mustNode(t, p, "BMC-81", "A cooler", "BULK_COOLER")
+	tanker := mustNode(t, p, "TS09-UA-4400", "Tanker 8", "TANKER")
+	plant := mustNode(t, p, "PLANT-10", "Sangam plant", "PLANT")
+
+	// The cooler's dipstick certificate ran out in February; the milk moved in
+	// April.
+	if _, err := registerInstrument(t, p, registerInstrumentReq{
+		NodeID: cooler.ID, Method: "DIP", Label: "Dipstick BMC-81",
+		RelativePPM: 5000, CertificateRef: "CERT-DIP-81",
+		CalibratedOn: "2025-02-01", ValidUntil: "2026-02-01",
+	}); err != nil {
+		t.Fatalf("RegisterInstrument: %v", err)
+	}
+	if _, err := registerInstrument(t, p, registerInstrumentReq{
+		NodeID: tanker.ID, Method: "FLOWMETER", Label: "Flowmeter TS09-UA-4400",
+		RelativePPM: 2000, CertificateRef: "CERT-FM-4400",
+		CalibratedOn: "2026-01-01", ValidUntil: "2027-01-01",
+	}); err != nil {
+		t.Fatalf("RegisterInstrument: %v", err)
+	}
+
+	load, err := dispatch(t, p, dispatchReq{
+		FromNodeID: cooler.ID, ToNodeID: tanker.ID,
+		At: "2026-04-01T05:00:00Z", Quantity: litres("5000.000"), Method: "DIP",
+	})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if _, err := receive(t, p, receiveReq{
+		MovementID: load.ID, At: "2026-04-01T05:40:00Z",
+		Quantity: litres("4990.000"), Method: "FLOWMETER",
+	}); err != nil {
+		t.Fatalf("Receive: %v", err)
+	}
+	haul, err := dispatch(t, p, dispatchReq{
+		FromNodeID: tanker.ID, ToNodeID: plant.ID,
+		At: "2026-04-01T06:00:00Z", Quantity: litres("4990.000"), Method: "FLOWMETER",
+	})
+	if err != nil {
+		t.Fatalf("Dispatch haul: %v", err)
+	}
+	if _, err := receive(t, p, receiveReq{
+		MovementID: haul.ID, At: "2026-04-01T08:30:00Z",
+		Quantity: litres("4900.000"), Method: "DIP",
+	}); err != nil {
+		t.Fatalf("Receive haul: %v", err)
+	}
+
+	proposed, err := svcclient.Call[proposeFlowsReq, proposeFlowsResp](
+		context.Background(), p.material(), materialSvc+"/ProposeFlows",
+		proposeFlowsReq{TenantID: p.tenant, From: "2026-04-01", To: "2026-04-02",
+			Rounding: "HALF_UP"}, p.opts())
+	if err != nil {
+		t.Fatalf("ProposeFlows: %v", err)
+	}
+	if proposed.Unmeasured != 1 {
+		t.Fatalf("%d unmeasured legs, want the one whose certificate had expired",
+			proposed.Unmeasured)
+	}
+	for _, f := range proposed.Flows {
+		if f.MovementID != load.ID {
+			continue
+		}
+		if !f.Unmeasured {
+			t.Fatalf("a reading taken two months after the certificate expired was weighted at %v",
+				f.Uncertainty)
+		}
+		// The reason has to name the instrument, the certificate and both dates,
+		// because the person reading it has to go and get the thing recalibrated.
+		for _, want := range []string{"Dipstick BMC-81", "CERT-DIP-81", "2026-02-01", "2026-04-01"} {
+			if !strings.Contains(f.UnmeasuredReason, want) {
+				t.Errorf("the reason does not carry %q: %q", want, f.UnmeasuredReason)
+			}
+		}
+	}
+
+	// And a listing of the society's instruments says how many are out of date,
+	// so somebody can find out before a settlement rather than after.
+	list, err := svcclient.Call[struct {
+		TenantID string `json:"tenant_id"`
+	}, struct {
+		Instruments []*instrumentProto `json:"instruments"`
+		Expired     int32              `json:"expired"`
+		AsOf        string             `json:"as_of"`
+	}](context.Background(), p.material(), materialSvc+"/ListInstruments",
+		struct {
+			TenantID string `json:"tenant_id"`
+		}{TenantID: p.tenant}, p.opts())
+	if err != nil {
+		t.Fatalf("ListInstruments: %v", err)
+	}
+	if len(list.Instruments) != 2 {
+		t.Fatalf("%d instruments registered, want 2", len(list.Instruments))
+	}
+	if list.Expired != 1 {
+		t.Errorf("%d instruments report as expired, want the dipstick", list.Expired)
+	}
+}
+
+// An uncertainty with no certificate behind it is refused, and so is a
+// calibration that never expires.
+//
+// There is no table of typical uncertainties by method in this platform and
+// there will not be one. A weighbridge is around a tenth of a per cent and a
+// society's weighbridge is whatever its certificate says; inventing the first
+// would put a number nobody measured into the weighting of a settlement.
+func TestAnInstrumentMustCarryItsCertificateAndAnExpiry(t *testing.T) {
+	p := startPlatform(t)
+	node := mustNode(t, p, "BMC-91", "A cooler", "BULK_COOLER")
+
+	base := registerInstrumentReq{
+		NodeID: node.ID, Method: "DIP", Label: "Dipstick",
+		RelativePPM: 5000, CertificateRef: "CERT-1",
+		CalibratedOn: "2026-01-01", ValidUntil: "2027-01-01",
+	}
+
+	noCert := base
+	noCert.CertificateRef = ""
+	if _, err := registerInstrument(t, p, noCert); err == nil {
+		t.Error("an uncertainty was registered with no certificate behind it")
+	}
+
+	noExpiry := base
+	noExpiry.ValidUntil = ""
+	if _, err := registerInstrument(t, p, noExpiry); err == nil {
+		t.Error("a calibration was registered that never expires")
+	}
+
+	noUncertainty := base
+	noUncertainty.RelativePPM = 0
+	if _, err := registerInstrument(t, p, noUncertainty); err == nil {
+		t.Error("an instrument was registered with no uncertainty at all")
+	}
+
+	both := base
+	both.Absolute = &quantityProto{Value: "5.000", Unit: "LITRES"}
+	if _, err := registerInstrument(t, p, both); err == nil {
+		t.Error("an instrument was registered with both a relative and an absolute uncertainty")
+	}
+
+	if _, err := registerInstrument(t, p, base); err != nil {
+		t.Fatalf("a complete instrument was refused: %v", err)
+	}
+	// One instrument per node per method: two would mean the platform holds two
+	// uncertainties for one measurement and picks one invisibly.
+	if _, err := registerInstrument(t, p, base); err == nil {
+		t.Error("a second dipstick was registered at the same node")
+	}
+}
+
+// Proposing flows without saying how a relative uncertainty rounds is refused.
+//
+// It is a small effect on one flow — a millilitre either way — and it decides
+// which of two nearly-equal legs the reconciler blames when a window does not
+// close. A default here would make that decision invisibly, and the society
+// would never know a choice had been made.
+func TestProposingFlowsWithoutARoundingModeIsRefused(t *testing.T) {
+	p := startPlatform(t)
+
+	cooler := mustNode(t, p, "BMC-95", "A cooler", "BULK_COOLER")
+	tanker := mustNode(t, p, "TS09-UA-5500", "Tanker 9", "TANKER")
+	plant := mustNode(t, p, "PLANT-11", "Sangam plant", "PLANT")
+	if _, err := registerInstrument(t, p, registerInstrumentReq{
+		NodeID: cooler.ID, Method: "DIP", Label: "Dipstick BMC-95",
+		RelativePPM: 5000, CertificateRef: "CERT-DIP-95",
+		CalibratedOn: "2026-01-01", ValidUntil: "2027-01-01",
+	}); err != nil {
+		t.Fatalf("RegisterInstrument: %v", err)
+	}
+
+	load, err := dispatch(t, p, dispatchReq{
+		FromNodeID: cooler.ID, ToNodeID: tanker.ID,
+		At: "2026-05-01T05:00:00Z", Quantity: litres("5000.000"), Method: "DIP",
+	})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if _, err := receive(t, p, receiveReq{
+		MovementID: load.ID, At: "2026-05-01T05:40:00Z",
+		Quantity: litres("4990.000"), Method: "FLOWMETER",
+	}); err != nil {
+		t.Fatalf("Receive: %v", err)
+	}
+	haul, err := dispatch(t, p, dispatchReq{
+		FromNodeID: tanker.ID, ToNodeID: plant.ID,
+		At: "2026-05-01T06:00:00Z", Quantity: litres("4990.000"), Method: "FLOWMETER",
+	})
+	if err != nil {
+		t.Fatalf("Dispatch haul: %v", err)
+	}
+	if _, err := receive(t, p, receiveReq{
+		MovementID: haul.ID, At: "2026-05-01T08:30:00Z",
+		Quantity: litres("4900.000"), Method: "DIP",
+	}); err != nil {
+		t.Fatalf("Receive haul: %v", err)
+	}
+
+	_, err = svcclient.Call[proposeFlowsReq, proposeFlowsResp](
+		context.Background(), p.material(), materialSvc+"/ProposeFlows",
+		proposeFlowsReq{TenantID: p.tenant, From: "2026-05-01", To: "2026-05-02"}, p.opts())
+	if err == nil {
+		t.Fatal("a network was proposed without anybody saying how its uncertainties round")
+	}
+	if !strings.Contains(err.Error(), "rounding") {
+		t.Errorf("the refusal does not say what is missing: %v", err)
+	}
+
+	// With a mode it goes through, so the test is about the mode and not about
+	// the movements.
+	if _, err := svcclient.Call[proposeFlowsReq, proposeFlowsResp](
+		context.Background(), p.material(), materialSvc+"/ProposeFlows",
+		proposeFlowsReq{TenantID: p.tenant, From: "2026-05-01", To: "2026-05-02",
+			Rounding: "HALF_UP"}, p.opts()); err != nil {
+		t.Errorf("a proposal with a rounding mode was refused: %v", err)
+	}
+}
