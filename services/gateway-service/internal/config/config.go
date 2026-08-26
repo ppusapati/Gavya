@@ -30,6 +30,7 @@ type Config struct {
 	IdentityServiceURL     string
 	ProcurementServiceURL  string
 	SettlementServiceURL   string
+	MaterialServiceURL     string
 	TenantServiceURL       string
 	NotificationServiceURL string
 	ReportingServiceURL    string
@@ -77,6 +78,7 @@ func Load() *Config {
 		IdentityServiceURL:     getEnv("IDENTITY_SERVICE_URL", ports.LocalURL(ports.Identity)),
 		ProcurementServiceURL:  getEnv("PROCUREMENT_SERVICE_URL", ports.LocalURL(ports.Procurement)),
 		SettlementServiceURL:   getEnv("SETTLEMENT_SERVICE_URL", ports.LocalURL(ports.Settlement)),
+		MaterialServiceURL:     getEnv("MATERIAL_SERVICE_URL", ports.LocalURL(ports.Material)),
 		AuditServiceURL:        getEnv("AUDIT_SERVICE_URL", ports.LocalURL(ports.Audit)),
 		FileServiceURL:         getEnv("FILE_SERVICE_URL", ports.LocalURL(ports.File)),
 

@@ -76,6 +76,7 @@ func TestEveryUpstreamRoutesARealProcedurePath(t *testing.T) {
 		"/observation.v1.ObservationService/RecordObservation",
 		"/pooling.v1.PoolingService/ValuePool",
 		"/balance.v1.BalanceService/Reconcile",
+		"/material.v1.MaterialService/Dispatch",
 		"/shadowsettlement.v1.ShadowSettlementService/Adjudicate",
 	}
 

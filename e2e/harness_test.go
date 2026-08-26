@@ -92,6 +92,10 @@ var services = []service{
 		needs:    []string{"procurement-service"},
 		envOfDep: map[string]string{"procurement-service": "PROCUREMENT_URL"},
 	},
+	// Material flow is the physical layer balance-service was missing: a node
+	// is a cooler with a code and a tanker with a registration rather than a
+	// string, and a movement is measured at both ends.
+	{name: "material-service", database: "e2e_material", schema: "services/material-service/internal/db/schema.sql"},
 }
 
 // platform is a running set of services, addressed by name.
@@ -143,34 +147,84 @@ func freePort(t *testing.T) int {
 	return l.Addr().(*net.TCPAddr).Port
 }
 
-// startPlatform builds and runs every service, each against its own database.
+// The platform is built and started once for the whole package.
+//
+// It used to be per test, and with nine services that came to roughly eleven
+// seconds of building and launching before each of sixty-five tests — over ten
+// minutes of the suite spent starting processes it had just stopped. The suite
+// crossed Go's default test timeout the day material-service was added, which
+// is the sort of cost that only ever grows.
+//
+// What is not shared is the tenant. Every test still gets its own, so two tests
+// cannot see each other's rows — the isolation the platform enforces is the
+// same isolation the suite relies on, which is a reasonable thing for these
+// tests to be sitting on top of.
+var (
+	sharedOnce     sync.Once
+	sharedPlatform *platform
+	sharedErr      error
+	sharedProcs    []*exec.Cmd
+)
+
+// startPlatform returns the running services, scoped to a tenant of this test's
+// own.
 func startPlatform(t *testing.T) *platform {
 	t.Helper()
-	root := repoRoot(t)
-	binDir := t.TempDir()
+	// dsn skips when no database is configured, and it has to be called with a
+	// live *testing.T for that skip to land on a test rather than in the once.
+	_ = dsn(t, "postgres")
 
-	p := &platform{clients: map[string]*svcclient.Client{}, tenant: newID("tnt")}
+	sharedOnce.Do(func() { sharedPlatform, sharedErr = buildAndStart() })
+	if sharedErr != nil {
+		t.Fatalf("start the platform: %v", sharedErr)
+	}
+	return &platform{clients: sharedPlatform.clients, tenant: newID("tnt")}
+}
+
+// buildAndStart builds every service and runs it against its own database.
+//
+// Returns an error rather than taking a *testing.T, because it runs inside a
+// sync.Once: a t.Fatalf in there would fail whichever test happened to be first
+// and leave the rest reporting a nil platform.
+func buildAndStart() (*platform, error) {
+	root, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+	root = filepath.Dir(root)
+
+	binDir, err := os.MkdirTemp("", "gavya-e2e")
+	if err != nil {
+		return nil, err
+	}
+
+	p := &platform{clients: map[string]*svcclient.Client{}}
 	// Where each service ended up, so one that calls another can be told.
 	addrs := map[string]string{}
 
 	for _, svc := range services {
-		prepareDatabase(t, svc)
+		if err := prepareDatabaseErr(root, svc); err != nil {
+			return nil, err
+		}
 
 		bin := filepath.Join(binDir, svc.name)
 		build := exec.Command("go", "build", "-o", bin, "./cmd/server")
 		build.Dir = filepath.Join(root, "services", svc.name)
 		if out, err := build.CombinedOutput(); err != nil {
-			t.Fatalf("build %s: %v\n%s", svc.name, err, out)
+			return nil, fmt.Errorf("build %s: %v\n%s", svc.name, err, out)
 		}
 
-		port := freePort(t)
+		port, err := freePortErr()
+		if err != nil {
+			return nil, err
+		}
 		addr := fmt.Sprintf("127.0.0.1:%d", port)
 		addrs[svc.name] = addr
 
 		cmd := exec.Command(bin)
 		cmd.Env = append(os.Environ(),
 			"SERVER_ADDR="+addr,
-			"DATABASE_URL="+dsn(t, svc.database),
+			"DATABASE_URL="+dsnFor(svc.database),
 			// The ML tier is not part of this harness. Leaving these empty is a
 			// supported deployment, and the assertions below hold without it —
 			// which is itself worth proving.
@@ -185,33 +239,70 @@ func startPlatform(t *testing.T) *platform {
 				// A dependency declared after its dependent would leave this
 				// service pointed at nothing, and the failure would surface as
 				// an empty result rather than as a broken harness.
-				t.Fatalf("%s needs %s, which has not been started yet; move it earlier in the "+
-					"services list", svc.name, dep)
+				return nil, fmt.Errorf("%s needs %s, which has not been started yet; move it "+
+					"earlier in the services list", svc.name, dep)
 			}
 			variable, named := svc.envOfDep[dep]
 			if !named {
-				t.Fatalf("%s needs %s but does not say which variable carries its address", svc.name, dep)
+				return nil, fmt.Errorf("%s needs %s but does not say which variable carries its address",
+					svc.name, dep)
 			}
 			cmd.Env = append(cmd.Env, variable+"=http://"+depAddr)
 		}
 		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 		if err := cmd.Start(); err != nil {
-			t.Fatalf("start %s: %v", svc.name, err)
+			return nil, fmt.Errorf("start %s: %v", svc.name, err)
 		}
-		t.Cleanup(func() {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-		})
+		sharedProcs = append(sharedProcs, cmd)
 
 		client := svcclient.New(svcclient.Config{
 			BaseURL: "http://" + addr,
 			Timeout: 10 * time.Second,
 		})
-		waitReady(t, client, svc.name)
+		if err := waitReadyErr(client); err != nil {
+			return nil, fmt.Errorf("%s did not become ready: %w", svc.name, err)
+		}
 		p.clients[svc.name] = client
 	}
+	return p, nil
+}
 
-	return p
+// TestMain stops the shared services once every test has finished.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	for _, cmd := range sharedProcs {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}
+	os.Exit(code)
+}
+
+func dsnFor(database string) string {
+	return fmt.Sprintf(os.Getenv("TEST_DATABASE_DSN"), database)
+}
+
+func freePortErr() (int, error) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port, nil
+}
+
+func waitReadyErr(c *svcclient.Client) error {
+	deadline := time.Now().Add(30 * time.Second)
+	var last error
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		last = c.Health(ctx)
+		cancel()
+		if last == nil {
+			return nil
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	return last
 }
 
 // prepared remembers which databases this process has already set up, so the
@@ -229,15 +320,11 @@ var (
 // suite that silently assumes a hand-migrated database fails with a connection
 // error the first time someone new runs it, and passes against a schema that
 // may be several changes behind.
-func prepareDatabase(t *testing.T, svc service) {
-	t.Helper()
+func prepareDatabaseErr(root string, svc service) error {
 	prepareMu.Lock()
 	defer prepareMu.Unlock()
 	if prepared[svc.database] {
-		if err := schemaOnce[svc.database]; err != nil {
-			t.Fatalf("prepare %s: %v", svc.database, err)
-		}
-		return
+		return schemaOnce[svc.database]
 	}
 	prepared[svc.database] = true
 
@@ -247,7 +334,7 @@ func prepareDatabase(t *testing.T, svc service) {
 
 		// "postgres" is the maintenance database every server has; a database
 		// cannot be created from a connection to itself.
-		admin, err := pgx.Connect(ctx, dsn(t, "postgres"))
+		admin, err := pgx.Connect(ctx, dsnFor("postgres"))
 		if err != nil {
 			return fmt.Errorf("connect to the maintenance database: %w", err)
 		}
@@ -267,7 +354,7 @@ func prepareDatabase(t *testing.T, svc service) {
 			}
 		}
 
-		conn, err := pgx.Connect(ctx, dsn(t, svc.database))
+		conn, err := pgx.Connect(ctx, dsnFor(svc.database))
 		if err != nil {
 			return fmt.Errorf("connect to %s: %w", svc.database, err)
 		}
@@ -278,12 +365,8 @@ func prepareDatabase(t *testing.T, svc service) {
 		// That is a real deployment constraint — the platform runs one database
 		// for all services — and applying it here is what makes this harness
 		// reflect it rather than contradict it.
-		//
-		// Without this a service that records an audit row works under compose
-		// and fails here, which is the wrong way round for a harness to be
-		// wrong.
 		for _, path := range append(sharedSchemas, svc.schema) {
-			sql, err := os.ReadFile(filepath.Join(repoRoot(t), path))
+			sql, err := os.ReadFile(filepath.Join(root, path))
 			if err != nil {
 				return fmt.Errorf("read %s: %w", path, err)
 			}
@@ -299,23 +382,9 @@ func prepareDatabase(t *testing.T, svc service) {
 
 	schemaOnce[svc.database] = err
 	if err != nil {
-		t.Fatalf("prepare %s: %v", svc.database, err)
+		return fmt.Errorf("prepare %s: %w", svc.database, err)
 	}
-}
-
-func waitReady(t *testing.T, c *svcclient.Client, name string) {
-	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		err := c.Health(ctx)
-		cancel()
-		if err == nil {
-			return
-		}
-		time.Sleep(150 * time.Millisecond)
-	}
-	t.Fatalf("%s did not become ready", name)
+	return nil
 }
 
 func (p *platform) canonical() *svcclient.Client { return p.clients["canonical-service"] }
@@ -330,6 +399,9 @@ func (p *platform) procurement() *svcclient.Client {
 }
 func (p *platform) settlement() *svcclient.Client {
 	return p.clients["settlement-service"]
+}
+func (p *platform) material() *svcclient.Client {
+	return p.clients["material-service"]
 }
 
 func (p *platform) opts() svcclient.CallOptions {

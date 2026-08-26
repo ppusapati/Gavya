@@ -11,6 +11,7 @@ use (
 	./services/pooling-service
 	./services/procurement-service
 	./services/settlement-service
+	./services/material-service
 	./services/shadow-settlement-service
 	./services/identity-service
 	./services/observation-service
