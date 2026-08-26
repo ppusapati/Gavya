@@ -1067,3 +1067,261 @@ func TestTheDatabaseRefusesOneCollectionInTwoCycles(t *testing.T) {
 		t.Errorf("the refusal came from somewhere unexpected: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// The printed statement
+// ---------------------------------------------------------------------------
+
+type printStatementReq struct {
+	TenantID    string            `json:"tenant_id"`
+	CycleID     string            `json:"cycle_id"`
+	ProducerRef string            `json:"producer_ref"`
+	Width       int32             `json:"width,omitempty"`
+	SocietyName string            `json:"society_name,omitempty"`
+	Labels      map[string]string `json:"labels,omitempty"`
+}
+
+type printStatementResp struct {
+	ProducerRef string `json:"producer_ref"`
+	Page        string `json:"page"`
+	Width       int32  `json:"width"`
+}
+
+type printCycleReq struct {
+	TenantID    string `json:"tenant_id"`
+	CycleID     string `json:"cycle_id"`
+	Width       int32  `json:"width,omitempty"`
+	SocietyName string `json:"society_name,omitempty"`
+}
+
+type printCycleResp struct {
+	Statements []printStatementResp `json:"statements"`
+	Width      int32                `json:"width"`
+}
+
+func printStatement(t *testing.T, p *platform, in printStatementReq) (*printStatementResp, error) {
+	t.Helper()
+	in.TenantID = p.tenant
+	return svcclient.Call[printStatementReq, printStatementResp](
+		context.Background(), p.settlement(), settlementSvc+"/PrintProducerStatement", in, p.opts())
+}
+
+// The page a member is handed, printed from a fortnight that actually went
+// through the platform.
+//
+// The renderer has its own tests against a statement built in memory. This one
+// exists because those cannot show that the figures reaching the page are the
+// figures the settlement computed — a renderer that laid out beautiful pages of
+// somebody else's numbers would pass every one of them.
+func TestTheFortnightComesOutOfThePrinterAsAPageAMemberCanCheck(t *testing.T) {
+	p := startPlatform(t)
+	declareChart(t, p, "March", "2026-03-01T00:00:00Z", "")
+
+	producer := newID("prod")
+	deliverFortnight(t, p, producer, marchFirstTen)
+	if _, err := openRecovery(t, p, openRecoveryReq{
+		ProducerRef: producer, Kind: "ADVANCE", Reference: "shed",
+		Principal: "5000.00", Instalment: "1000.00", Priority: 1, OpenedOn: "2026-01-10",
+	}); err != nil {
+		t.Fatalf("OpenRecovery: %v", err)
+	}
+
+	cycle := mustOpenCycle(t, p, "March 1-15", "2026-03-01", "2026-03-15", "CAP_AT_EARNINGS")
+	if _, err := gather(t, p, cycle.ID); err != nil {
+		t.Fatalf("GatherCycle: %v", err)
+	}
+
+	out, err := printStatement(t, p, printStatementReq{
+		CycleID: cycle.ID, ProducerRef: producer, Width: 80,
+		SocietyName: "Kothapalli Milk Producers Co-operative Society",
+	})
+	if err != nil {
+		t.Fatalf("PrintProducerStatement: %v", err)
+	}
+	page := out.Page
+	t.Logf("the page a member is handed:\n%s", page)
+
+	// The figures on the page are the figures the settlement reached.
+	pay := payableFor(t, p, cycle.ID, producer)
+	for _, want := range []string{pay.Gross, pay.Net, "-" + pay.Deducted} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the page does not carry %s:\n%s", want, page)
+		}
+	}
+	// Ten deliveries, each on the page.
+	if n := strings.Count(page, "430.00"); n < 10 {
+		t.Errorf("the page shows %d deliveries of 430.00, want at least 10:\n%s", n, page)
+	}
+	if !strings.Contains(page, "Total litres") || !strings.Contains(page, "100.000") {
+		t.Errorf("the page does not total the milk:\n%s", page)
+	}
+	// And the advance is shown as money taken back, not as a mystery.
+	if !strings.Contains(page, "Advance (shed)") {
+		t.Errorf("the page does not say what the deduction was for:\n%s", page)
+	}
+
+	// Every line fits the printer.
+	for i, line := range strings.Split(strings.TrimRight(page, "\n"), "\n") {
+		if n := len([]rune(line)); n > 80 {
+			t.Errorf("line %d is %d columns and would wrap: %q", i+1, n, line)
+		}
+	}
+
+	// The deliveries on the page add up to the gross on the page. This is the
+	// arithmetic a member does with their own slips, done here.
+	var lines int64
+	for _, line := range strings.Split(page, "\n") {
+		if !strings.Contains(line, "Mar 2026") || !strings.Contains(line, "Morning") {
+			continue
+		}
+		fields := strings.Fields(line)
+		lines += mustMinorUnits(t, fields[len(fields)-1])
+	}
+	if lines != mustMinorUnits(t, pay.Gross) {
+		t.Errorf("the deliveries printed on the page come to %d, and the page reads a gross of %s",
+			lines, pay.Gross)
+	}
+}
+
+// A printer too narrow for the figures is refused, and the refusal says how
+// wide the page has to be.
+//
+// The alternative is a statement with a digit missing, which is not a printing
+// fault a clerk notices — it is a plausible number on the one piece of paper a
+// member keeps.
+func TestAPrinterTooNarrowForTheFiguresIsRefused(t *testing.T) {
+	p := startPlatform(t)
+	declareChart(t, p, "March", "2026-03-01T00:00:00Z", "")
+
+	producer := newID("prod")
+	deliverFortnight(t, p, producer, marchFirstTen)
+	cycle := mustOpenCycle(t, p, "March 1-15", "2026-03-01", "2026-03-15", "CAP_AT_EARNINGS")
+	if _, err := gather(t, p, cycle.ID); err != nil {
+		t.Fatalf("GatherCycle: %v", err)
+	}
+
+	_, err := printStatement(t, p, printStatementReq{
+		CycleID: cycle.ID, ProducerRef: producer, Width: 34,
+	})
+	if err == nil {
+		t.Fatal("a statement was laid out on a 34-column page")
+	}
+	if !strings.Contains(err.Error(), "columns") {
+		t.Errorf("the refusal does not say the page is too narrow: %v", err)
+	}
+}
+
+// A society's own words reach the page, and the English defaults do not sit
+// beside them.
+func TestASocietyPrintsItsOwnWords(t *testing.T) {
+	p := startPlatform(t)
+	declareChart(t, p, "March", "2026-03-01T00:00:00Z", "")
+
+	producer := newID("prod")
+	deliverFortnight(t, p, producer, marchFirstTen)
+	cycle := mustOpenCycle(t, p, "March 1-15", "2026-03-01", "2026-03-15", "CAP_AT_EARNINGS")
+	if _, err := gather(t, p, cycle.ID); err != nil {
+		t.Fatalf("GatherCycle: %v", err)
+	}
+
+	out, err := printStatement(t, p, printStatementReq{
+		CycleID: cycle.ID, ProducerRef: producer, Width: 80,
+		Labels: map[string]string{"net": "CHELLINCHAVALASINA MOTTAM", "member": "Sabhyudu"},
+	})
+	if err != nil {
+		t.Fatalf("PrintProducerStatement: %v", err)
+	}
+	if !strings.Contains(out.Page, "CHELLINCHAVALASINA MOTTAM") || !strings.Contains(out.Page, "Sabhyudu") {
+		t.Errorf("the society's own words are not on the page:\n%s", out.Page)
+	}
+	if strings.Contains(out.Page, "NET PAYABLE") {
+		t.Errorf("the English default was printed as well:\n%s", out.Page)
+	}
+	// The words it did not override keep the defaults rather than going blank.
+	if !strings.Contains(out.Page, "Society") || !strings.Contains(out.Page, "Gross") {
+		t.Errorf("overriding two labels blanked the others:\n%s", out.Page)
+	}
+}
+
+// The whole fortnight printed in one run, which is what a society does.
+//
+// The stack has to be all or nothing. A run that produced pages for the first
+// hundred and ninety-nine members and failed on the two hundredth leaves those
+// hundred and ninety-nine believing the settlement is done, and the last one
+// with nothing to compare against.
+func TestACycleIsPrintedAsOneStackOrNotAtAll(t *testing.T) {
+	p := startPlatform(t)
+	declareChart(t, p, "March", "2026-03-01T00:00:00Z", "")
+
+	producers := []string{newID("prod"), newID("prod"), newID("prod")}
+	for _, ref := range producers {
+		deliverFortnight(t, p, ref, marchFirstTen[:4])
+	}
+	cycle := mustOpenCycle(t, p, "March 1-15", "2026-03-01", "2026-03-15", "CAP_AT_EARNINGS")
+	if _, err := gather(t, p, cycle.ID); err != nil {
+		t.Fatalf("GatherCycle: %v", err)
+	}
+
+	stack, err := svcclient.Call[printCycleReq, printCycleResp](
+		context.Background(), p.settlement(), settlementSvc+"/PrintCycleStatements",
+		printCycleReq{TenantID: p.tenant, CycleID: cycle.ID, Width: 80,
+			SocietyName: "Kothapalli Milk Producers"}, p.opts())
+	if err != nil {
+		t.Fatalf("PrintCycleStatements: %v", err)
+	}
+	if len(stack.Statements) != len(producers) {
+		t.Fatalf("the stack has %d pages for %d members", len(stack.Statements), len(producers))
+	}
+	seen := map[string]bool{}
+	for _, s := range stack.Statements {
+		seen[s.ProducerRef] = true
+		if !strings.Contains(s.Page, "MILK PAYMENT STATEMENT") {
+			t.Errorf("%s got a page that is not a statement:\n%s", s.ProducerRef, s.Page)
+		}
+		// Four mornings of ten litres at 43.00.
+		if !strings.Contains(s.Page, "1720.00") {
+			t.Errorf("%s: the page does not show the fortnight's 1720.00:\n%s", s.ProducerRef, s.Page)
+		}
+		// One member's page must not carry another member's reference.
+		for _, other := range producers {
+			if other != s.ProducerRef && strings.Contains(s.Page, other) {
+				t.Errorf("%s's page carries %s's reference", s.ProducerRef, other)
+			}
+		}
+	}
+	for _, ref := range producers {
+		if !seen[ref] {
+			t.Errorf("no page was printed for %s", ref)
+		}
+	}
+
+	// And a narrow printer fails the whole run rather than half of it.
+	_, err = svcclient.Call[printCycleReq, printCycleResp](
+		context.Background(), p.settlement(), settlementSvc+"/PrintCycleStatements",
+		printCycleReq{TenantID: p.tenant, CycleID: cycle.ID, Width: 34}, p.opts())
+	if err == nil {
+		t.Error("a stack was printed on a page too narrow for the figures")
+	}
+}
+
+// A cycle nobody has gathered has nothing to print, and says so rather than
+// producing a stack of empty pages.
+func TestACycleThatHasNotBeenGatheredPrintsNothing(t *testing.T) {
+	p := startPlatform(t)
+	declareChart(t, p, "March", "2026-03-01T00:00:00Z", "")
+	producer := newID("prod")
+	deliverFortnight(t, p, producer, marchFirstTen)
+
+	cycle := mustOpenCycle(t, p, "March 1-15", "2026-03-01", "2026-03-15", "CAP_AT_EARNINGS")
+	if _, err := printStatement(t, p, printStatementReq{
+		CycleID: cycle.ID, ProducerRef: producer, Width: 80,
+	}); err == nil {
+		t.Error("a statement was printed for a cycle that has not been gathered")
+	}
+
+	if _, err := svcclient.Call[printCycleReq, printCycleResp](
+		context.Background(), p.settlement(), settlementSvc+"/PrintCycleStatements",
+		printCycleReq{TenantID: p.tenant, CycleID: cycle.ID, Width: 80}, p.opts()); err == nil {
+		t.Error("a stack was printed for a cycle that has not been gathered")
+	}
+}

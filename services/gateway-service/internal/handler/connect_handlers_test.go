@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"p9e.in/samavaya/packages/p9log"
@@ -35,6 +36,18 @@ func TestRegisterDoesNotPanic(t *testing.T) {
 // Connect addresses a procedure as /<package>.<Service>/<Method>. A pattern that
 // does not end in "/" matches only that exact path, so routing must be done by
 // prefix rather than by registering the prefix as a ServeMux pattern.
+// Every upstream the gateway registers is reachable by a real procedure path,
+// and every procedure path reaches an upstream.
+//
+// The second half is the one that matters and it was missing. This was a list
+// of paths checked to route, which catches an upstream that is broken and says
+// nothing about one that is absent — so identity and procurement were both
+// added to the gateway without ever appearing here, and the test named
+// "EveryUpstream" passed throughout.
+//
+// Now a route with no procedure listed against it fails. Adding a service to
+// the gateway without naming one of its procedures here is a build failure
+// rather than a service nobody can reach.
 func TestEveryUpstreamRoutesARealProcedurePath(t *testing.T) {
 	h, _ := newHandler(t)
 
@@ -50,6 +63,9 @@ func TestEveryUpstreamRoutesARealProcedurePath(t *testing.T) {
 		"/inventory.v1.InventoryService/GetStock",
 		"/order.v1.OrderService/GetOrder",
 		"/billing.v1.BillingService/GetInvoice",
+		"/gavya.identity.v1.IdentityService/SignIn",
+		"/procurement.v1.ProcurementService/RecordCollection",
+		"/settlement.v1.SettlementService/GatherCycle",
 		"/tenant.v1.TenantService/GetTenant",
 		"/notification.v1.NotificationService/Send",
 		"/reporting.v1.ReportingService/RequestReport",
@@ -67,6 +83,82 @@ func TestEveryUpstreamRoutesARealProcedurePath(t *testing.T) {
 		if !routeExists(h, path) {
 			t.Errorf("no upstream is registered for %s", path)
 		}
+	}
+
+	// And the other direction: no upstream is left unexercised.
+	covered := map[string]bool{}
+	for _, path := range procedures {
+		for _, rt := range h.routes {
+			if strings.HasPrefix(path, rt.prefix) {
+				covered[rt.prefix] = true
+			}
+		}
+	}
+	for _, rt := range h.routes {
+		if !covered[rt.prefix] {
+			t.Errorf("the gateway routes %s and no procedure here exercises it, so nothing "+
+				"proves a caller can reach that service", rt.prefix)
+		}
+	}
+}
+
+// A settlement call and a shadow-settlement call reach different services.
+//
+// The two compute different numbers about the same money — one is what the
+// incumbent paid, the other is what this platform says should have been paid —
+// so answering a question about either with the other is the worst routing
+// error available here, and it is a plausible one: "shadowsettlement.v1."
+// contains "settlement.v1." as a substring.
+//
+// What actually keeps them apart is the longest-prefix-first ordering, which
+// TestLongestPrefixWins guards: "/shadowsettlement.v1." is the longer prefix
+// and is tried first. Prefix matching rather than containment is a second line
+// that this pair does not need — swapping HasPrefix for Contains in the
+// dispatcher leaves every test here passing, and that is worth writing down
+// rather than implying a protection that is not doing the work.
+//
+// Driven through the real handler with real upstreams. Walking the route table
+// with the test's own matcher would check the matching agrees with itself
+// whatever the dispatcher does; an earlier version of this did exactly that.
+func TestShadowSettlementAndSettlementDoNotShareARoute(t *testing.T) {
+	settlement, shadow := newUpstream(t), newUpstream(t)
+
+	cfg := config.Load()
+	cfg.SettlementServiceURL = settlement.srv.URL
+	cfg.ShadowSettlementServiceURL = shadow.srv.URL
+	h := New(cfg, p9log.NewHelper(p9log.DefaultLogger)).
+		WithVerifier(stubVerifier{tenant: "T_A", user: "US_1"})
+	mux := http.NewServeMux()
+	h.Register(mux)
+
+	call := func(path string) {
+		t.Helper()
+		settlement.got, shadow.got = nil, nil
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		req.Header.Set("Authorization", "Bearer SE_1")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status %d", path, rec.Code)
+		}
+	}
+
+	call("/settlement.v1.SettlementService/GatherCycle")
+	if settlement.got == nil {
+		t.Error("a settlement call did not reach the settlement service")
+	}
+	if shadow.got != nil {
+		t.Error("a settlement call reached the shadow-settlement service")
+	}
+
+	call("/shadowsettlement.v1.ShadowSettlementService/Adjudicate")
+	if shadow.got == nil {
+		t.Error("a shadow-settlement call did not reach the shadow-settlement service")
+	}
+	if settlement.got != nil {
+		t.Error("a shadow-settlement call reached the service that settles for real, which " +
+			"would answer a question about what the incumbent paid with what we say they " +
+			"should have")
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"github.com/ppusapati/gavya/services/settlement-service/internal/domain"
 	"github.com/ppusapati/gavya/services/settlement-service/internal/procurement"
 	"github.com/ppusapati/gavya/services/settlement-service/internal/repository"
+	"github.com/ppusapati/gavya/services/settlement-service/internal/statement"
 )
 
 type IDs interface{ New() string }
@@ -263,4 +264,55 @@ func (s *Service) Statement(ctx context.Context, tenantID, cycleID, producerRef 
 		return nil, domain.ErrNoProducer
 	}
 	return s.repo.Statement(ctx, tenantID, cycleID, producerRef)
+}
+
+// PrintStatement lays a producer's settlement out as the page they are handed.
+//
+// The same figures as Statement, arranged for a printer rather than for a
+// program. It is a separate procedure rather than a field on the JSON because
+// the two have different failure modes: a statement that cannot be laid out on
+// a narrow page is still perfectly good data, and a caller reading the figures
+// should not be refused because somebody else's printer is 40 columns.
+func (s *Service) PrintStatement(ctx context.Context, tenantID, cycleID, producerRef string, o statement.Options) (string, error) {
+	st, err := s.Statement(ctx, tenantID, cycleID, producerRef)
+	if err != nil {
+		return "", err
+	}
+	return statement.Render(st, o)
+}
+
+// PrintCycle lays out every producer's statement for a cycle, in one run.
+//
+// This is what a society actually does: one press at the end of the fortnight
+// and a stack of pages to hand out. Producing them one call at a time works and
+// means a clerk discovers the two hundredth is unprintable after handing out
+// a hundred and ninety-nine.
+//
+// So a page that will not lay out fails the whole run. A partial stack is worse
+// than no stack: the members who got one believe the settlement is done and the
+// members who did not have nothing to compare against.
+func (s *Service) PrintCycle(ctx context.Context, tenantID, cycleID string, o statement.Options) ([]PrintedStatement, error) {
+	payables, err := s.repo.ListPayables(ctx, tenantID, cycleID)
+	if err != nil {
+		return nil, err
+	}
+	if len(payables) == 0 {
+		return nil, fmt.Errorf("this cycle has no payables, so there is nothing to print: " +
+			"it has not been gathered")
+	}
+	out := make([]PrintedStatement, 0, len(payables))
+	for _, p := range payables {
+		page, err := s.PrintStatement(ctx, tenantID, cycleID, p.ProducerRef, o)
+		if err != nil {
+			return nil, fmt.Errorf("producer %s: %w", p.ProducerRef, err)
+		}
+		out = append(out, PrintedStatement{ProducerRef: p.ProducerRef, Page: page})
+	}
+	return out, nil
+}
+
+// PrintedStatement is one member's page.
+type PrintedStatement struct {
+	ProducerRef string
+	Page        string
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/ppusapati/gavya/services/settlement-service/internal/procurement"
 	"github.com/ppusapati/gavya/services/settlement-service/internal/repository"
 	"github.com/ppusapati/gavya/services/settlement-service/internal/service"
+	"github.com/ppusapati/gavya/services/settlement-service/internal/statement"
 )
 
 const ServiceName = "settlement.v1.SettlementService"
@@ -45,6 +46,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	route("HoldPayable", connectjson.Unary(h.HoldPayable))
 
 	route("GetProducerStatement", connectjson.Unary(h.GetProducerStatement))
+	route("PrintProducerStatement", connectjson.Unary(h.PrintProducerStatement))
+	route("PrintCycleStatements", connectjson.Unary(h.PrintCycleStatements))
 }
 
 // ---------------------------------------------------------------------------
@@ -341,10 +344,10 @@ type ListPayablesRequest struct {
 type ListPayablesResponse struct {
 	Payables []*PayableProto `json:"payables"`
 	// TotalNet is what the cycle will actually pay out.
-	TotalNet          string `json:"total_net,omitempty"`
-	TotalNetMinorUnits int64 `json:"total_net_minor_units"`
-	TotalGross        string `json:"total_gross,omitempty"`
-	Currency          string `json:"currency,omitempty"`
+	TotalNet           string `json:"total_net,omitempty"`
+	TotalNetMinorUnits int64  `json:"total_net_minor_units"`
+	TotalGross         string `json:"total_gross,omitempty"`
+	Currency           string `json:"currency,omitempty"`
 }
 
 func (h *Handler) ListPayables(ctx context.Context, req *connect.Request[ListPayablesRequest]) (*connect.Response[ListPayablesResponse], error) {
@@ -612,6 +615,21 @@ func classify(err error) error {
 	if errors.As(err, &orphaned) {
 		return connect.NewError(connect.CodeFailedPrecondition, err)
 	}
+	// A page too narrow for its figures is the caller's setting, not a fault
+	// here. A statement that does not reconcile is neither — it means the stored
+	// figures disagree with each other, which is a question for a person.
+	var narrow *statement.ErrTooNarrow
+	if errors.As(err, &narrow) {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	var noPayable *statement.ErrNoPayable
+	if errors.As(err, &noPayable) {
+		return connect.NewError(connect.CodeFailedPrecondition, err)
+	}
+	var wonky *statement.ErrDoesNotReconcile
+	if errors.As(err, &wonky) {
+		return connect.NewError(connect.CodeInternal, err)
+	}
 	switch {
 	case errors.Is(err, repository.ErrNotFound):
 		return connect.NewError(connect.CodeNotFound, err)
@@ -632,4 +650,153 @@ func classify(err error) error {
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	return connect.NewError(connect.CodeInternal, err)
+}
+
+// PrintProducerStatement lays one member's settlement out for a printer.
+
+type PrintStatementRequest struct {
+	TenantID    string `json:"tenant_id"`
+	CycleID     string `json:"cycle_id"`
+	ProducerRef string `json:"producer_ref"`
+
+	// Width is the printer. Omitted means the 80-column dot matrix most of
+	// these societies own.
+	Width int32 `json:"width,omitempty"`
+	// SocietyName is what the co-operative calls itself. A member recognises
+	// "Kothapalli Milk Producers" and has never seen "SOC_KOTHAPALLI".
+	SocietyName string `json:"society_name,omitempty"`
+	// Labels lets a society supply its own words. Any field left empty keeps
+	// the English default; supplying some and not others is a half-translated
+	// page, so a society that supplies any should supply all.
+	Labels map[string]string `json:"labels,omitempty"`
+}
+
+type PrintStatementResponse struct {
+	ProducerRef string `json:"producer_ref"`
+	// Page is the statement, newline-separated, ready to send to a printer.
+	Page string `json:"page"`
+	// Width is what it was laid out for, echoed back so a caller that omitted
+	// it knows what it got.
+	Width int32 `json:"width"`
+}
+
+func (h *Handler) PrintProducerStatement(ctx context.Context, req *connect.Request[PrintStatementRequest]) (*connect.Response[PrintStatementResponse], error) {
+	m := req.Msg
+	o := printOptions(*m)
+	page, err := h.svc.PrintStatement(ctx, m.TenantID, m.CycleID, m.ProducerRef, o)
+	if err != nil {
+		return nil, classify(err)
+	}
+	return connect.NewResponse(&PrintStatementResponse{
+		ProducerRef: m.ProducerRef, Page: page, Width: int32(effectiveWidth(o)),
+	}), nil
+}
+
+type PrintCycleRequest struct {
+	TenantID    string            `json:"tenant_id"`
+	CycleID     string            `json:"cycle_id"`
+	Width       int32             `json:"width,omitempty"`
+	SocietyName string            `json:"society_name,omitempty"`
+	Labels      map[string]string `json:"labels,omitempty"`
+}
+
+type PrintCycleResponse struct {
+	Statements []PrintStatementResponse `json:"statements"`
+	Width      int32                    `json:"width"`
+}
+
+// PrintCycleStatements lays out every member's page in one run, which is what a
+// society actually does at the end of a fortnight.
+func (h *Handler) PrintCycleStatements(ctx context.Context, req *connect.Request[PrintCycleRequest]) (*connect.Response[PrintCycleResponse], error) {
+	m := req.Msg
+	o := printOptions(PrintStatementRequest{
+		Width: m.Width, SocietyName: m.SocietyName, Labels: m.Labels,
+	})
+	pages, err := h.svc.PrintCycle(ctx, m.TenantID, m.CycleID, o)
+	if err != nil {
+		return nil, classify(err)
+	}
+	out := &PrintCycleResponse{
+		Statements: make([]PrintStatementResponse, 0, len(pages)),
+		Width:      int32(effectiveWidth(o)),
+	}
+	for _, p := range pages {
+		out.Statements = append(out.Statements, PrintStatementResponse{
+			ProducerRef: p.ProducerRef, Page: p.Page, Width: out.Width,
+		})
+	}
+	return connect.NewResponse(out), nil
+}
+
+func effectiveWidth(o statement.Options) int {
+	if o.Width == 0 {
+		return statement.DefaultWidth
+	}
+	return o.Width
+}
+
+func printOptions(m PrintStatementRequest) statement.Options {
+	o := statement.Options{Width: int(m.Width), SocietyName: m.SocietyName}
+	o.Labels = statement.DefaultLabels()
+	// Applied field by field so a society can override the words it cares about
+	// without having to restate the twenty it does not. An unknown key is
+	// ignored rather than refused: a caller sending "titel" gets the English
+	// title, which is visible on the page, rather than a failed print run at
+	// the end of a fortnight.
+	for k, v := range m.Labels {
+		if v == "" {
+			continue
+		}
+		setLabel(&o.Labels, k, v)
+	}
+	return o
+}
+
+func setLabel(l *statement.Labels, key, value string) {
+	switch key {
+	case "title":
+		l.Title = value
+	case "member":
+		l.Member = value
+	case "society":
+		l.Society = value
+	case "period":
+		l.Period = value
+	case "cycle":
+		l.Cycle = value
+	case "date":
+		l.Date = value
+	case "shift":
+		l.Shift = value
+	case "quantity":
+		l.Quantity = value
+	case "rate":
+		l.Rate = value
+	case "amount":
+		l.Amount = value
+	case "morning":
+		l.Morning = value
+	case "evening":
+		l.Evening = value
+	case "total":
+		l.Total = value
+	case "gross":
+		l.Gross = value
+	case "less":
+		l.Less = value
+	case "net":
+		l.Net = value
+	case "carried_forward":
+		l.CarriedFwd = value
+	case "paid":
+		l.Paid = value
+	case "reference":
+		l.Reference = value
+	case "held":
+		l.Held = value
+	case "not_yet_paid":
+		l.NotYetPaid = value
+	case "no_milk":
+		l.NoMilk = value
+	}
 }

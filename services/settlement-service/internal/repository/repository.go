@@ -112,8 +112,8 @@ func (r *repo) CreateCycle(ctx context.Context, c *domain.Cycle) (*domain.Cycle,
 		Action: "open_payment_cycle", ResourceType: "payment_cycle", ResourceID: c.ID,
 		After: map[string]any{
 			"society_code": c.SocietyCode, "name": c.Name,
-			"period_start": c.PeriodStart.Format("2006-01-02"),
-			"period_end":   c.PeriodEnd.Format("2006-01-02"),
+			"period_start":     c.PeriodStart.Format("2006-01-02"),
+			"period_end":       c.PeriodEnd.Format("2006-01-02"),
 			"deduction_policy": string(c.Policy), "currency": c.Currency,
 		},
 		ServiceName: serviceName,
@@ -368,8 +368,8 @@ func (r *repo) AbandonCycle(ctx context.Context, tenantID, cycleID, actor string
 
 	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
 		Action: "abandon_payment_cycle", ResourceType: "payment_cycle", ResourceID: cycleID,
-		Before: map[string]any{"status": status},
-		After:  map[string]any{"status": string(domain.CycleAbandoned), "deductions_reversed": len(reversals)},
+		Before:      map[string]any{"status": status},
+		After:       map[string]any{"status": string(domain.CycleAbandoned), "deductions_reversed": len(reversals)},
 		ServiceName: serviceName,
 	}); err != nil {
 		return err
@@ -420,8 +420,8 @@ func (r *repo) ApproveCycle(ctx context.Context, tenantID, cycleID, actor string
 
 	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
 		Action: "approve_payment_cycle", ResourceType: "payment_cycle", ResourceID: cycleID,
-		Before: map[string]any{"status": status},
-		After:  map[string]any{"status": string(domain.CycleApproved)},
+		Before:      map[string]any{"status": status},
+		After:       map[string]any{"status": string(domain.CycleApproved)},
 		ServiceName: serviceName,
 	}); err != nil {
 		return nil, err
@@ -628,8 +628,8 @@ func (r *repo) HoldPayable(ctx context.Context, tenantID, id, reason, actor stri
 	}
 	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
 		Action: "hold_producer_payment", ResourceType: "producer_payable", ResourceID: id,
-		Before: map[string]any{"status": status},
-		After:  map[string]any{"status": string(domain.PayableHeld), "reason": reason},
+		Before:      map[string]any{"status": status},
+		After:       map[string]any{"status": string(domain.PayableHeld), "reason": reason},
 		ServiceName: serviceName,
 	}); err != nil {
 		return nil, err
