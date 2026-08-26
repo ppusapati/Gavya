@@ -44,10 +44,64 @@ const (
 	Note Severity = "note"
 )
 
+// Kind identifies a finding for a program rather than for a person.
+//
+// The title reads well and is formatted with counts and column names in it, so
+// matching on it is matching on prose that will be reworded. A caller deciding
+// what to do about a finding — an importer, say, working out whether a vendor
+// profile already answers it — needs something stable.
+type Kind string
+
+const (
+	KindAmbiguousDate      Kind = "ambiguous_date"
+	KindPrecisionChange    Kind = "precision_change"
+	KindMissingRoles       Kind = "missing_roles"
+	KindImpossibleValue    Kind = "impossible_value"
+	KindDuplicateSlot      Kind = "duplicate_slot"
+	KindReusedProducerCode Kind = "reused_producer_code"
+	KindArithmetic         Kind = "arithmetic"
+	KindDamagedText        Kind = "damaged_text"
+	KindBlankCriticalField Kind = "blank_critical_field"
+	KindMultipleSocieties  Kind = "multiple_societies"
+	KindUnstatedUnit       Kind = "unstated_unit"
+)
+
+// AnsweredByProfile reports whether a vendor profile can settle this finding.
+//
+// Two of them it can. A date column that reads two ways is answered by the
+// profile's declared layout, and an unstated quantity unit by its declared unit
+// — those are exactly the questions a profile exists to record the answers to,
+// and a person answered them once when the profile was written.
+//
+// Nothing else is. A profile cannot make two people stop sharing a producer code
+// or make a day's milk stop being recorded twice; those are facts about the
+// data, and no amount of declaring changes them.
+func (k Kind) AnsweredByProfile() bool {
+	return k == KindAmbiguousDate || k == KindUnstatedUnit
+}
+
+// PerRow reports whether a finding is about particular rows rather than about
+// the file as a whole.
+//
+// The distinction decides what an importer does with it. A file whose dates read
+// two ways is wrong all the way through and nothing can be taken from it. A file
+// where four rows out of four thousand have no producer is a file with four bad
+// rows: refusing the whole import there means nothing is loaded until somebody
+// fixes a source system that may never be fixed, while the other 3,996
+// collections sit unrecorded.
+//
+// So a per-row finding is handled row by row — those rows are held with their
+// reason and the rest are imported — and everything else stops the import.
+func (k Kind) PerRow() bool {
+	return k == KindBlankCriticalField || k == KindImpossibleValue || k == KindArithmetic
+}
+
 // Finding is one thing wrong, with enough detail to go and look.
 type Finding struct {
 	Severity Severity
-	Title    string
+	// Kind is what this is, for a program. Title is what it is, for a person.
+	Kind  Kind
+	Title string
 	// Detail explains what was found and why it matters, in a sentence somebody
 	// who runs a dairy would understand.
 	Detail string
@@ -126,6 +180,7 @@ func checkAmbiguousDates(r *Report, p *profile.Table) {
 		if amb, formats := c.Ambiguous(); amb {
 			r.add(Finding{
 				Severity: Blocking,
+				Kind:     KindAmbiguousDate,
 				Title:    fmt.Sprintf("Column %q could be day-first or month-first", c.Header),
 				Detail: "Every value in this column parses under both conventions, so nothing in the file " +
 					"says which it is. Read the wrong way, a month of collections lands on the wrong days " +
@@ -153,6 +208,7 @@ func checkPrecisionChange(r *Report, p *profile.Table) {
 			}
 			r.add(Finding{
 				Severity: sev,
+				Kind:     KindPrecisionChange,
 				Title:    fmt.Sprintf("%s lost precision partway through the file", c.Header),
 				Detail: "Written with " + detail + ", which is far more low-precision values than dropped " +
 					"trailing zeroes would explain. A measurement recorded to fewer places than the " +
@@ -183,6 +239,7 @@ func checkMissingRoles(r *Report, idx map[profile.Role]int) {
 	if len(missing) > 0 {
 		r.add(Finding{
 			Severity: Blocking,
+			Kind:     KindMissingRoles,
 			Title:    "Some fields a settlement needs were not found",
 			Detail: "No column could be identified for: " + strings.Join(missing, "; ") +
 				". Either the export does not carry them, or the guess failed and the mapping needs " +
@@ -228,6 +285,7 @@ func checkImpossibleMeasurements(r *Report, t *source.Table, p *profile.Table, i
 		if len(rows) > 0 {
 			r.add(Finding{
 				Severity: Serious,
+				Kind:     KindImpossibleValue,
 				Title:    fmt.Sprintf("%d values are outside the range of %s", len(rows), band.what),
 				Detail: fmt.Sprintf("Expected roughly %.1f to %.1f. A value outside that is a failed reading, "+
 					"a wrong unit, or a column that is not what it was taken for. These rows should not be "+
@@ -282,6 +340,7 @@ func checkDuplicateCollections(r *Report, t *source.Table, idx map[profile.Role]
 		}
 		r.add(Finding{
 			Severity: Blocking,
+			Kind:     KindDuplicateSlot,
 			Title:    fmt.Sprintf("%d producer-day-shift slots appear more than once", dupes),
 			Detail: "The same producer has more than one collection recorded for the same slot. Either the " +
 				"export contains a correction written as a second row rather than a replacement, or milk " +
@@ -336,6 +395,7 @@ func checkReusedProducerCodes(r *Report, t *source.Table, idx map[profile.Role]i
 	if reused > 0 {
 		r.add(Finding{
 			Severity: Blocking,
+			Kind:     KindReusedProducerCode,
 			Title:    fmt.Sprintf("%d producer codes are used for more than one name", reused),
 			Detail: "A code that means one person this year and another next year cannot be a producer " +
 				"identity. This is exactly what the platform resolves at an instant rather than as a fact — " +
@@ -376,6 +436,7 @@ func checkArithmetic(r *Report, t *source.Table, idx map[profile.Role]int) {
 	if len(rows) > 0 {
 		r.add(Finding{
 			Severity: Serious,
+			Kind:     KindArithmetic,
 			Title:    fmt.Sprintf("%d rows where the amount is not the quantity times the rate", len(rows)),
 			Detail: "The file disagrees with its own arithmetic. That is not necessarily an error — a " +
 				"recovery, an incentive or a slab rate would explain it — but whatever explains it is a " +
@@ -407,6 +468,7 @@ func checkEncodingDamage(r *Report, t *source.Table, p *profile.Table) {
 		if len(rows) > 0 {
 			r.add(Finding{
 				Severity: Serious,
+				Kind:     KindDamagedText,
 				Title:    fmt.Sprintf("%d values in %q look like damaged text", len(rows), c.Header),
 				Detail: "These contain replacement characters or sequences typical of text decoded with the " +
 					"wrong codepage. A producer whose name is unreadable cannot check their own statement, " +
@@ -445,6 +507,7 @@ func checkBlankCriticalFields(r *Report, t *source.Table, p *profile.Table, idx 
 		if len(rows) > 0 {
 			r.add(Finding{
 				Severity: Blocking,
+				Kind:     KindBlankCriticalField,
 				Title:    fmt.Sprintf("%d rows have no %s", len(rows), role),
 				Detail: "A collection missing this cannot be settled. Importing it as a zero or a blank " +
 					"would put a record in the ledger that nobody can act on and that quietly changes a " +
@@ -475,6 +538,7 @@ func checkSocietyChange(r *Report, t *source.Table, idx map[profile.Role]int) {
 		sort.Strings(parts)
 		r.add(Finding{
 			Severity: Note,
+			Kind:     KindMultipleSocieties,
 			Title:    fmt.Sprintf("The export covers %d societies or centres", len(seen)),
 			Detail: "More than one collection point is present. Each is a separate stream of authority and " +
 				"a separate set of producers; importing them as one would merge two societies' member codes.",
@@ -498,6 +562,7 @@ func checkQuantityUnit(r *Report, p *profile.Table, idx map[profile.Role]int) {
 	// two differ by about three per cent. Nothing in a bare number says which.
 	r.add(Finding{
 		Severity: Note,
+		Kind:     KindUnstatedUnit,
 		Title:    "The unit of the quantity column is not stated anywhere in the file",
 		Detail: fmt.Sprintf("Values run %.2f to %.2f averaging %.2f. Milk is bought by volume in some "+
 			"places and by weight in others, and litres and kilograms differ by about three per cent — "+

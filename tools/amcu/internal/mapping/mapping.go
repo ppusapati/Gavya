@@ -215,3 +215,50 @@ func (p *Profile) Validate() error {
 }
 
 func round2(f float64) float64 { return float64(int(f*100+0.5)) / 100 }
+
+// Compare reports how a file differs from the profile it is meant to match.
+//
+// Vendors change their exports between versions and between the states they were
+// sold into, and the change that matters is a column moving. A file where fat
+// and rate have swapped places imports without a single error and pays everybody
+// the wrong amount, because both are plausible numbers in a plausible range.
+//
+// So this compares where the profile says each fact is against where the file
+// reads it, and an importer refuses on any difference rather than proceeding on
+// the ones that look harmless. There is no such thing as a harmless one here:
+// the whole class is invisible downstream.
+//
+// Extracted from amcu-profile's --check so the checker a person runs and the
+// check an import performs are the same code. Two implementations of this would
+// drift, and the one that drifted would be the one nobody ran by hand.
+func Compare(p *Profile, t *source.Table, prof *profile.Table) []string {
+	found := map[string]int{}
+	for _, c := range prof.Columns {
+		if c.Role != profile.RoleUnknown {
+			found[string(c.Role)] = c.Index
+		}
+	}
+
+	var diffs []string
+	for _, f := range p.Fields {
+		at, ok := found[f.Role]
+		switch {
+		case !ok:
+			diffs = append(diffs, fmt.Sprintf(
+				"%s was at column %d and this file has no column that reads as one",
+				f.Role, f.Column+1))
+		case at != f.Column:
+			diffs = append(diffs, fmt.Sprintf(
+				"%s was at column %d and reads at column %d here", f.Role, f.Column+1, at+1))
+		}
+	}
+
+	// A column count that has changed is worth naming even when every mapped
+	// field still lines up: a vendor who added a column at the end today moves
+	// one into the middle tomorrow.
+	if p.Format.HasHeader != prof.Shape.HasHeader {
+		diffs = append(diffs, fmt.Sprintf("the profile says has_header=%v and this file reads as %v",
+			p.Format.HasHeader, prof.Shape.HasHeader))
+	}
+	return diffs
+}

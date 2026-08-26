@@ -1,14 +1,17 @@
 # Reality-acquisition tools
 
-Two tools for the phase before anything is built on top of somebody else's data:
-one for the files an AMCU exports, one for the wire an analyser speaks.
+Three tools for the phase before anything is built on top of somebody else's data:
+two for the files an AMCU exports, one for the wire an analyser speaks.
 
 - **`amcu-profile`** — reads a real collection export and reports what is in it,
   what is wrong with it, and how it maps onto the platform.
+- **`amcu-import`** — reads the same export through the profile the first one
+  produced, and loads the collections.
 - **`bench-capture`** — records what an analyser or controller actually sends and
   afterwards helps work out what it meant.
 
-Neither writes to the platform. They read, and print what they found.
+`amcu-profile` and `bench-capture` never write to the platform. `amcu-import`
+does, and only when told to: a dry run is the default.
 
 ---
 
@@ -228,3 +231,83 @@ mattered.
 Hex rather than base64: reading the file with your eyes is a supported use. Read
 boundaries are preserved as they arrived, because where the writes fell is itself
 evidence.
+
+
+---
+
+# amcu-import
+
+Reads an export through its vendor profile and loads the collections.
+
+The other half of `amcu-profile`. That one turns a real file into a description
+of itself; this one turns the file plus that description into collections the
+platform holds. Between them, supporting a new AMCU is writing a small file
+rather than writing a parser.
+
+```sh
+go build -o amcu-import ./cmd/amcu-import
+
+# what would be loaded, and what would not
+amcu-import --profile smartdairy.json collections.csv
+
+# load it
+amcu-import --profile smartdairy.json \
+            --into http://gateway:8000 \
+            --tenant T_01HZ... --device D_01HZ... --session SE_01HZ... \
+            collections.csv
+```
+
+A dry run is the default. Loading somebody's milk into a ledger is not something
+to do because a flag was forgotten.
+
+## What it refuses
+
+The job is not to get as many rows in as possible. A row that cannot be trusted
+is worse in than out: once in, it joins to everything else, and the settlement
+computed from it looks as ordinary as any other.
+
+| Refused | Because |
+| --- | --- |
+| A draft profile | Every unresolved question in it is a silent decision about somebody's milk payment |
+| A file whose columns have moved | A vendor who reorders fat and SNF produces a file that imports perfectly and pays everyone wrongly |
+| A file with duplicate producer-day-shift slots | Milk paid for twice |
+| A file where one producer code is used for two names | Two people sharing a payment history |
+
+The first two are refusals about the *description*; the rest are about the data.
+Both stop the import before a single row is delivered.
+
+## What it settles, and what it holds
+
+Two of the things that would stop an import are questions a profile exists to
+answer: which way round the dates read, and whether the quantity is litres or
+kilograms. Where the profile declares them, they are settled — and reported as
+settled, so somebody can check they were settled the way this file needs rather
+than discovering later that they were not.
+
+Rows that cannot be read are held with their reason and their line number, never
+dropped. A file where nine rows in ten import cleanly and one silently vanishes
+is worse than one that refuses outright, because nobody counts the rows.
+
+A finding about particular rows is dealt with row by row rather than stopping
+the file. Four bad rows in four thousand is four bad rows; refusing the whole
+import there leaves 3,996 collections unrecorded until a source system is fixed
+that may never be fixed.
+
+## Loading the same file twice
+
+The batch identifier is derived from the file's own content, so a re-import
+produces the same batch and the platform recognises the replay. A timestamp or a
+random identifier would make every re-import look like new milk and pay for it
+again.
+
+The sequence within a batch is the line the row was on, not a count of the rows
+that imported. A counter renumbers everything after a row that was later fixed,
+and duplicate detection is on the pair — so a corrected re-import would read as a
+different set of records rather than the same ones.
+
+## Provenance
+
+Every record carries the batch it arrived in, the line it was on, the vendor, and
+a hash of the source text. A year later somebody asks why a producer was paid
+what they were, and the answer is the line from the file rather than a
+recollection.
