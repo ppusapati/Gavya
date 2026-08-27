@@ -116,3 +116,39 @@ func Render(v float64, scale int32) string {
 	}
 	return s
 }
+
+// MoneyScale and MoneyPrecision are what a money column in this platform's
+// non-integrity services holds, and what a float64 can carry back out of it.
+//
+// Those columns are NUMERIC(18,4): four decimals, the most any ISO 4217 currency
+// has, so one schema serves a yen deployment and a dinar one. The services read
+// them into float64, and that is exact only up to a point — measured rather than
+// assumed:
+//
+//	NUMERIC(18,4) -> float64 -> JSON -> float64
+//	  100,000 values below 10^11 : none lost a digit
+//	  200,000 values below 10^14 : 96% lost a digit
+//
+// 6791947779410.3551 comes back as 6791947779410.3555. So the column's own
+// eighteen digits are more than the code can carry, and a value between the two
+// is stored, read back changed, and agreed upon by both ends.
+//
+// MoneyPrecision is therefore 15 — eleven integer digits and four decimals,
+// giving a ceiling of 99999999999.9999, just under the 10^11 where float64
+// stops being exact at this scale. That is a hundred billion of any currency, so
+// it refuses nothing a dairy does.
+//
+// The database enforces the same ceiling with a CHECK constraint per column. The
+// two are meant to agree, and a test asserts they do: without this constant the
+// Go layer accepted eighteen digits and let the database refuse them, so a price
+// somebody typed came back as a constraint violation instead of a sentence
+// saying what was wrong with it.
+const (
+	MoneyScale     int32 = 4
+	MoneyPrecision int32 = 15
+)
+
+// MoneyCeiling is the first value a money column will not hold, as the SQL
+// CHECK constraints express it. Kept beside the precision it is derived from so
+// the two cannot drift apart silently.
+const MoneyCeiling = 100000000000.0

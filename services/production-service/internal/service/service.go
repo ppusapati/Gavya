@@ -206,6 +206,24 @@ func (s *Service) GetFormulation(ctx context.Context, tenantID, id string) (*dom
 	return s.repo.GetFormulation(ctx, tenantID, id)
 }
 
+// Approve signs off a draft recipe.
+//
+// The moment is the caller's rather than the clock's, like every other event in
+// this platform: a recipe agreed at a Tuesday meeting and typed in on Thursday
+// was agreed on Tuesday, and the variance reports that cite it should say so.
+func (s *Service) Approve(ctx context.Context, tenantID, id, approver, note string, at time.Time) (*domain.Formulation, error) {
+	if at.IsZero() {
+		at = s.clock.Now()
+	}
+	return s.repo.Approve(ctx, tenantID, id, approver, note, at)
+}
+
+// Withdraw stops a recipe being used for anything new. What was already made
+// under it keeps pointing at it, because that is its history.
+func (s *Service) Withdraw(ctx context.Context, tenantID, id, reason, actor string) (*domain.Formulation, error) {
+	return s.repo.Withdraw(ctx, tenantID, id, reason, actor)
+}
+
 func (s *Service) ListFormulations(ctx context.Context, tenantID string) ([]*domain.Formulation, error) {
 	return s.repo.ListFormulations(ctx, tenantID)
 }

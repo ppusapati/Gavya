@@ -853,7 +853,13 @@ type formulationInputProto struct {
 }
 
 type formulationProto struct {
-	ID               string                  `json:"id"`
+	ID                  string `json:"id"`
+	Status              string `json:"status"`
+	ApprovedBy          string `json:"approved_by,omitempty"`
+	ApprovedAt          string `json:"approved_at,omitempty"`
+	UsableForProduction bool   `json:"usable_for_production"`
+	WithdrawnReason     string `json:"withdrawn_reason,omitempty"`
+
 	Code             string                  `json:"code"`
 	Name             string                  `json:"name"`
 	OutputProductRef string                  `json:"output_product_ref"`
@@ -933,6 +939,45 @@ type observedYieldResp struct {
 	Note                   string `json:"note"`
 }
 
+type approveFormulationReq struct {
+	TenantID string `json:"tenant_id"`
+	ID       string `json:"id"`
+	Approver string `json:"approver"`
+	At       string `json:"at,omitempty"`
+	Note     string `json:"note,omitempty"`
+}
+
+type withdrawFormulationReq struct {
+	TenantID string `json:"tenant_id"`
+	ID       string `json:"id"`
+	Reason   string `json:"reason"`
+	Actor    string `json:"actor"`
+}
+
+func approveFormulation(t *testing.T, p *platform, f *formulationProto, at string) (*formulationProto, error) {
+	t.Helper()
+	resp, err := svcclient.Call[approveFormulationReq, formulationResp](
+		context.Background(), p.production(), productionSvc+"/ApproveFormulation",
+		approveFormulationReq{TenantID: p.tenant, ID: f.ID, Approver: "plant.manager",
+			At: at, Note: "e2e"}, p.opts())
+	if err != nil {
+		return nil, err
+	}
+	return resp.Formulation, nil
+}
+
+func withdrawFormulation(t *testing.T, p *platform, f *formulationProto, reason string) (*formulationProto, error) {
+	t.Helper()
+	resp, err := svcclient.Call[withdrawFormulationReq, formulationResp](
+		context.Background(), p.production(), productionSvc+"/WithdrawFormulation",
+		withdrawFormulationReq{TenantID: p.tenant, ID: f.ID, Reason: reason,
+			Actor: "e2e"}, p.opts())
+	if err != nil {
+		return nil, err
+	}
+	return resp.Formulation, nil
+}
+
 func createFormulation(t *testing.T, p *platform, in createFormulationReq) (*formulationProto, error) {
 	t.Helper()
 	in.TenantID = p.tenant
@@ -953,7 +998,29 @@ func createFormulation(t *testing.T, p *platform, in createFormulationReq) (*for
 	return resp.Formulation, nil
 }
 
+// mustCreateFormulation creates a recipe and signs it off, because almost every
+// test here needs one a batch can actually be made against.
+//
+// The approval is stamped at the recipe's own valid_from rather than now, so a
+// recipe that came into force in January is approved in January. The tests below
+// make batches in the periods these recipes cover, and a recipe approved in
+// 2026-08 that came into force in 2026-01 would be a recipe nobody had signed
+// off when the milk was made.
 func mustCreateFormulation(t *testing.T, p *platform, in createFormulationReq) *formulationProto {
+	t.Helper()
+	f, err := createFormulation(t, p, in)
+	if err != nil {
+		t.Fatalf("CreateFormulation %s: %v", in.Code, err)
+	}
+	approved, err := approveFormulation(t, p, f, f.ValidFrom)
+	if err != nil {
+		t.Fatalf("ApproveFormulation %s: %v", in.Code, err)
+	}
+	return approved
+}
+
+// mustCreateDraft leaves it unapproved, for the tests that are about that.
+func mustCreateDraft(t *testing.T, p *platform, in createFormulationReq) *formulationProto {
 	t.Helper()
 	f, err := createFormulation(t, p, in)
 	if err != nil {
@@ -1022,24 +1089,149 @@ func TestADeclaredTargetMustSayWhereItCameFrom(t *testing.T) {
 // Two versions of one recipe cannot be in force at once. Resolved later — by
 // taking the newest, say — the choice is invisible, and the plant finds out
 // when two vats of the same product report variances against different targets.
-func TestTwoVersionsOfARecipeCannotBeInForceAtOnce(t *testing.T) {
+func TestTwoApprovedVersionsOfARecipeCannotBeInForceAtOnce(t *testing.T) {
 	p := startPlatform(t)
 	mustCreateFormulation(t, p, createFormulationReq{
 		Code: "F2-CURD", OutputProductRef: "CURD", OutputUnit: "KILOGRAMS",
 		ValidFrom: "2026-01-01T00:00:00Z", ValidTo: "2026-04-01T00:00:00Z",
 	})
-	if _, err := createFormulation(t, p, createFormulationReq{
+
+	// A draft over the same period is fine — a plant must be able to write a
+	// correction to a recipe already in force. Two of them are fine too: a draft
+	// is a piece of paper on somebody's desk.
+	overlapping, err := createFormulation(t, p, createFormulationReq{
 		Code: "F2-CURD", OutputProductRef: "CURD", OutputUnit: "KILOGRAMS",
 		ValidFrom: "2026-03-01T00:00:00Z", ValidTo: "2026-05-01T00:00:00Z",
-	}); err == nil {
-		t.Error("two versions of one recipe overlap")
+	})
+	if err != nil {
+		t.Fatalf("a draft covering a period already in force was refused (%v); a plant could "+
+			"then never write a correction to the recipe it is currently running", err)
 	}
+	if overlapping.Status != "DRAFT" {
+		t.Errorf("a newly created recipe is %q; creating one is not signing it off",
+			overlapping.Status)
+	}
+	if overlapping.UsableForProduction {
+		t.Error("a draft reports itself usable for production")
+	}
+
+	// Approving it is where the conflict surfaces — at the moment somebody
+	// commits to it, which is when there is a decision to make.
+	if _, err := approveFormulation(t, p, overlapping, "2026-03-01T00:00:00Z"); err == nil {
+		t.Error("a second version was approved over a period another approved version already " +
+			"covers; two targets in force on one day means the variance depends on which row " +
+			"was read first")
+	}
+
 	// Abutting is how a plant actually replaces one, and must be accepted.
-	if _, err := createFormulation(t, p, createFormulationReq{
+	next := mustCreateDraft(t, p, createFormulationReq{
 		Code: "F2-CURD", OutputProductRef: "CURD", OutputUnit: "KILOGRAMS",
 		ValidFrom: "2026-04-01T00:00:00Z",
-	}); err != nil {
+	})
+	if _, err := approveFormulation(t, p, next, "2026-04-01T00:00:00Z"); err != nil {
 		t.Errorf("the replacement starting the day the old one ended was refused: %v", err)
+	}
+}
+
+// Creating a recipe does not sign it off, and a batch may only be made against
+// one somebody has.
+//
+// A vat measured against a target nobody agreed to reports a variance saying the
+// process is wrong, when what is wrong is that the number is still a draft.
+func TestABatchMayOnlyBeMadeAgainstAnApprovedRecipe(t *testing.T) {
+	p := startPlatform(t)
+
+	draft := mustCreateDraft(t, p, createFormulationReq{
+		Code: "FA1-PANEER", OutputProductRef: "PANEER", OutputUnit: "KILOGRAMS",
+	})
+	if draft.Status != "DRAFT" || draft.UsableForProduction {
+		t.Fatalf("a newly created recipe is %q, usable=%v", draft.Status,
+			draft.UsableForProduction)
+	}
+
+	if _, err := createBatch(t, p, createBatchReq{
+		Code: "FA1-VAT", Kind: "FINISHED", ProductRef: "PANEER",
+		Produced:   quantityProto{Value: "100.000", Unit: "KILOGRAMS"},
+		ProducedAt: "2026-02-01T06:00:00Z", FormulationID: draft.ID,
+	}); err == nil {
+		t.Error("a vat was made against a recipe still in draft")
+	}
+
+	// Signed off, it works — and says who signed it.
+	approved, err := approveFormulation(t, p, draft, "2026-01-01T00:00:00Z")
+	if err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	if approved.Status != "APPROVED" || !approved.UsableForProduction {
+		t.Errorf("after approval the recipe is %q, usable=%v", approved.Status,
+			approved.UsableForProduction)
+	}
+	if approved.ApprovedBy == "" || approved.ApprovedAt == "" {
+		t.Errorf("the approval carries no name or no time: by=%q at=%q",
+			approved.ApprovedBy, approved.ApprovedAt)
+	}
+	if _, err := createBatch(t, p, createBatchReq{
+		Code: "FA1-VAT", Kind: "FINISHED", ProductRef: "PANEER",
+		Produced:   quantityProto{Value: "100.000", Unit: "KILOGRAMS"},
+		ProducedAt: "2026-02-01T06:00:00Z", FormulationID: approved.ID,
+	}); err != nil {
+		t.Errorf("a vat against an approved recipe was refused: %v", err)
+	}
+}
+
+// Withdrawing stops new production without disturbing what was already made.
+//
+// That second half is the one that matters: a recall traverses batches made
+// under recipes the plant has since stopped using, and it is often the change of
+// recipe that prompted the recall.
+func TestWithdrawingARecipeStopsNewBatchesAndLeavesOldOnesAlone(t *testing.T) {
+	p := startPlatform(t)
+
+	f := mustCreateFormulation(t, p, createFormulationReq{
+		Code: "FA2-CURD", OutputProductRef: "CURD", OutputUnit: "KILOGRAMS",
+	})
+	made, err := createBatch(t, p, createBatchReq{
+		Code: "FA2-VAT", Kind: "FINISHED", ProductRef: "CURD",
+		Produced:   quantityProto{Value: "100.000", Unit: "KILOGRAMS"},
+		ProducedAt: "2026-02-01T06:00:00Z", FormulationID: f.ID,
+	})
+	if err != nil {
+		t.Fatalf("create batch: %v", err)
+	}
+
+	if _, err := withdrawFormulation(t, p, f, ""); err == nil {
+		t.Error("a recipe was withdrawn with no reason; nobody could explain reintroducing it")
+	}
+	gone, err := withdrawFormulation(t, p, f, "coagulant discontinued")
+	if err != nil {
+		t.Fatalf("withdraw: %v", err)
+	}
+	if gone.Status != "WITHDRAWN" || gone.UsableForProduction {
+		t.Errorf("after withdrawal the recipe is %q, usable=%v", gone.Status,
+			gone.UsableForProduction)
+	}
+	if gone.WithdrawnReason == "" {
+		t.Error("the withdrawal carries no reason")
+	}
+
+	// No new batch under it.
+	if _, err := createBatch(t, p, createBatchReq{
+		Code: "FA2-VAT-2", Kind: "FINISHED", ProductRef: "CURD",
+		Produced:   quantityProto{Value: "100.000", Unit: "KILOGRAMS"},
+		ProducedAt: "2026-02-02T06:00:00Z", FormulationID: f.ID,
+	}); err == nil {
+		t.Error("a vat was made under a withdrawn recipe")
+	}
+
+	// But the batch already made under it is untouched, and can still be
+	// quarantined — which is the case that matters, because a recipe being
+	// stopped is often what prompted the recall in the first place.
+	if _, err := setStatus(t, p, made, "QUARANTINED", "the reason the recipe was withdrawn"); err != nil {
+		t.Fatalf("a batch made under a since-withdrawn recipe could not be quarantined: %v", err)
+	}
+	trace := trace(t, p, traceReq{ID: made.ID, Direction: "BACKWARD"})
+	if trace.Batch.Code != "FA2-VAT" {
+		t.Errorf("the batch could not be traced after its recipe was withdrawn")
 	}
 }
 

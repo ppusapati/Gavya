@@ -20,6 +20,7 @@ func recipe() *Formulation {
 	return &Formulation{
 		TenantID: "t", Code: "PANEER-STD", Name: "Standard paneer",
 		OutputProductRef: "PANEER", OutputUnit: "KILOGRAMS",
+		Status:    Draft,
 		ValidFrom: at("2026-01-01T00:00:00Z"), CreatedBy: "u",
 	}
 }
@@ -494,4 +495,100 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// ---------------------------------------------------------------------------
+// Approval
+// ---------------------------------------------------------------------------
+
+// An approved recipe says who signed it off and when.
+//
+// A target that prices somebody's variance with no name against it is one nobody
+// can be asked about, and "who approved this" is the first question when a
+// month's figures are argued over.
+func TestAnApprovedRecipeSaysWhoSignedItOff(t *testing.T) {
+	when := at("2026-01-01T09:00:00Z")
+
+	f := recipe()
+	f.Status = Approved
+	if err := f.Validate(); !errors.Is(err, ErrNoApprover) {
+		t.Errorf("an approved recipe with no approver was accepted: %v", err)
+	}
+
+	f = recipe()
+	f.Status, f.ApprovedBy = Approved, "plant.manager"
+	if err := f.Validate(); !errors.Is(err, ErrNoApprover) {
+		t.Errorf("an approved recipe with an approver and no time was accepted: %v", err)
+	}
+
+	f = recipe()
+	f.Status, f.ApprovedAt = Approved, &when
+	if err := f.Validate(); !errors.Is(err, ErrNoApprover) {
+		t.Errorf("an approved recipe with a time and no approver was accepted: %v", err)
+	}
+
+	f = recipe()
+	f.Status, f.ApprovedBy, f.ApprovedAt = Approved, "plant.manager", &when
+	if err := f.Validate(); err != nil {
+		t.Errorf("a properly approved recipe was refused: %v", err)
+	}
+}
+
+// An approver on a recipe nobody approved records a thing that did not happen.
+func TestAnApproverOnADraftIsRefused(t *testing.T) {
+	when := at("2026-01-01T09:00:00Z")
+	f := recipe()
+	f.ApprovedBy, f.ApprovedAt = "plant.manager", &when
+	if err := f.Validate(); err == nil {
+		t.Error("a draft carrying an approver and a time was accepted; it says somebody signed " +
+			"off something that is still a draft")
+	}
+}
+
+// Withdrawing says why. A recipe that stopped being used with no reason recorded
+// is one nobody can explain reintroducing.
+func TestWithdrawingARecipeSaysWhy(t *testing.T) {
+	f := recipe()
+	f.Status = Withdrawn
+	if err := f.Validate(); !errors.Is(err, ErrNoWithdrawalReason) {
+		t.Errorf("a withdrawal with no reason was accepted: %v", err)
+	}
+	f.WithdrawnReason = "coagulant discontinued"
+	if err := f.Validate(); err != nil {
+		t.Errorf("a withdrawal with a reason was refused: %v", err)
+	}
+
+	// And a reason on a recipe nobody withdrew.
+	g := recipe()
+	g.WithdrawnReason = "we might stop using this"
+	if err := g.Validate(); err == nil {
+		t.Error("a live recipe carrying a withdrawal reason was accepted")
+	}
+}
+
+func TestARecipeMustHaveAStatusNobodyInvented(t *testing.T) {
+	for _, bad := range []FormulationStatus{"", "PROVISIONAL", "approved", "PENDING"} {
+		f := recipe()
+		f.Status = bad
+		if err := f.Validate(); err == nil {
+			t.Errorf("status %q was accepted", bad)
+		}
+	}
+}
+
+// Only an approved recipe may be produced against.
+//
+// The distinction the whole feature rests on: a draft has not been agreed to and
+// a withdrawn one has been stopped, and a vat measured against either reports a
+// variance nobody asked for.
+func TestOnlyAnApprovedRecipeMayBeProducedAgainst(t *testing.T) {
+	if !Approved.UsableForProduction() {
+		t.Error("an approved recipe cannot be produced against, so nothing can be made")
+	}
+	for _, s := range []FormulationStatus{Draft, Withdrawn} {
+		if s.UsableForProduction() {
+			t.Errorf("%s may be produced against; a vat would be measured against a target "+
+				"nobody currently stands behind", s)
+		}
+	}
 }

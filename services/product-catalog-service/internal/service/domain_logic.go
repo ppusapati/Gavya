@@ -159,7 +159,7 @@ func (s *Service) CreateSKU(ctx context.Context, sku *domain.SKU) (*domain.SKU, 
 	sku.Currency = code
 	// Amounts are held to that currency's own precision: a yen price has no
 	// decimals, a dinar price has three.
-	if _, err := exact.NonNegativeDecimal(sku.Price, scale, 18); err != nil {
+	if _, err := exact.NonNegativeDecimal(sku.Price, scale, exact.MoneyPrecision); err != nil {
 		return nil, invalid(exact.Field("price", err).Error())
 	}
 

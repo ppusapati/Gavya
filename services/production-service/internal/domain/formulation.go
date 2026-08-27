@@ -38,6 +38,24 @@ type Formulation struct {
 	// report that treats the two alike invites the same argument every month.
 	ExpectationBasis string
 
+	// Status is whether anybody has signed this off.
+	//
+	// A batch may only be made against an APPROVED recipe. Without that a vat
+	// can be measured against a target somebody was halfway through typing, and
+	// the variance report says the process is wrong when what is wrong is that
+	// nobody has agreed to the number yet.
+	Status FormulationStatus
+	// ApprovedBy and ApprovedAt are required alongside APPROVED, so a target
+	// that priced somebody's variance has a name against it.
+	ApprovedBy string
+	ApprovedAt *time.Time
+	// ApprovalNote is what was signed off and on what basis.
+	ApprovalNote string
+	// WithdrawnReason is required alongside WITHDRAWN. A recipe that stopped
+	// being used with no reason recorded is one nobody can explain
+	// reintroducing.
+	WithdrawnReason string
+
 	ValidFrom time.Time
 	ValidTo   *time.Time
 
@@ -46,6 +64,38 @@ type Formulation struct {
 	CreatedBy string
 	UpdatedBy string
 }
+
+// FormulationStatus is the whole lifecycle of a recipe version.
+//
+// A version is never edited once written, here as everywhere else in this
+// platform: a recipe changes by superseding, and a draft that turns out wrong is
+// withdrawn rather than corrected in place. So three states cover it — drafted,
+// signed off, stopped.
+type FormulationStatus string
+
+const (
+	// Draft is written down and not yet agreed to. Several may exist for one
+	// period at once: a draft is a piece of paper on somebody's desk, and two of
+	// them for the same quarter is an ordinary afternoon.
+	Draft FormulationStatus = "DRAFT"
+	// Approved is signed off, and exclusive: one approved version of a code is
+	// in force at any moment.
+	Approved FormulationStatus = "APPROVED"
+	// Withdrawn is stopped. Batches already made under it keep pointing at it —
+	// that is their history — but no new batch may name it.
+	Withdrawn FormulationStatus = "WITHDRAWN"
+)
+
+func ValidFormulationStatus(s FormulationStatus) bool {
+	switch s {
+	case Draft, Approved, Withdrawn:
+		return true
+	}
+	return false
+}
+
+// UsableForProduction says whether a batch may be made against this version.
+func (s FormulationStatus) UsableForProduction() bool { return s == Approved }
 
 // Unit here is quantity's, restated so the domain reads without the import in
 // every signature. Same strings, same meanings.
@@ -112,6 +162,10 @@ var (
 	ErrBackwardsPeriod        = errors.New("a recipe's period ends before it starts")
 	ErrExpectationNeedsBasis  = errors.New("a declared yield must say where the figure came from; a target derived from a plant's own vats and one read off a supplier's leaflet are different claims, and a report that treats them alike invites the same argument every month")
 	ErrIngredientIsTheProduct = errors.New("a recipe whose ingredient is its own product has no first ingredient")
+
+	ErrNoApprover         = errors.New("an approved recipe must say who signed it off and when; a target that prices somebody's variance with no name against it is one nobody can be asked about")
+	ErrNoWithdrawalReason = errors.New("withdrawing a recipe must say why; one that stopped being used with no reason recorded is one nobody can explain reintroducing")
+	ErrNotApproved        = errors.New("a batch may only be made against an approved recipe")
 )
 
 func (f *Formulation) Validate() error {
@@ -136,6 +190,16 @@ func (f *Formulation) Validate() error {
 		return ErrExpectationNeedsBasis
 	case f.ExpectedYieldPPM == nil && f.ExpectationBasis != "":
 		return errors.New("a basis with no figure beside it explains nothing")
+	case !ValidFormulationStatus(f.Status):
+		return errors.New("a recipe must be a DRAFT, APPROVED or WITHDRAWN")
+	case f.Status == Approved && (f.ApprovedBy == "" || f.ApprovedAt == nil):
+		return ErrNoApprover
+	case f.Status != Approved && (f.ApprovedBy != "" || f.ApprovedAt != nil):
+		return errors.New("an approver on a recipe nobody approved says a thing that did not happen")
+	case f.Status == Withdrawn && f.WithdrawnReason == "":
+		return ErrNoWithdrawalReason
+	case f.Status != Withdrawn && f.WithdrawnReason != "":
+		return errors.New("a withdrawal reason on a recipe nobody withdrew")
 	case f.CreatedBy == "":
 		return errors.New("actor is required")
 	}

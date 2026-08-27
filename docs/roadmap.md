@@ -230,10 +230,24 @@ An empty list is indistinguishable from a tenant with no notifications, so the
 obvious call returned the obviously wrong answer and looked right doing it. An
 unset filter now means "not filtering by that".
 
-**Still open:** the real fix is reading these as exact decimals, as the integrity
-services do with `libs/integrity/money`. That is a breaking wire change across
-four services and has not been made. The bound is what stops the database
-holding a figure the code would silently change in the meantime.
+Following that up turned out to change the recommendation. There is **no float
+arithmetic on money anywhere** in these services: every write goes through
+`exact.NonNegativeDecimal`, which refuses a value finer than the column holds;
+comparisons are against zero; and order and billing compute their totals in SQL,
+in the column's own type. So the wire refactor would buy robustness, not
+correctness.
+
+What was wrong was that the two layers disagreed about the ceiling — Go accepted
+eighteen digits and the database refused anything above eleven, so a price
+somebody typed came back as a constraint violation rather than a sentence saying
+what was wrong with it. `exact.MoneyPrecision` and `exact.MoneyCeiling` now name
+the decision once, with the measurement behind it, and a test compares the
+constant against the `CHECK` in every schema.
+
+**Still open, at lower priority than it looked:** reading these as exact decimals
+the way the integrity services do. It is a breaking wire change across four
+services and buys robustness against a future widening, not a correction to
+anything wrong today.
 
 ### 3. Deployment drift — **closed**
 
@@ -276,11 +290,30 @@ having written them:
   time — worse than a refusal, because nothing afterwards reports it as missing.
   Now `ErrEmptyInterval`.
 
-### 5. Formulations belong in a registry that does not exist yet
+### 5. Formulations — approval added, the rest deliberately not
 
-Expected yield moved from the batch to the formulation, which is right. The
-formulation still has no separate lifecycle of its own beyond versioning — no
-approval, no plant scoping, no derivation of one recipe from another.
+A recipe is now drafted, signed off, and eventually withdrawn, and **a batch may
+only be made against an approved one**. That is the piece with an integrity
+argument: a vat measured against a target nobody agreed to reports a variance
+saying the process is wrong, when what is wrong is that the number is still a
+draft.
+
+Two details worth knowing:
+
+- **Only approved versions are exclusive.** Several drafts may cover one period —
+  otherwise a plant could not write a correction to the recipe it is currently
+  running. The conflict surfaces at approval, which is when there is a decision
+  to make.
+- **A batch survives its recipe being withdrawn.** The check runs only when a
+  batch's recipe is set or changed, not on every update. Without that, a batch
+  could not be quarantined once the recipe it was made under had been stopped —
+  and a recipe being stopped is often what prompted the recall.
+
+**Not built, and not an oversight:** plant scoping and recipe derivation. Both
+would be inventing a requirement. Scoping needs to know whether a tenant is one
+plant or several, and nothing here says; derivation needs a plant that actually
+works that way. Neither is knowable from the code, and a wrong guess is a model
+somebody has to work around forever.
 
 ---
 

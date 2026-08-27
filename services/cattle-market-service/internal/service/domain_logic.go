@@ -56,7 +56,7 @@ func (s *Service) CreateListing(ctx context.Context, l *domain.CattleListing) (*
 	l.Currency = code
 	// Amounts are held to that currency's own precision: a yen price has no
 	// decimals, a dinar price has three.
-	if _, err := exact.NonNegativeDecimal(l.AskingPrice, scale, 18); err != nil {
+	if _, err := exact.NonNegativeDecimal(l.AskingPrice, scale, exact.MoneyPrecision); err != nil {
 		return nil, invalid("%s", exact.Field("asking_price", err))
 	}
 
@@ -154,7 +154,7 @@ func (s *Service) PlaceBid(ctx context.Context, b *domain.CattleBid) (*domain.Ca
 	}
 	// Amounts are held to that currency's own precision: a yen price has no
 	// decimals, a dinar price has three.
-	if _, err := exact.NonNegativeDecimal(b.BidAmount, scale, 18); err != nil {
+	if _, err := exact.NonNegativeDecimal(b.BidAmount, scale, exact.MoneyPrecision); err != nil {
 		return nil, invalid("%s", exact.Field("bid_amount", err))
 	}
 
@@ -263,7 +263,7 @@ func (s *Service) RecordSale(ctx context.Context, sale *domain.CattleSale, newOw
 	sale.Currency = code
 	// Amounts are held to that currency's own precision: a yen price has no
 	// decimals, a dinar price has three.
-	priceLiteral, err := exact.NonNegativeDecimal(sale.SalePrice, scale, 18)
+	priceLiteral, err := exact.NonNegativeDecimal(sale.SalePrice, scale, exact.MoneyPrecision)
 	if err != nil {
 		return nil, nil, invalid("%s", exact.Field("sale_price", err))
 	}

@@ -380,6 +380,33 @@ CREATE TABLE IF NOT EXISTS production_formulations (
     CONSTRAINT production_formulations_expectation_says_where_from CHECK (
         expected_yield_ppm IS NULL OR (expectation_basis IS NOT NULL AND expectation_basis <> '')),
 
+    -- Whether anybody has signed this off.
+    --
+    -- A batch may only be made against an APPROVED recipe. Without that, a vat
+    -- can be measured against a target somebody was halfway through typing, and
+    -- the variance report says the process is wrong when what is wrong is that
+    -- nobody agreed to the number yet.
+    --
+    -- A version is never edited once written, here as everywhere else in this
+    -- platform: a recipe changes by superseding, and a draft that turns out
+    -- wrong is withdrawn rather than corrected in place. So the three states are
+    -- the whole lifecycle — drafted, signed off, stopped.
+    status VARCHAR(16) NOT NULL DEFAULT 'DRAFT'
+        CHECK (status IN ('DRAFT', 'APPROVED', 'WITHDRAWN')),
+    approved_by VARCHAR(64),
+    approved_at TIMESTAMPTZ,
+    -- What was signed off, and on what basis. A recipe approved with nothing
+    -- said about why cannot be defended to whoever asks a year later.
+    approval_note TEXT,
+    CONSTRAINT production_formulations_approval_says_who CHECK (
+        status <> 'APPROVED' OR (approved_by IS NOT NULL AND approved_by <> ''
+                                 AND approved_at IS NOT NULL)),
+    -- Withdrawal says why too. A recipe that stopped being used with no reason
+    -- recorded is one nobody can explain reintroducing.
+    withdrawn_reason TEXT,
+    CONSTRAINT production_formulations_withdrawal_says_why CHECK (
+        status <> 'WITHDRAWN' OR (withdrawn_reason IS NOT NULL AND withdrawn_reason <> '')),
+
     -- When this version of the recipe is the one in force.
     valid_from  TIMESTAMPTZ NOT NULL,
     valid_to    TIMESTAMPTZ,
@@ -393,6 +420,50 @@ CREATE TABLE IF NOT EXISTS production_formulations (
     deleted_at  TIMESTAMPTZ
 );
 
+-- The same columns, for a database that already has this table.
+--
+-- CREATE TABLE IF NOT EXISTS above does nothing when the table exists, so every
+-- column added after the first deployment has to be added again here or it
+-- simply never appears. This is the third time that has bitten this repository:
+-- a DROP refused by a dependent object twice, and now a column that existed in
+-- the file and not in the database.
+--
+-- The rule, stated once and applying to every schema in this platform: a schema
+-- file must produce the same database whether it is applied to an empty one or
+-- to the version before it. The e2e harness reuses its databases between runs
+-- rather than dropping them, which is what turned this into a failing test
+-- instead of a surprise in production.
+ALTER TABLE production_formulations
+    ADD COLUMN IF NOT EXISTS status VARCHAR(16) NOT NULL DEFAULT 'DRAFT';
+ALTER TABLE production_formulations ADD COLUMN IF NOT EXISTS approved_by VARCHAR(64);
+ALTER TABLE production_formulations ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
+ALTER TABLE production_formulations ADD COLUMN IF NOT EXISTS approval_note TEXT;
+ALTER TABLE production_formulations ADD COLUMN IF NOT EXISTS withdrawn_reason TEXT;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conname = 'production_formulations_status_check') THEN
+        ALTER TABLE production_formulations ADD CONSTRAINT production_formulations_status_check
+            CHECK (status IN ('DRAFT', 'APPROVED', 'WITHDRAWN'));
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conname = 'production_formulations_approval_says_who') THEN
+        ALTER TABLE production_formulations
+            ADD CONSTRAINT production_formulations_approval_says_who
+            CHECK (status <> 'APPROVED' OR (approved_by IS NOT NULL AND approved_by <> ''
+                                            AND approved_at IS NOT NULL));
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conname = 'production_formulations_withdrawal_says_why') THEN
+        ALTER TABLE production_formulations
+            ADD CONSTRAINT production_formulations_withdrawal_says_why
+            CHECK (status <> 'WITHDRAWN' OR (withdrawn_reason IS NOT NULL
+                                             AND withdrawn_reason <> ''));
+    END IF;
+END
+$$;
+
 -- One version of a recipe in force at a time. Two would not be a conflict to
 -- resolve when a batch looks one up — resolved then, by taking the newest say,
 -- the choice is invisible, and the plant finds out when two vats of the same
@@ -402,6 +473,17 @@ CREATE TABLE IF NOT EXISTS production_formulations (
 -- starting there do not overlap. That is how a plant actually changes one.
 DO $$
 BEGIN
+    -- Dropped and recreated when its definition has changed, rather than left
+    -- alone because something of that name exists. The predicate below gained
+    -- `status = 'APPROVED'`, and a database carrying the older version would
+    -- keep refusing two drafts for one period — the thing the change exists to
+    -- allow — with nothing saying why.
+    IF EXISTS (SELECT 1 FROM pg_constraint
+                WHERE conname = 'production_formulations_one_version_at_a_time'
+                  AND pg_get_constraintdef(oid) NOT LIKE '%APPROVED%') THEN
+        ALTER TABLE production_formulations
+            DROP CONSTRAINT production_formulations_one_version_at_a_time;
+    END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint
                    WHERE conname = 'production_formulations_one_version_at_a_time') THEN
         ALTER TABLE production_formulations
@@ -410,10 +492,22 @@ BEGIN
                 tenant_id WITH =,
                 code WITH =,
                 tstzrange(valid_from, valid_to, '[)') WITH &&
-            ) WHERE (deleted_at IS NULL);
+            ) WHERE (deleted_at IS NULL AND status = 'APPROVED');
     END IF;
 END
 $$;
+
+-- Note the WHERE above: only APPROVED versions are exclusive.
+--
+-- Covering drafts too would mean a plant could not write next quarter's recipe
+-- while this quarter's is in force, nor draft a correction to a period already
+-- covered — the two would collide before anybody had decided to use either. A
+-- draft is a piece of paper on somebody's desk; two of them for the same period
+-- is an ordinary afternoon.
+--
+-- Approving is where it becomes exclusive, and the constraint refuses the second
+-- approval at exactly that moment: the conflict surfaces when somebody commits
+-- to it, which is when there is something to decide.
 
 DO $$
 BEGIN
@@ -554,18 +648,51 @@ DECLARE
     v_code   TEXT;
     v_from   TIMESTAMPTZ;
     v_to     TIMESTAMPTZ;
+    v_status TEXT;
+    v_withdrawn TEXT;
 BEGIN
     IF NEW.formulation_id IS NULL THEN
         RETURN NEW;
     END IF;
 
-    SELECT output_product_ref, code, valid_from, valid_to
-      INTO v_output, v_code, v_from, v_to
+    -- Only when the recipe is being set or changed.
+    --
+    -- This trigger fires on every UPDATE of a batch, including the ones that
+    -- have nothing to do with its recipe — quarantining it, releasing it,
+    -- recording who touched it. Re-checking then would mean a batch could not be
+    -- recalled once the recipe it was made under had been withdrawn, which is
+    -- the moment a recall is most likely to be needed.
+    --
+    -- The facts checked below are about the pairing itself, and the pairing does
+    -- not change when the batch's status does.
+    IF TG_OP = 'UPDATE' AND OLD.formulation_id IS NOT DISTINCT FROM NEW.formulation_id THEN
+        RETURN NEW;
+    END IF;
+
+    SELECT output_product_ref, code, valid_from, valid_to, status, withdrawn_reason
+      INTO v_output, v_code, v_from, v_to, v_status, v_withdrawn
       FROM production_formulations
      WHERE tenant_id = NEW.tenant_id AND id = NEW.formulation_id;
 
     IF v_output IS NULL THEN
         RETURN NEW;   -- the foreign key reports this one, and reports it better
+    END IF;
+
+    IF v_status = 'DRAFT' THEN
+        RAISE EXCEPTION 'batch % names version % of recipe %, which is still a draft; a vat '
+                        'measured against a target nobody has signed off reports a variance '
+                        'saying the process is wrong, when what is wrong is that nobody has '
+                        'agreed to the number yet',
+            NEW.batch_code, NEW.formulation_id, v_code
+            USING ERRCODE = '23514';
+    END IF;
+    IF v_status = 'WITHDRAWN' THEN
+        RAISE EXCEPTION 'batch % names version % of recipe %, which was withdrawn: %. A recipe '
+                        'is withdrawn because somebody decided to stop using it, so a new batch '
+                        'made under it is either a mistake or a decision that has not been '
+                        'written down',
+            NEW.batch_code, NEW.formulation_id, v_code, v_withdrawn
+            USING ERRCODE = '23514';
     END IF;
 
     IF v_output IS DISTINCT FROM NEW.product_ref THEN

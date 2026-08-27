@@ -24,6 +24,8 @@ var (
 	ErrDuplicateCode = errors.New("a batch with that code already exists")
 	// ErrDuplicateInput is the same lot recorded twice into one vessel.
 	ErrDuplicateInput = errors.New("that lot is already recorded as an input to this batch")
+	// ErrNotADraft refuses approving something already approved or withdrawn.
+	ErrNotADraft = errors.New("only a draft can be approved")
 	// ErrOverlappingVersion is two versions of one recipe in force at once.
 	ErrOverlappingVersion = errors.New("that recipe already has a version in force over part of that period")
 	// ErrRefused carries a message from one of the triggers — a cycle, an
@@ -55,6 +57,8 @@ type Repository interface {
 	Remaining(ctx context.Context, tenantID, batchID string) (quantity.Quantity, error)
 
 	CreateFormulation(ctx context.Context, f *domain.Formulation, ins []domain.FormulationInput) (*domain.Formulation, []domain.FormulationInput, error)
+	Approve(ctx context.Context, tenantID, id, approver, note string, at time.Time) (*domain.Formulation, error)
+	Withdraw(ctx context.Context, tenantID, id, reason, actor string) (*domain.Formulation, error)
 	GetFormulation(ctx context.Context, tenantID, id string) (*domain.Formulation, error)
 	FormulationInForce(ctx context.Context, tenantID, code string, at time.Time) (*domain.Formulation, error)
 	ListFormulations(ctx context.Context, tenantID string) ([]*domain.Formulation, error)
@@ -415,10 +419,14 @@ func (r *repo) CreateFormulation(ctx context.Context, f *domain.Formulation, ins
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO production_formulations
 			(id,tenant_id,code,name,output_product_ref,output_unit,expected_yield_ppm,
-			 expectation_basis,valid_from,valid_to,created_by,updated_by)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,nullif($8,''),$9,$10,$11,$11)`,
+			 expectation_basis,status,approved_by,approved_at,approval_note,
+			 withdrawn_reason,valid_from,valid_to,created_by,updated_by)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,nullif($8,''),$9,nullif($10,''),$11,nullif($12,''),
+		        nullif($13,''),$14,$15,$16,$16)`,
 		f.ID, f.TenantID, f.Code, f.Name, f.OutputProductRef, string(f.OutputUnit),
-		f.ExpectedYieldPPM, f.ExpectationBasis, f.ValidFrom, f.ValidTo, f.CreatedBy); err != nil {
+		f.ExpectedYieldPPM, f.ExpectationBasis, string(f.Status),
+		f.ApprovedBy, f.ApprovedAt, f.ApprovalNote, f.WithdrawnReason,
+		f.ValidFrom, f.ValidTo, f.CreatedBy); err != nil {
 		if sqlState(err) == "23P01" {
 			return nil, nil, fmt.Errorf("%w: recipe %s already has a version in force over part "+
 				"of that period, and two targets in force on one day means the variance depends "+
@@ -479,8 +487,10 @@ func (r *repo) CreateFormulation(ctx context.Context, f *domain.Formulation, ins
 }
 
 const formulationCols = `id,tenant_id,code,name,output_product_ref,output_unit,
-	expected_yield_ppm,COALESCE(expectation_basis,''),valid_from,valid_to,
-	created_at,updated_at,created_by,updated_by`
+	expected_yield_ppm,COALESCE(expectation_basis,''),
+	status,COALESCE(approved_by,''),approved_at,COALESCE(approval_note,''),
+	COALESCE(withdrawn_reason,''),
+	valid_from,valid_to,created_at,updated_at,created_by,updated_by`
 
 func (r *repo) GetFormulation(ctx context.Context, tenantID, id string) (*domain.Formulation, error) {
 	return scanFormulation(r.db.QueryRow(ctx,
@@ -494,6 +504,10 @@ func (r *repo) GetFormulation(ctx context.Context, tenantID, id string) (*domain
 // The moment is required and there is no default of "now". A batch made in
 // March asks for March; answering with today's recipe is the retroactive
 // problem versioning exists to prevent, arriving through a convenience.
+//
+// Only APPROVED versions are considered. Several drafts may cover one period —
+// a draft is a piece of paper on somebody's desk — so "the recipe in force" is
+// only a well-defined question about the ones somebody signed off.
 func (r *repo) FormulationInForce(ctx context.Context, tenantID, code string, at time.Time) (*domain.Formulation, error) {
 	if at.IsZero() {
 		return nil, errors.New("looking up the recipe in force needs the moment to ask about")
@@ -501,6 +515,7 @@ func (r *repo) FormulationInForce(ctx context.Context, tenantID, code string, at
 	return scanFormulation(r.db.QueryRow(ctx,
 		`SELECT `+formulationCols+` FROM production_formulations
 		 WHERE tenant_id=$1 AND code=$2 AND deleted_at IS NULL
+		   AND status = 'APPROVED'
 		   AND valid_from <= $3 AND (valid_to IS NULL OR valid_to > $3)`,
 		tenantID, code, at))
 }
@@ -599,12 +614,120 @@ func (r *repo) ObservedHistory(ctx context.Context, tenantID, formulationID stri
 	return &h, nil
 }
 
+// Approve signs off a draft.
+//
+// A version is never edited once written, so this changes the one field that is
+// about the paper rather than about the recipe: whether anybody stands behind
+// it. The exclusion constraint refuses a second approval covering the same
+// period, and it refuses it here — at the moment somebody commits to it, which
+// is when there is a decision to make.
+func (r *repo) Approve(ctx context.Context, tenantID, id, approver, note string, at time.Time) (*domain.Formulation, error) {
+	if approver == "" || at.IsZero() {
+		return nil, domain.ErrNoApprover
+	}
+	before, err := r.GetFormulation(ctx, tenantID, id)
+	if err != nil {
+		return nil, err
+	}
+	if before.Status != domain.Draft {
+		return nil, fmt.Errorf("%w: recipe %s is already %s",
+			ErrNotADraft, before.Code, strings.ToLower(string(before.Status)))
+	}
+
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE production_formulations
+		   SET status='APPROVED', approved_by=$3, approved_at=$4,
+		       approval_note=nullif($5,''), updated_at=NOW(), updated_by=$3
+		 WHERE tenant_id=$1 AND id=$2 AND deleted_at IS NULL AND status='DRAFT'`,
+		tenantID, id, approver, at, note); err != nil {
+		if sqlState(err) == "23P01" {
+			return nil, fmt.Errorf("%w: another version of recipe %s is already approved over "+
+				"part of that period, and two targets in force on one day means the variance "+
+				"depends on which row was read first", ErrOverlappingVersion, before.Code)
+		}
+		return nil, fmt.Errorf("approve formulation: %w", err)
+	}
+
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "approve_formulation", ResourceType: "production_formulation", ResourceID: id,
+		Before: map[string]any{"status": string(before.Status)},
+		After: map[string]any{
+			"code": before.Code, "status": "APPROVED",
+			"approved_by": approver, "approved_at": at, "approval_note": note,
+		},
+		ServiceName: serviceName,
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return r.GetFormulation(ctx, tenantID, id)
+}
+
+// Withdraw stops a recipe being used for anything new.
+//
+// Batches already made under it keep pointing at it — that is their history, and
+// a recall traverses it. What changes is that no new batch may name it.
+func (r *repo) Withdraw(ctx context.Context, tenantID, id, reason, actor string) (*domain.Formulation, error) {
+	if reason == "" {
+		return nil, domain.ErrNoWithdrawalReason
+	}
+	before, err := r.GetFormulation(ctx, tenantID, id)
+	if err != nil {
+		return nil, err
+	}
+	if before.Status == domain.Withdrawn {
+		return nil, fmt.Errorf("recipe %s was already withdrawn: %s",
+			before.Code, before.WithdrawnReason)
+	}
+
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE production_formulations
+		   SET status='WITHDRAWN', withdrawn_reason=$3, updated_at=NOW(), updated_by=$4
+		 WHERE tenant_id=$1 AND id=$2 AND deleted_at IS NULL`,
+		tenantID, id, reason, actor); err != nil {
+		return nil, fmt.Errorf("withdraw formulation: %w", err)
+	}
+
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "withdraw_formulation", ResourceType: "production_formulation", ResourceID: id,
+		Before: map[string]any{"status": string(before.Status)},
+		After: map[string]any{
+			"code": before.Code, "status": "WITHDRAWN", "withdrawn_reason": reason,
+		},
+		ServiceName: serviceName,
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return r.GetFormulation(ctx, tenantID, id)
+}
+
 func scanFormulation(s scanner) (*domain.Formulation, error) {
 	var out domain.Formulation
 	var unit string
+	var status string
 	err := s.Scan(&out.ID, &out.TenantID, &out.Code, &out.Name,
 		&out.OutputProductRef, &unit,
-		&out.ExpectedYieldPPM, &out.ExpectationBasis, &out.ValidFrom, &out.ValidTo,
+		&out.ExpectedYieldPPM, &out.ExpectationBasis,
+		&status, &out.ApprovedBy, &out.ApprovedAt, &out.ApprovalNote,
+		&out.WithdrawnReason,
+		&out.ValidFrom, &out.ValidTo,
 		&out.CreatedAt, &out.UpdatedAt, &out.CreatedBy, &out.UpdatedBy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -613,5 +736,6 @@ func scanFormulation(s scanner) (*domain.Formulation, error) {
 		return nil, err
 	}
 	out.OutputUnit = unit
+	out.Status = domain.FormulationStatus(status)
 	return &out, nil
 }

@@ -119,7 +119,7 @@ func (s *Service) ScheduleVetVisit(ctx context.Context, v *domain.VetVisit) (*do
 	v.Currency = code
 	// A cost finer than the currency records would be rounded into the column
 	// without anyone being told, so it is refused instead.
-	if _, err := exact.NonNegativeDecimal(v.Cost, scale, 18); err != nil {
+	if _, err := exact.NonNegativeDecimal(v.Cost, scale, exact.MoneyPrecision); err != nil {
 		return nil, invalid(exact.Field("cost", err).Error())
 	}
 

@@ -2,11 +2,15 @@
 # Every check this repository knows how to run, in the order that fails fastest.
 #
 # -count=1 throughout, and not as a habit. Some tests read files outside their
-# own module — docker-compose.yaml, the SQL schemas, the isolation policies — and
-# Go's test cache does not track those. Without it, changing compose and running
-# `go test ./...` reports a cached pass: the check appears to run and does
-# nothing. A test suite that cannot fail is worse than no test suite, because
-# somebody is relying on it.
+# own module — docker-compose.yaml, the Kubernetes manifests, the SQL schemas,
+# the isolation policies — and Go's test cache does not track those. Without it,
+# changing compose and running `go test ./...` reports a cached pass: the check
+# appears to run and does nothing. A test suite that cannot fail is worse than no
+# test suite, because somebody is relying on it.
+#
+# One e2e test compares each schema against its committed version, so it needs a
+# git checkout rather than an exported tree. It skips, saying so, where git is
+# not available.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

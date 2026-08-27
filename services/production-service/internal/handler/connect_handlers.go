@@ -41,6 +41,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	route("GetBatchYield", connectjson.Unary(h.GetBatchYield))
 
 	route("CreateFormulation", connectjson.Unary(h.CreateFormulation))
+	route("ApproveFormulation", connectjson.Unary(h.ApproveFormulation))
+	route("WithdrawFormulation", connectjson.Unary(h.WithdrawFormulation))
 	route("GetFormulation", connectjson.Unary(h.GetFormulation))
 	route("ListFormulations", connectjson.Unary(h.ListFormulations))
 	route("CheckRecipe", connectjson.Unary(h.CheckRecipe))
@@ -623,6 +625,8 @@ func classify(err error) error {
 		errors.Is(err, repository.ErrOverlappingVersion):
 		return connect.NewError(connect.CodeAlreadyExists, err)
 	case errors.Is(err, repository.ErrRefused),
+		errors.Is(err, repository.ErrNotADraft),
+		errors.Is(err, domain.ErrNotApproved),
 		errors.Is(err, domain.ErrHeldInput):
 		// The database refused it, or the service saw it coming: a cycle, an
 		// overdraw, a unit mismatch, a lot under hold. All of them are true
@@ -638,6 +642,8 @@ func classify(err error) error {
 		errors.Is(err, domain.ErrNoValidFrom), errors.Is(err, domain.ErrBackwardsPeriod),
 		errors.Is(err, domain.ErrExpectationNeedsBasis),
 		errors.Is(err, domain.ErrIngredientIsTheProduct),
+		errors.Is(err, domain.ErrNoApprover),
+		errors.Is(err, domain.ErrNoWithdrawalReason),
 		errors.Is(err, quantity.ErrNoUnit), errors.Is(err, quantity.ErrNoDensity),
 		errors.Is(err, quantity.ErrBadDensity):
 		return connect.NewError(connect.CodeInvalidArgument, err)
@@ -684,6 +690,20 @@ type FormulationProto struct {
 	// one. A target a plant derived from two hundred of its own vats and one
 	// read off a supplier's leaflet are different claims.
 	ExpectationBasis string `json:"expectation_basis,omitempty"`
+
+	// Status is DRAFT, APPROVED or WITHDRAWN. A recipe is created as a draft and
+	// approved separately, so signing one off is an act with a name against it
+	// rather than a field somebody filled in while typing the rest.
+	Status       string `json:"status"`
+	ApprovedBy   string `json:"approved_by,omitempty"`
+	ApprovedAt   string `json:"approved_at,omitempty"`
+	ApprovalNote string `json:"approval_note,omitempty"`
+	// UsableForProduction says whether a batch may be made against this version.
+	// Carried explicitly rather than left for the caller to derive from the
+	// status, because a caller that derives it wrongly measures a vat against a
+	// target nobody stands behind.
+	UsableForProduction bool   `json:"usable_for_production"`
+	WithdrawnReason     string `json:"withdrawn_reason,omitempty"`
 
 	ValidFrom string `json:"valid_from"`
 	ValidTo   string `json:"valid_to,omitempty"`
@@ -734,6 +754,10 @@ func (h *Handler) CreateFormulation(ctx context.Context, req *connect.Request[Cr
 		TenantID: m.TenantID, Code: m.Code, Name: m.Name,
 		OutputProductRef: m.OutputProductRef, OutputUnit: m.OutputUnit,
 		ExpectedYieldPPM: m.ExpectedYieldPPM, ExpectationBasis: m.ExpectationBasis,
+		// Always a draft. Approving is a separate act, by somebody who is
+		// putting their name to the target — not a field on the form that
+		// created it.
+		Status:    domain.Draft,
 		ValidFrom: from, ValidTo: to, CreatedBy: m.Actor,
 	}
 	ins := make([]domain.FormulationInput, 0, len(m.Inputs))
@@ -979,12 +1003,74 @@ func (h *Handler) GetObservedYield(ctx context.Context, req *connect.Request[Obs
 	return connect.NewResponse(out), nil
 }
 
+type ApproveFormulationRequest struct {
+	TenantID string `json:"tenant_id"`
+	ID       string `json:"id"`
+	// Approver is the person putting their name to the target.
+	Approver string `json:"approver"`
+	// At is when it was agreed. Omitted, the platform stamps now — which is
+	// right for somebody approving as they type and wrong for a recipe agreed at
+	// a Tuesday meeting and entered on Thursday.
+	At   string `json:"at,omitempty"`
+	Note string `json:"note,omitempty"`
+}
+
+func (h *Handler) ApproveFormulation(ctx context.Context, req *connect.Request[ApproveFormulationRequest]) (*connect.Response[FormulationResponse], error) {
+	m := req.Msg
+	var at time.Time
+	if m.At != "" {
+		parsed, err := parseTime(m.At, "at")
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		at = parsed
+	}
+	f, err := h.svc.Approve(ctx, m.TenantID, m.ID, m.Approver, m.Note, at)
+	if err != nil {
+		return nil, classify(err)
+	}
+	ins, err := h.svc.FormulationInputs(ctx, m.TenantID, f.ID)
+	if err != nil {
+		return nil, classify(err)
+	}
+	return connect.NewResponse(&FormulationResponse{Formulation: fromFormulation(f, ins)}), nil
+}
+
+type WithdrawFormulationRequest struct {
+	TenantID string `json:"tenant_id"`
+	ID       string `json:"id"`
+	// Reason is required. A recipe that stopped being used with no reason
+	// recorded is one nobody can explain reintroducing.
+	Reason string `json:"reason"`
+	Actor  string `json:"actor"`
+}
+
+func (h *Handler) WithdrawFormulation(ctx context.Context, req *connect.Request[WithdrawFormulationRequest]) (*connect.Response[FormulationResponse], error) {
+	m := req.Msg
+	f, err := h.svc.Withdraw(ctx, m.TenantID, m.ID, m.Reason, m.Actor)
+	if err != nil {
+		return nil, classify(err)
+	}
+	ins, err := h.svc.FormulationInputs(ctx, m.TenantID, f.ID)
+	if err != nil {
+		return nil, classify(err)
+	}
+	return connect.NewResponse(&FormulationResponse{Formulation: fromFormulation(f, ins)}), nil
+}
+
 func fromFormulation(f *domain.Formulation, ins []domain.FormulationInput) *FormulationProto {
 	p := &FormulationProto{
 		ID: f.ID, TenantID: f.TenantID, Code: f.Code, Name: f.Name,
 		OutputProductRef: f.OutputProductRef, OutputUnit: string(f.OutputUnit),
 		ExpectedYieldPPM: f.ExpectedYieldPPM, ExpectationBasis: f.ExpectationBasis,
-		ValidFrom: f.ValidFrom.UTC().Format(time.RFC3339),
+		Status: string(f.Status), ApprovedBy: f.ApprovedBy,
+		ApprovalNote:        f.ApprovalNote,
+		UsableForProduction: f.Status.UsableForProduction(),
+		WithdrawnReason:     f.WithdrawnReason,
+		ValidFrom:           f.ValidFrom.UTC().Format(time.RFC3339),
+	}
+	if f.ApprovedAt != nil {
+		p.ApprovedAt = f.ApprovedAt.UTC().Format(time.RFC3339)
 	}
 	if f.ExpectedYieldPPM != nil {
 		p.ExpectedPercent = domain.PercentString(*f.ExpectedYieldPPM)
