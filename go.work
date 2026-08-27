@@ -12,6 +12,7 @@ use (
 	./services/procurement-service
 	./services/settlement-service
 	./services/material-service
+	./services/laboratory-service
 	./services/shadow-settlement-service
 	./services/identity-service
 	./services/observation-service

@@ -100,6 +100,10 @@ var services = []service{
 	// model for. It was not in this harness, so the join between the two — the
 	// only place either of them means anything — had never run.
 	{name: "balance-service", database: "e2e_balance", schema: "services/balance-service/internal/db/schema.sql"},
+	// The laboratory. Fat and SNF decide what a producer is paid, so a result
+	// that cannot be traced to a sealed sample held by known hands is a number a
+	// society cannot defend when a member asks about it.
+	{name: "laboratory-service", database: "e2e_laboratory", schema: "services/laboratory-service/internal/db/schema.sql"},
 }
 
 // platform is a running set of services, addressed by name.
@@ -409,6 +413,9 @@ func (p *platform) material() *svcclient.Client {
 }
 func (p *platform) balance() *svcclient.Client {
 	return p.clients["balance-service"]
+}
+func (p *platform) laboratory() *svcclient.Client {
+	return p.clients["laboratory-service"]
 }
 
 func (p *platform) opts() svcclient.CallOptions {

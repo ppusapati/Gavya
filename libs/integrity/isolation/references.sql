@@ -5,8 +5,10 @@
 -- that was never issued, or one that belonged to another tenant, or one that was
 -- deleted last year, and the database would take it.
 --
--- Every one of them now has a decision recorded below — 99 decisions, 31
--- enforced and 68 not, and the 68 for stated reasons rather than by omission.
+-- Every one of them now has a decision recorded below — 101 decisions, 31
+-- enforced and 70 not, and every one of the 70 for a stated reason rather than by
+-- omission. Two of them name no _id at all and no view will ever ask about
+-- them; they are recorded because a comment in the schema says they are.
 --
 -- Those figures are a snapshot and will drift. The views are not:
 -- gavya_unconstrained_reference_report is every reference-shaped column nothing
@@ -425,7 +427,33 @@ BEGIN
             'belongs on the table that replaces this one'),
         ('columns_metadata', 'table_id', 'tables_metadata', false,
             'a real reference on a stub table in masters, which enforcement does not reach: it '
-            'belongs on the table that replaces this one')
+            'belongs on the table that replaces this one'),
+
+        -- -------------------------------------------------------------------
+        -- Recorded although nothing demanded it
+        -- -------------------------------------------------------------------
+        --
+        -- lab_samples.source_ref names a collection, a movement, a node or a
+        -- batch, chosen by source_kind beside it. It is as much a reference as
+        -- anything above and neither view will ever ask about it, because the
+        -- report only considers columns ending in _id and this one does not.
+        --
+        -- That is the naming blind spot again, one level further out: the check
+        -- that was silent about sixty-three columns whose targets could not be
+        -- guessed is also silent about every reference that is not spelled _id.
+        -- Widening it to every column would be guessing at what a reference is,
+        -- which is the thing this list exists to avoid.
+        --
+        -- So this entry is here because the schema comment beside the column
+        -- says the decision is recorded here, and a comment that says where to
+        -- look should be right.
+        ('lab_samples', 'source_ref', '', false,
+            'the target is whatever source_kind says: a collection, a movement, a node or a '
+            'batch, in four different services'),
+        ('lab_results', 'instrument_ref', '', false,
+            'the laboratory does not hold the certificate register; the reference is to an '
+            'instrument recorded elsewhere, and the calibration it depends on is copied onto '
+            'the row rather than joined to')
     ) AS t(table_name, column_name, references_table, enforce, reason);
 END
 $fn$ LANGUAGE plpgsql IMMUTABLE;
