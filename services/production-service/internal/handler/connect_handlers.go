@@ -39,6 +39,12 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	route("GetBatchGenealogy", connectjson.Unary(h.GetBatchGenealogy))
 	route("TraceBatch", connectjson.Unary(h.TraceBatch))
 	route("GetBatchYield", connectjson.Unary(h.GetBatchYield))
+
+	route("CreateFormulation", connectjson.Unary(h.CreateFormulation))
+	route("GetFormulation", connectjson.Unary(h.GetFormulation))
+	route("ListFormulations", connectjson.Unary(h.ListFormulations))
+	route("CheckRecipe", connectjson.Unary(h.CheckRecipe))
+	route("GetObservedYield", connectjson.Unary(h.GetObservedYield))
 }
 
 // QuantityProto is a measured amount and what it is measured in.
@@ -117,7 +123,10 @@ type BatchProto struct {
 	SourceKind string `json:"source_kind,omitempty"`
 	SourceRef  string `json:"source_ref,omitempty"`
 
-	ExpectedYieldPPM *int64 `json:"expected_yield_ppm,omitempty"`
+	// FormulationID is the exact version of the recipe this batch followed. The
+	// expectation lives there, not here: it is a property of the recipe, and a
+	// figure typed per vat drifts.
+	FormulationID string `json:"formulation_id,omitempty"`
 
 	Status       string `json:"status"`
 	StatusReason string `json:"status_reason,omitempty"`
@@ -144,12 +153,15 @@ type CreateBatchRequest struct {
 	SourceKind string `json:"source_kind,omitempty"`
 	SourceRef  string `json:"source_ref,omitempty"`
 
-	// ExpectedYieldPPM is what the plant expects this process to give, in parts
-	// per million of what it consumes. Optional, and there is no table of
-	// standard yields behind it: a yield is a property of a plant's milk, its
-	// process and its equipment, and a figure invented here would be a number
-	// nobody measured sitting in a variance report.
-	ExpectedYieldPPM *int64 `json:"expected_yield_ppm,omitempty"`
+	// FormulationID names the exact version of the recipe this batch followed.
+	// Optional: a plant that has not written its recipes down still records what
+	// it made. Where it is given the recipe has to be for this product and has
+	// to have been in force on the day, both refused by the database.
+	FormulationID string `json:"formulation_id,omitempty"`
+	// FormulationCode is the alternative, resolved to the version in force at
+	// produced_at. That resolution is why produced_at is required beside it: a
+	// recipe is several versions and which one applies depends on the day.
+	FormulationCode string `json:"formulation_code,omitempty"`
 
 	// Status defaults to OPEN. A batch created straight into a hold has to say
 	// why, like any other hold.
@@ -177,13 +189,28 @@ func (h *Handler) CreateBatch(ctx context.Context, req *connect.Request[CreateBa
 	if m.Status == "" {
 		status = domain.Open
 	}
+
+	// A code is resolved to the version in force when the batch was made, which
+	// is the whole reason recipes are versioned. A caller that names an id
+	// instead has already chosen a version and gets that one.
+	formulationID := m.FormulationID
+	if formulationID == "" && m.FormulationCode != "" {
+		f, err := h.svc.FormulationInForce(ctx, m.TenantID, m.FormulationCode, producedAt)
+		if err != nil {
+			return nil, classify(fmt.Errorf(
+				"no version of recipe %s was in force at %s: %w",
+				m.FormulationCode, producedAt.UTC().Format(time.RFC3339), err))
+		}
+		formulationID = f.ID
+	}
+
 	b, err := h.svc.CreateBatch(ctx, &domain.Batch{
 		TenantID: m.TenantID, Code: m.Code,
 		Kind: domain.Kind(m.Kind), ProductRef: m.ProductRef,
 		Produced: produced, ProducedAt: producedAt, ProducedBy: m.ProducedBy,
 		SourceKind: domain.SourceKind(m.SourceKind), SourceRef: m.SourceRef,
-		ExpectedYieldPPM: m.ExpectedYieldPPM,
-		Status:           status, StatusReason: m.StatusReason,
+		FormulationID: formulationID,
+		Status:        status, StatusReason: m.StatusReason,
 		CreatedBy: m.Actor,
 	})
 	if err != nil {
@@ -565,8 +592,8 @@ func fromBatch(b *domain.Batch) *BatchProto {
 		Produced:   fromQuantity(b.Produced),
 		ProducedAt: b.ProducedAt.UTC().Format(time.RFC3339), ProducedBy: b.ProducedBy,
 		SourceKind: string(b.SourceKind), SourceRef: b.SourceRef,
-		ExpectedYieldPPM: b.ExpectedYieldPPM,
-		Status:           string(b.Status), StatusReason: b.StatusReason,
+		FormulationID: b.FormulationID,
+		Status:        string(b.Status), StatusReason: b.StatusReason,
 		Held: b.Status.Held(),
 	}
 }
@@ -592,7 +619,8 @@ func classify(err error) error {
 	case errors.Is(err, repository.ErrNotFound):
 		return connect.NewError(connect.CodeNotFound, err)
 	case errors.Is(err, repository.ErrDuplicateCode),
-		errors.Is(err, repository.ErrDuplicateInput):
+		errors.Is(err, repository.ErrDuplicateInput),
+		errors.Is(err, repository.ErrOverlappingVersion):
 		return connect.NewError(connect.CodeAlreadyExists, err)
 	case errors.Is(err, repository.ErrRefused),
 		errors.Is(err, domain.ErrHeldInput):
@@ -606,9 +634,369 @@ func classify(err error) error {
 		errors.Is(err, domain.ErrSourceOnMade), errors.Is(err, domain.ErrHoldNeedsReason),
 		errors.Is(err, domain.ErrNotPositive), errors.Is(err, domain.ErrConsumeSelf),
 		errors.Is(err, domain.ErrNoLimit),
+		errors.Is(err, domain.ErrNoFormulationCode), errors.Is(err, domain.ErrNoOutputProduct),
+		errors.Is(err, domain.ErrNoValidFrom), errors.Is(err, domain.ErrBackwardsPeriod),
+		errors.Is(err, domain.ErrExpectationNeedsBasis),
+		errors.Is(err, domain.ErrIngredientIsTheProduct),
 		errors.Is(err, quantity.ErrNoUnit), errors.Is(err, quantity.ErrNoDensity),
 		errors.Is(err, quantity.ErrBadDensity):
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	return connect.NewError(connect.CodeInternal, err)
+}
+
+// ---------------------------------------------------------------------------
+// Recipes
+// ---------------------------------------------------------------------------
+
+type FormulationInputProto struct {
+	ProductRef string `json:"product_ref"`
+	// ExpectedSharePPM is what share of the total input this is expected to be.
+	// Optional; the shares of a recipe need not sum to a million, because a
+	// recipe naming its two main ingredients and leaving the salt undeclared is
+	// an ordinary recipe and demanding the rest would invent a figure.
+	ExpectedSharePPM *int64 `json:"expected_share_ppm,omitempty"`
+	// ShareTolerancePPM is how far off is worth mentioning, and without it no
+	// share finding is raised at all.
+	//
+	// A real vat never hits a declared proportion exactly. How close is close
+	// enough is a question about this plant's process and its scales, and a
+	// figure chosen here would be the platform's opinion in a report with the
+	// plant's name on it. The observed and declared shares are reported either
+	// way; only the judgement waits on this.
+	ShareTolerancePPM *int64 `json:"share_tolerance_ppm,omitempty"`
+	// Required says whether a batch without this is wrong or merely unusual.
+	Required bool `json:"required"`
+}
+
+type FormulationProto struct {
+	ID       string `json:"id"`
+	TenantID string `json:"tenant_id"`
+	Code     string `json:"code"`
+	Name     string `json:"name"`
+
+	OutputProductRef string `json:"output_product_ref"`
+	OutputUnit       string `json:"output_unit"`
+
+	ExpectedYieldPPM *int64 `json:"expected_yield_ppm,omitempty"`
+	ExpectedPercent  string `json:"expected_yield_percent,omitempty"`
+	// ExpectationBasis is where the figure came from, and is required beside
+	// one. A target a plant derived from two hundred of its own vats and one
+	// read off a supplier's leaflet are different claims.
+	ExpectationBasis string `json:"expectation_basis,omitempty"`
+
+	ValidFrom string `json:"valid_from"`
+	ValidTo   string `json:"valid_to,omitempty"`
+
+	Inputs []FormulationInputProto `json:"inputs,omitempty"`
+}
+
+type CreateFormulationRequest struct {
+	TenantID string `json:"tenant_id"`
+	Code     string `json:"code"`
+	Name     string `json:"name"`
+
+	OutputProductRef string `json:"output_product_ref"`
+	OutputUnit       string `json:"output_unit"`
+
+	ExpectedYieldPPM *int64 `json:"expected_yield_ppm,omitempty"`
+	ExpectationBasis string `json:"expectation_basis,omitempty"`
+
+	// ValidFrom is required. A recipe with no period silently applies to every
+	// batch ever made, including the ones made before it existed.
+	ValidFrom string `json:"valid_from"`
+	ValidTo   string `json:"valid_to,omitempty"`
+
+	Inputs []FormulationInputProto `json:"inputs,omitempty"`
+	Actor  string                  `json:"actor"`
+}
+
+type FormulationResponse struct {
+	Formulation *FormulationProto `json:"formulation"`
+}
+
+func (h *Handler) CreateFormulation(ctx context.Context, req *connect.Request[CreateFormulationRequest]) (*connect.Response[FormulationResponse], error) {
+	m := req.Msg
+	from, err := parseTime(m.ValidFrom, "valid_from")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	var to *time.Time
+	if m.ValidTo != "" {
+		t, err := parseTime(m.ValidTo, "valid_to")
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		to = &t
+	}
+
+	f := &domain.Formulation{
+		TenantID: m.TenantID, Code: m.Code, Name: m.Name,
+		OutputProductRef: m.OutputProductRef, OutputUnit: m.OutputUnit,
+		ExpectedYieldPPM: m.ExpectedYieldPPM, ExpectationBasis: m.ExpectationBasis,
+		ValidFrom: from, ValidTo: to, CreatedBy: m.Actor,
+	}
+	ins := make([]domain.FormulationInput, 0, len(m.Inputs))
+	for _, p := range m.Inputs {
+		ins = append(ins, domain.FormulationInput{
+			ProductRef: p.ProductRef, ExpectedSharePPM: p.ExpectedSharePPM,
+			ShareTolerancePPM: p.ShareTolerancePPM, Required: p.Required,
+			CreatedBy: m.Actor,
+		})
+	}
+
+	out, outIns, err := h.svc.CreateFormulation(ctx, f, ins)
+	if err != nil {
+		return nil, classify(err)
+	}
+	return connect.NewResponse(&FormulationResponse{
+		Formulation: fromFormulation(out, outIns)}), nil
+}
+
+type GetFormulationRequest struct {
+	TenantID string `json:"tenant_id"`
+	ID       string `json:"id,omitempty"`
+	// Code with At resolves to the version that was on the wall then. At is
+	// required beside a code: a recipe is several versions, and answering with
+	// today's when somebody asked about March is the retroactive problem
+	// versioning exists to prevent.
+	Code string `json:"code,omitempty"`
+	At   string `json:"at,omitempty"`
+}
+
+func (h *Handler) GetFormulation(ctx context.Context, req *connect.Request[GetFormulationRequest]) (*connect.Response[FormulationResponse], error) {
+	m := req.Msg
+	f, err := h.formulation(ctx, m.TenantID, m.ID, m.Code, m.At)
+	if err != nil {
+		return nil, classify(err)
+	}
+	ins, err := h.svc.FormulationInputs(ctx, m.TenantID, f.ID)
+	if err != nil {
+		return nil, classify(err)
+	}
+	return connect.NewResponse(&FormulationResponse{Formulation: fromFormulation(f, ins)}), nil
+}
+
+func (h *Handler) formulation(ctx context.Context, tenantID, id, code, at string) (*domain.Formulation, error) {
+	switch {
+	case id != "":
+		return h.svc.GetFormulation(ctx, tenantID, id)
+	case code != "" && at != "":
+		when, err := parseTime(at, "at")
+		if err != nil {
+			return nil, err
+		}
+		return h.svc.FormulationInForce(ctx, tenantID, code, when)
+	case code != "":
+		return nil, errors.New("a recipe named by code must also say which moment to look it " +
+			"up for; a recipe is several versions and which one applies depends on the day")
+	}
+	return nil, errors.New("name the recipe by id, or by code and the moment to look it up for")
+}
+
+type ListFormulationsRequest struct {
+	TenantID string `json:"tenant_id"`
+}
+
+type ListFormulationsResponse struct {
+	Formulations []*FormulationProto `json:"formulations"`
+}
+
+func (h *Handler) ListFormulations(ctx context.Context, req *connect.Request[ListFormulationsRequest]) (*connect.Response[ListFormulationsResponse], error) {
+	list, err := h.svc.ListFormulations(ctx, req.Msg.TenantID)
+	if err != nil {
+		return nil, classify(err)
+	}
+	out := make([]*FormulationProto, 0, len(list))
+	for _, f := range list {
+		out = append(out, fromFormulation(f, nil))
+	}
+	return connect.NewResponse(&ListFormulationsResponse{Formulations: out}), nil
+}
+
+type ShareReadingProto struct {
+	ProductRef       string `json:"product_ref"`
+	ExpectedSharePPM int64  `json:"expected_share_ppm"`
+	ObservedSharePPM int64  `json:"observed_share_ppm"`
+	DifferencePPM    int64  `json:"difference_ppm"`
+	ExpectedPercent  string `json:"expected_percent"`
+	ObservedPercent  string `json:"observed_percent"`
+	// TolerancePPM is what the plant declared, if it declared one. Absent means
+	// the two figures above are reported and nothing is judged.
+	TolerancePPM *int64 `json:"tolerance_ppm,omitempty"`
+}
+
+type FindingProto struct {
+	Kind       string `json:"kind"`
+	ProductRef string `json:"product_ref"`
+	// Serious separates a vat with no milk in it from a note about a
+	// substitution. A report where everything is serious is one where nothing is.
+	Serious     bool   `json:"serious"`
+	Explanation string `json:"explanation"`
+}
+
+type CheckRecipeRequest struct {
+	TenantID string `json:"tenant_id"`
+	ID       string `json:"id,omitempty"`
+	Code     string `json:"code,omitempty"`
+}
+
+type CheckRecipeResponse struct {
+	Batch       *batchRef         `json:"batch"`
+	Formulation *FormulationProto `json:"formulation"`
+
+	Findings []FindingProto `json:"findings"`
+	// SeriousCount is how many of them somebody has to answer for.
+	SeriousCount int32 `json:"serious_count"`
+
+	Shares []ShareReadingProto `json:"shares"`
+	// SharesUnavailableReason says why there are none. Never a silent empty
+	// section: an empty part of a report is read as nothing being wrong.
+	SharesUnavailableReason string `json:"shares_unavailable_reason,omitempty"`
+}
+
+// batchRef is enough of a batch to know which one is being talked about,
+// without repeating the whole thing in every report.
+type batchRef struct {
+	ID         string `json:"id"`
+	Code       string `json:"code"`
+	ProductRef string `json:"product_ref"`
+}
+
+// CheckRecipe holds a batch up against the recipe it followed. Nothing here
+// refuses anything; a plant substitutes, and a vat recorded with a note beside
+// it beats a vat not recorded at all.
+func (h *Handler) CheckRecipe(ctx context.Context, req *connect.Request[CheckRecipeRequest]) (*connect.Response[CheckRecipeResponse], error) {
+	m := req.Msg
+	b, err := h.lookup(ctx, m.TenantID, m.ID, m.Code)
+	if err != nil {
+		return nil, classify(err)
+	}
+	check, f, err := h.svc.CheckRecipe(ctx, m.TenantID, b.ID)
+	if err != nil {
+		return nil, classify(err)
+	}
+
+	out := &CheckRecipeResponse{
+		Batch:                   &batchRef{ID: b.ID, Code: b.Code, ProductRef: b.ProductRef},
+		Formulation:             fromFormulation(f, nil),
+		Findings:                make([]FindingProto, 0, len(check.Findings)),
+		Shares:                  make([]ShareReadingProto, 0, len(check.Shares)),
+		SeriousCount:            int32(len(check.Serious())),
+		SharesUnavailableReason: check.SharesUnavailableReason,
+	}
+	for _, fd := range check.Findings {
+		out.Findings = append(out.Findings, FindingProto{
+			Kind: string(fd.Kind), ProductRef: fd.ProductRef,
+			Serious: fd.Serious(), Explanation: fd.Explanation,
+		})
+	}
+	for _, sh := range check.Shares {
+		out.Shares = append(out.Shares, ShareReadingProto{
+			ProductRef:       sh.ProductRef,
+			ExpectedSharePPM: sh.ExpectedSharePPM, ObservedSharePPM: sh.ObservedSharePPM,
+			DifferencePPM:   sh.DifferencePPM,
+			ExpectedPercent: domain.PercentString(sh.ExpectedSharePPM),
+			ObservedPercent: domain.PercentString(sh.ObservedSharePPM),
+			TolerancePPM:    sh.TolerancePPM,
+		})
+	}
+	return connect.NewResponse(out), nil
+}
+
+type ObservedHistoryRequest struct {
+	TenantID string `json:"tenant_id"`
+	ID       string `json:"id,omitempty"`
+	Code     string `json:"code,omitempty"`
+	At       string `json:"at,omitempty"`
+}
+
+type ObservedHistoryResponse struct {
+	FormulationID    string `json:"formulation_id"`
+	Code             string `json:"code"`
+	OutputProductRef string `json:"output_product_ref"`
+
+	BatchesCounted         int64 `json:"batches_counted"`
+	BatchesNeedingADensity int64 `json:"batches_needing_a_density"`
+
+	LowestPPM        *int64 `json:"lowest_ppm,omitempty"`
+	LowerQuartilePPM *int64 `json:"lower_quartile_ppm,omitempty"`
+	MedianPPM        *int64 `json:"median_ppm,omitempty"`
+	UpperQuartilePPM *int64 `json:"upper_quartile_ppm,omitempty"`
+	HighestPPM       *int64 `json:"highest_ppm,omitempty"`
+
+	LowestPercent  string `json:"lowest_percent,omitempty"`
+	MedianPercent  string `json:"median_percent,omitempty"`
+	HighestPercent string `json:"highest_percent,omitempty"`
+
+	ExpectedPPM      *int64 `json:"expected_yield_ppm,omitempty"`
+	ExpectationBasis string `json:"expectation_basis,omitempty"`
+
+	// Note says how many batches the figures rest on and what was left out. It
+	// travels with them because a median over three vats and a median over
+	// three hundred look identical on a screen.
+	Note string `json:"note"`
+}
+
+// GetObservedYield is the platform's answer to a question it cannot answer.
+//
+// What should this process yield? It does not know, and there is no table of
+// standard yields anywhere in here. What it can do is show a plant its own
+// vats, and let the plant decide.
+func (h *Handler) GetObservedYield(ctx context.Context, req *connect.Request[ObservedHistoryRequest]) (*connect.Response[ObservedHistoryResponse], error) {
+	m := req.Msg
+	f, err := h.formulation(ctx, m.TenantID, m.ID, m.Code, m.At)
+	if err != nil {
+		return nil, classify(err)
+	}
+	hist, err := h.svc.ObservedHistory(ctx, m.TenantID, f.ID)
+	if err != nil {
+		return nil, classify(err)
+	}
+	out := &ObservedHistoryResponse{
+		FormulationID: hist.FormulationID, Code: hist.Code,
+		OutputProductRef:       hist.OutputProductRef,
+		BatchesCounted:         hist.BatchesCounted,
+		BatchesNeedingADensity: hist.BatchesNeedingADensity,
+		LowestPPM:              hist.LowestPPM,
+		LowerQuartilePPM:       hist.LowerQuartilePPM,
+		MedianPPM:              hist.MedianPPM,
+		UpperQuartilePPM:       hist.UpperQuartilePPM,
+		HighestPPM:             hist.HighestPPM,
+		ExpectedPPM:            hist.ExpectedPPM,
+		ExpectationBasis:       hist.ExpectationBasis,
+		Note:                   hist.Note(),
+	}
+	if hist.LowestPPM != nil {
+		out.LowestPercent = domain.PercentString(*hist.LowestPPM)
+	}
+	if hist.MedianPPM != nil {
+		out.MedianPercent = domain.PercentString(*hist.MedianPPM)
+	}
+	if hist.HighestPPM != nil {
+		out.HighestPercent = domain.PercentString(*hist.HighestPPM)
+	}
+	return connect.NewResponse(out), nil
+}
+
+func fromFormulation(f *domain.Formulation, ins []domain.FormulationInput) *FormulationProto {
+	p := &FormulationProto{
+		ID: f.ID, TenantID: f.TenantID, Code: f.Code, Name: f.Name,
+		OutputProductRef: f.OutputProductRef, OutputUnit: string(f.OutputUnit),
+		ExpectedYieldPPM: f.ExpectedYieldPPM, ExpectationBasis: f.ExpectationBasis,
+		ValidFrom: f.ValidFrom.UTC().Format(time.RFC3339),
+	}
+	if f.ExpectedYieldPPM != nil {
+		p.ExpectedPercent = domain.PercentString(*f.ExpectedYieldPPM)
+	}
+	if f.ValidTo != nil {
+		p.ValidTo = f.ValidTo.UTC().Format(time.RFC3339)
+	}
+	for _, in := range ins {
+		p.Inputs = append(p.Inputs, FormulationInputProto{
+			ProductRef: in.ProductRef, ExpectedSharePPM: in.ExpectedSharePPM,
+			ShareTolerancePPM: in.ShareTolerancePPM, Required: in.Required,
+		})
+	}
+	return p
 }

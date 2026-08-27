@@ -415,8 +415,8 @@ func litres(v int64) quantity.Quantity {
 	return q
 }
 
-func batchOf(out quantity.Quantity, expected *int64) *Batch {
-	return &Batch{ID: "b", Code: "PAN-1", Produced: out, ExpectedYieldPPM: expected}
+func batchOf(out quantity.Quantity) *Batch {
+	return &Batch{ID: "b", Code: "PAN-1", Produced: out}
 }
 
 func consumed(qs ...quantity.Quantity) []Input {
@@ -430,7 +430,7 @@ func consumed(qs ...quantity.Quantity) []Input {
 
 // One kilogram of paneer from six kilograms of milk.
 func TestObservedYieldIsTheRatioActuallyMeasured(t *testing.T) {
-	y, err := ComputeYield(batchOf(kg(1000), nil), consumed(kg(6000)), nil, money.RoundHalfUp)
+	y, err := ComputeYield(batchOf(kg(1000)), consumed(kg(6000)), nil, nil, money.RoundHalfUp)
 	if err != nil {
 		t.Fatalf("yield: %v", err)
 	}
@@ -448,8 +448,8 @@ func TestObservedYieldIsTheRatioActuallyMeasured(t *testing.T) {
 // The inputs are totalled, not taken one at a time. A vat filled from three
 // tankers yields against all three.
 func TestYieldTotalsEveryInput(t *testing.T) {
-	y, err := ComputeYield(batchOf(kg(1000), nil), consumed(kg(2000), kg(2000), kg(2000)),
-		nil, money.RoundHalfUp)
+	y, err := ComputeYield(batchOf(kg(1000)), consumed(kg(2000), kg(2000), kg(2000)),
+		nil, nil, money.RoundHalfUp)
 	if err != nil {
 		t.Fatalf("yield: %v", err)
 	}
@@ -465,7 +465,7 @@ func TestYieldTotalsEveryInput(t *testing.T) {
 // Where no expectation was declared there is no variance, and the report says
 // none was declared rather than showing a variance against nothing.
 func TestNoDeclaredExpectationIsReportedAsSuch(t *testing.T) {
-	y, err := ComputeYield(batchOf(kg(1000), nil), consumed(kg(6000)), nil, money.RoundHalfUp)
+	y, err := ComputeYield(batchOf(kg(1000)), consumed(kg(6000)), nil, nil, money.RoundHalfUp)
 	if err != nil {
 		t.Fatalf("yield: %v", err)
 	}
@@ -480,7 +480,7 @@ func TestNoDeclaredExpectationIsReportedAsSuch(t *testing.T) {
 
 func TestVarianceIsObservedMinusExpected(t *testing.T) {
 	expected := int64(180000) // the plant expected 18%
-	y, err := ComputeYield(batchOf(kg(1000), &expected), consumed(kg(6000)), nil, money.RoundHalfUp)
+	y, err := ComputeYield(batchOf(kg(1000)), consumed(kg(6000)), &expected, nil, money.RoundHalfUp)
 	if err != nil {
 		t.Fatalf("yield: %v", err)
 	}
@@ -504,7 +504,7 @@ func TestVarianceIsObservedMinusExpected(t *testing.T) {
 // put a three per cent error into every yield in the plant, and it would look
 // like a process problem rather than an arithmetic one.
 func TestYieldRefusesToInventADensity(t *testing.T) {
-	y, err := ComputeYield(batchOf(kg(1000), nil), consumed(litres(6000)), nil, money.RoundHalfUp)
+	y, err := ComputeYield(batchOf(kg(1000)), consumed(litres(6000)), nil, nil, money.RoundHalfUp)
 	if err != nil {
 		t.Fatalf("yield: %v", err)
 	}
@@ -527,7 +527,7 @@ func TestYieldConvertsWhenADensityIsSupplied(t *testing.T) {
 		t.Fatalf("rate: %v", err)
 	}
 	d := quantity.Density{KgPerLitre: rate, AtCelsius: 200, Source: quantity.Lactometer}
-	y, err := ComputeYield(batchOf(kg(1000), nil), consumed(litres(6000)), &d, money.RoundHalfUp)
+	y, err := ComputeYield(batchOf(kg(1000)), consumed(litres(6000)), nil, &d, money.RoundHalfUp)
 	if err != nil {
 		t.Fatalf("yield: %v", err)
 	}
@@ -550,7 +550,7 @@ func TestYieldConvertsWhenADensityIsSupplied(t *testing.T) {
 // inputs recorded, and a zero yield in that window would be a plant-wide alarm
 // every time somebody typed slowly.
 func TestABatchWithNoInputsHasNoYieldRatherThanZero(t *testing.T) {
-	y, err := ComputeYield(batchOf(kg(1000), nil), nil, nil, money.RoundHalfUp)
+	y, err := ComputeYield(batchOf(kg(1000)), nil, nil, nil, money.RoundHalfUp)
 	if err != nil {
 		t.Fatalf("yield: %v", err)
 	}
@@ -569,7 +569,7 @@ func TestABatchWithNoInputsHasNoYieldRatherThanZero(t *testing.T) {
 	// The other way to have nothing to divide by: input lines that are there
 	// and add up to zero. That is a different problem and says so.
 	zeroed := []Input{{ID: "i0", OutputBatchID: "b", InputBatchID: "s0", Consumed: kg(0)}}
-	y, err = ComputeYield(batchOf(kg(1000), nil), zeroed, nil, money.RoundHalfUp)
+	y, err = ComputeYield(batchOf(kg(1000)), zeroed, nil, nil, money.RoundHalfUp)
 	if err != nil {
 		t.Fatalf("yield: %v", err)
 	}

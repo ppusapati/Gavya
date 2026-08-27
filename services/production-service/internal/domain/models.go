@@ -118,13 +118,14 @@ type Batch struct {
 	SourceKind SourceKind
 	SourceRef  string
 
-	// ExpectedYieldPPM is what the plant expected this process to yield, in
-	// parts per million of what it consumed. Nil where none was declared, and
-	// nil is the ordinary case: this platform holds no table of standard
-	// yields, because a society's paneer yield is a property of its milk, its
-	// process and its equipment, and a figure invented here would be a number
-	// nobody measured sitting in a variance report somebody is asked to explain.
-	ExpectedYieldPPM *int64
+	// FormulationID is the exact version of the recipe this batch followed, or
+	// empty where it followed none.
+	//
+	// The expectation is not on the batch. It is a property of the recipe, and
+	// a figure typed per vat is a figure retyped a hundred times a month by
+	// whoever is on shift — it drifts, and nobody can say afterwards when it
+	// started drifting.
+	FormulationID string
 
 	Status       Status
 	StatusReason string
@@ -188,8 +189,6 @@ func (b *Batch) Validate() error {
 		return errors.New("a batch must say what may be done with it")
 	case b.Status.NeedsReason() && b.StatusReason == "":
 		return ErrHoldNeedsReason
-	case b.ExpectedYieldPPM != nil && *b.ExpectedYieldPPM <= 0:
-		return errors.New("a declared yield of nothing is not an expectation")
 	case b.CreatedBy == "":
 		return errors.New("actor is required")
 	}
@@ -438,19 +437,26 @@ const ppm = 1_000_000
 
 // ComputeYield totals what went into a batch and compares it with what came out.
 //
+// The expectation is passed in rather than read off the batch, because it lives
+// on the recipe the batch followed and resolving it is the service's job. Nil
+// means none was declared, which the result reports as such rather than filling
+// in — a variance against an invented target is a number somebody is asked to
+// explain and cannot, and the second time that happens the report stops being
+// read.
+//
 // Inputs in a unit different from the output are converted, and converting needs
 // a density that the caller supplies. Where none is supplied the yield is not
 // computed and says so, rather than being computed on the three per cent this
 // platform spends its time refusing to assume.
-func ComputeYield(b *Batch, inputs []Input, d *quantity.Density, mode money.RoundingMode) (*Yield, error) {
+func ComputeYield(b *Batch, inputs []Input, expected *int64, d *quantity.Density, mode money.RoundingMode) (*Yield, error) {
 	if b == nil {
 		return nil, errors.New("no batch")
 	}
 	y := &Yield{
 		BatchID:               b.ID,
 		Output:                b.Produced,
-		ExpectedPPM:           b.ExpectedYieldPPM,
-		NoExpectationDeclared: b.ExpectedYieldPPM == nil,
+		ExpectedPPM:           expected,
+		NoExpectationDeclared: expected == nil,
 	}
 	if len(inputs) == 0 {
 		y.UnavailableReason = fmt.Sprintf(
@@ -495,8 +501,8 @@ func ComputeYield(b *Batch, inputs []Input, d *quantity.Density, mode money.Roun
 	observed := b.Produced.Value() * ppm / total.Value()
 	y.ObservedPPM = &observed
 
-	if b.ExpectedYieldPPM != nil {
-		v := observed - *b.ExpectedYieldPPM
+	if expected != nil {
+		v := observed - *expected
 		y.VariancePPM = &v
 	}
 	return y, nil

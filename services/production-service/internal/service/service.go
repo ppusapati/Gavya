@@ -194,6 +194,93 @@ func (s *Service) Trace(ctx context.Context, tenantID, batchID string, dir domai
 	return out, nil
 }
 
+// ---------------------------------------------------------------------------
+// Recipes
+// ---------------------------------------------------------------------------
+
+func (s *Service) CreateFormulation(ctx context.Context, f *domain.Formulation, ins []domain.FormulationInput) (*domain.Formulation, []domain.FormulationInput, error) {
+	return s.repo.CreateFormulation(ctx, f, ins)
+}
+
+func (s *Service) GetFormulation(ctx context.Context, tenantID, id string) (*domain.Formulation, error) {
+	return s.repo.GetFormulation(ctx, tenantID, id)
+}
+
+func (s *Service) ListFormulations(ctx context.Context, tenantID string) ([]*domain.Formulation, error) {
+	return s.repo.ListFormulations(ctx, tenantID)
+}
+
+func (s *Service) FormulationInputs(ctx context.Context, tenantID, formulationID string) ([]domain.FormulationInput, error) {
+	return s.repo.FormulationInputs(ctx, tenantID, formulationID)
+}
+
+// FormulationInForce is the version of a recipe that was on the wall at a
+// moment.
+//
+// The moment is the caller's and there is no default of now. A batch made in
+// March asks about March; answering with today's recipe would be the
+// retroactive problem versioning exists to prevent, arriving as a convenience.
+func (s *Service) FormulationInForce(ctx context.Context, tenantID, code string, at time.Time) (*domain.Formulation, error) {
+	if at.IsZero() {
+		return nil, errors.New("say which moment to look up the recipe for; a recipe is one of " +
+			"several versions and which one applies depends on the day")
+	}
+	return s.repo.FormulationInForce(ctx, tenantID, code, at)
+}
+
+// ObservedHistory is what a plant reads to set its own target.
+//
+// The platform does not know what a process should yield and does not pretend
+// to. What it can do is show a plant its own vats — the count, the range, the
+// median and the quartiles — and let the plant say. The note travels with the
+// figures because a median over three batches and a median over three hundred
+// look identical on a screen.
+func (s *Service) ObservedHistory(ctx context.Context, tenantID, formulationID string) (*domain.ObservedHistory, error) {
+	h, err := s.repo.ObservedHistory(ctx, tenantID, formulationID)
+	if err != nil {
+		return nil, err
+	}
+	f, err := s.repo.GetFormulation(ctx, tenantID, formulationID)
+	if err == nil {
+		h.ExpectationBasis = f.ExpectationBasis
+	}
+	return h, nil
+}
+
+// CheckRecipe holds a batch up against the recipe it followed.
+//
+// Nothing here refuses anything. A plant substitutes, runs short, adds
+// something nobody wrote down three years ago; refusing those would mean the
+// vat is recorded wrongly or not at all, and a gap in the genealogy is worse
+// than a note beside it.
+func (s *Service) CheckRecipe(ctx context.Context, tenantID, batchID string) (*domain.RecipeCheck, *domain.Formulation, error) {
+	b, err := s.repo.GetBatch(ctx, tenantID, batchID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if b.FormulationID == "" {
+		return nil, nil, fmt.Errorf("batch %s did not record which recipe it followed, so there "+
+			"is nothing to hold it up against", b.Code)
+	}
+	f, err := s.repo.GetFormulation(ctx, tenantID, b.FormulationID)
+	if err != nil {
+		return nil, nil, err
+	}
+	expected, err := s.repo.FormulationInputs(ctx, tenantID, f.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+	actual, err := s.repo.Lots(ctx, tenantID, batchID)
+	if err != nil {
+		return nil, nil, err
+	}
+	check, err := domain.CheckRecipe(f, expected, actual)
+	if err != nil {
+		return nil, nil, err
+	}
+	return check, f, nil
+}
+
 // Yield is what a batch gave against what went into it.
 //
 // The density is the caller's, always. Where a batch is weighed and its inputs
@@ -223,5 +310,19 @@ func (s *Service) Yield(ctx context.Context, tenantID, batchID string, d *quanti
 			return nil, err
 		}
 	}
-	return domain.ComputeYield(b, inputs, d, mode)
+
+	// The expectation comes from the recipe the batch followed, at the version
+	// it followed. Not from today's version of that recipe, and not from
+	// anywhere else: a batch made in March under the old recipe keeps being
+	// measured against the old target, which is what the version on the batch
+	// is for.
+	var expected *int64
+	if b.FormulationID != "" {
+		f, err := s.repo.GetFormulation(ctx, tenantID, b.FormulationID)
+		if err != nil {
+			return nil, fmt.Errorf("the recipe batch %s followed: %w", b.Code, err)
+		}
+		expected = f.ExpectedYieldPPM
+	}
+	return domain.ComputeYield(b, inputs, expected, d, mode)
 }

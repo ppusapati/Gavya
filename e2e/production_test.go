@@ -15,6 +15,7 @@ package e2e
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -30,33 +31,34 @@ const productionSvc = "production.v1.ProductionService"
 // it was written with.
 
 type createBatchReq struct {
-	TenantID         string        `json:"tenant_id"`
-	Code             string        `json:"code"`
-	Kind             string        `json:"kind"`
-	ProductRef       string        `json:"product_ref"`
-	Produced         quantityProto `json:"produced"`
-	ProducedAt       string        `json:"produced_at"`
-	ProducedBy       string        `json:"produced_by"`
-	SourceKind       string        `json:"source_kind,omitempty"`
-	SourceRef        string        `json:"source_ref,omitempty"`
-	ExpectedYieldPPM *int64        `json:"expected_yield_ppm,omitempty"`
-	Status           string        `json:"status,omitempty"`
-	StatusReason     string        `json:"status_reason,omitempty"`
-	Actor            string        `json:"actor"`
+	TenantID        string        `json:"tenant_id"`
+	Code            string        `json:"code"`
+	Kind            string        `json:"kind"`
+	ProductRef      string        `json:"product_ref"`
+	Produced        quantityProto `json:"produced"`
+	ProducedAt      string        `json:"produced_at"`
+	ProducedBy      string        `json:"produced_by"`
+	SourceKind      string        `json:"source_kind,omitempty"`
+	SourceRef       string        `json:"source_ref,omitempty"`
+	FormulationID   string        `json:"formulation_id,omitempty"`
+	FormulationCode string        `json:"formulation_code,omitempty"`
+	Status          string        `json:"status,omitempty"`
+	StatusReason    string        `json:"status_reason,omitempty"`
+	Actor           string        `json:"actor"`
 }
 
 type batchProto struct {
-	ID               string        `json:"id"`
-	Code             string        `json:"code"`
-	Kind             string        `json:"kind"`
-	ProductRef       string        `json:"product_ref"`
-	Produced         quantityProto `json:"produced"`
-	SourceKind       string        `json:"source_kind,omitempty"`
-	SourceRef        string        `json:"source_ref,omitempty"`
-	ExpectedYieldPPM *int64        `json:"expected_yield_ppm,omitempty"`
-	Status           string        `json:"status"`
-	StatusReason     string        `json:"status_reason,omitempty"`
-	Held             bool          `json:"held"`
+	ID            string        `json:"id"`
+	Code          string        `json:"code"`
+	Kind          string        `json:"kind"`
+	ProductRef    string        `json:"product_ref"`
+	Produced      quantityProto `json:"produced"`
+	SourceKind    string        `json:"source_kind,omitempty"`
+	SourceRef     string        `json:"source_ref,omitempty"`
+	FormulationID string        `json:"formulation_id,omitempty"`
+	Status        string        `json:"status"`
+	StatusReason  string        `json:"status_reason,omitempty"`
+	Held          bool          `json:"held"`
 }
 
 type batchResp struct {
@@ -682,14 +684,23 @@ func TestYieldIsObservedAndSaysWhenNothingWasExpected(t *testing.T) {
 
 // Where the plant did declare one, the variance is against that figure and its
 // sign says which way the vat went.
+//
+// The target comes off the recipe the batch followed, which is the only place
+// it lives. There is no way to type one onto a vat, and that is the point: a
+// figure retyped per vat by whoever is on shift drifts, and nobody can say
+// afterwards when it started.
 func TestVarianceIsAgainstTheFigureThePlantDeclared(t *testing.T) {
 	p := startPlatform(t)
 	expected := int64(180000)
+	f := mustCreateFormulation(t, p, createFormulationReq{
+		Code: "Y2-PANEER-STD", OutputProductRef: "PANEER", OutputUnit: "KILOGRAMS",
+		ExpectedYieldPPM: &expected, ExpectationBasis: "median of the 2025 season",
+	})
 	src := made(t, p, "Y2-MILK", "INTERMEDIATE", "RAW_MILK", "6000.000", "KILOGRAMS")
 	pan, err := createBatch(t, p, createBatchReq{
 		Code: "Y2-PANEER", Kind: "FINISHED", ProductRef: "PANEER",
-		Produced:         quantityProto{Value: "1000.000", Unit: "KILOGRAMS"},
-		ExpectedYieldPPM: &expected,
+		Produced:      quantityProto{Value: "1000.000", Unit: "KILOGRAMS"},
+		FormulationID: f.ID,
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -827,5 +838,602 @@ func TestTwoVesselsCannotShareACode(t *testing.T) {
 	})
 	if err == nil {
 		t.Error("two vessels were labelled the same")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Recipes
+// ---------------------------------------------------------------------------
+
+type formulationInputProto struct {
+	ProductRef        string `json:"product_ref"`
+	ExpectedSharePPM  *int64 `json:"expected_share_ppm,omitempty"`
+	ShareTolerancePPM *int64 `json:"share_tolerance_ppm,omitempty"`
+	Required          bool   `json:"required"`
+}
+
+type formulationProto struct {
+	ID               string                  `json:"id"`
+	Code             string                  `json:"code"`
+	Name             string                  `json:"name"`
+	OutputProductRef string                  `json:"output_product_ref"`
+	OutputUnit       string                  `json:"output_unit"`
+	ExpectedYieldPPM *int64                  `json:"expected_yield_ppm,omitempty"`
+	ExpectedPercent  string                  `json:"expected_yield_percent,omitempty"`
+	ExpectationBasis string                  `json:"expectation_basis,omitempty"`
+	ValidFrom        string                  `json:"valid_from"`
+	ValidTo          string                  `json:"valid_to,omitempty"`
+	Inputs           []formulationInputProto `json:"inputs,omitempty"`
+}
+
+type createFormulationReq struct {
+	TenantID         string                  `json:"tenant_id"`
+	Code             string                  `json:"code"`
+	Name             string                  `json:"name"`
+	OutputProductRef string                  `json:"output_product_ref"`
+	OutputUnit       string                  `json:"output_unit"`
+	ExpectedYieldPPM *int64                  `json:"expected_yield_ppm,omitempty"`
+	ExpectationBasis string                  `json:"expectation_basis,omitempty"`
+	ValidFrom        string                  `json:"valid_from"`
+	ValidTo          string                  `json:"valid_to,omitempty"`
+	Inputs           []formulationInputProto `json:"inputs,omitempty"`
+	Actor            string                  `json:"actor"`
+}
+
+type formulationResp struct {
+	Formulation *formulationProto `json:"formulation"`
+}
+
+type checkRecipeReq struct {
+	TenantID string `json:"tenant_id"`
+	ID       string `json:"id,omitempty"`
+	Code     string `json:"code,omitempty"`
+}
+
+type findingProto struct {
+	Kind        string `json:"kind"`
+	ProductRef  string `json:"product_ref"`
+	Serious     bool   `json:"serious"`
+	Explanation string `json:"explanation"`
+}
+
+type shareReadingProto struct {
+	ProductRef       string `json:"product_ref"`
+	ExpectedSharePPM int64  `json:"expected_share_ppm"`
+	ObservedSharePPM int64  `json:"observed_share_ppm"`
+	DifferencePPM    int64  `json:"difference_ppm"`
+	TolerancePPM     *int64 `json:"tolerance_ppm,omitempty"`
+}
+
+type checkRecipeResp struct {
+	Findings                []findingProto      `json:"findings"`
+	SeriousCount            int32               `json:"serious_count"`
+	Shares                  []shareReadingProto `json:"shares"`
+	SharesUnavailableReason string              `json:"shares_unavailable_reason,omitempty"`
+}
+
+type observedYieldReq struct {
+	TenantID string `json:"tenant_id"`
+	ID       string `json:"id,omitempty"`
+	Code     string `json:"code,omitempty"`
+	At       string `json:"at,omitempty"`
+}
+
+type observedYieldResp struct {
+	Code                   string `json:"code"`
+	BatchesCounted         int64  `json:"batches_counted"`
+	BatchesNeedingADensity int64  `json:"batches_needing_a_density"`
+	LowestPPM              *int64 `json:"lowest_ppm,omitempty"`
+	LowerQuartilePPM       *int64 `json:"lower_quartile_ppm,omitempty"`
+	MedianPPM              *int64 `json:"median_ppm,omitempty"`
+	UpperQuartilePPM       *int64 `json:"upper_quartile_ppm,omitempty"`
+	HighestPPM             *int64 `json:"highest_ppm,omitempty"`
+	ExpectedPPM            *int64 `json:"expected_yield_ppm,omitempty"`
+	ExpectationBasis       string `json:"expectation_basis,omitempty"`
+	Note                   string `json:"note"`
+}
+
+func createFormulation(t *testing.T, p *platform, in createFormulationReq) (*formulationProto, error) {
+	t.Helper()
+	in.TenantID = p.tenant
+	if in.Actor == "" {
+		in.Actor = "e2e"
+	}
+	if in.Name == "" {
+		in.Name = in.Code
+	}
+	if in.ValidFrom == "" {
+		in.ValidFrom = "2026-01-01T00:00:00Z"
+	}
+	resp, err := svcclient.Call[createFormulationReq, formulationResp](
+		context.Background(), p.production(), productionSvc+"/CreateFormulation", in, p.opts())
+	if err != nil {
+		return nil, err
+	}
+	return resp.Formulation, nil
+}
+
+func mustCreateFormulation(t *testing.T, p *platform, in createFormulationReq) *formulationProto {
+	t.Helper()
+	f, err := createFormulation(t, p, in)
+	if err != nil {
+		t.Fatalf("CreateFormulation %s: %v", in.Code, err)
+	}
+	return f
+}
+
+func checkRecipe(t *testing.T, p *platform, b *batchProto) *checkRecipeResp {
+	t.Helper()
+	resp, err := svcclient.Call[checkRecipeReq, checkRecipeResp](
+		context.Background(), p.production(), productionSvc+"/CheckRecipe",
+		checkRecipeReq{TenantID: p.tenant, ID: b.ID}, p.opts())
+	if err != nil {
+		t.Fatalf("CheckRecipe %s: %v", b.Code, err)
+	}
+	return resp
+}
+
+func observedYield(t *testing.T, p *platform, f *formulationProto) *observedYieldResp {
+	t.Helper()
+	resp, err := svcclient.Call[observedYieldReq, observedYieldResp](
+		context.Background(), p.production(), productionSvc+"/GetObservedYield",
+		observedYieldReq{TenantID: p.tenant, ID: f.ID}, p.opts())
+	if err != nil {
+		t.Fatalf("GetObservedYield %s: %v", f.Code, err)
+	}
+	return resp
+}
+
+func finding(r *checkRecipeResp, kind, product string) *findingProto {
+	for i := range r.Findings {
+		if r.Findings[i].Kind == kind && r.Findings[i].ProductRef == product {
+			return &r.Findings[i]
+		}
+	}
+	return nil
+}
+
+// A declared target has to say where it came from.
+func TestADeclaredTargetMustSayWhereItCameFrom(t *testing.T) {
+	p := startPlatform(t)
+	target := int64(180000)
+	_, err := createFormulation(t, p, createFormulationReq{
+		Code: "F1-PANEER", OutputProductRef: "PANEER", OutputUnit: "KILOGRAMS",
+		ExpectedYieldPPM: &target,
+	})
+	if err == nil {
+		t.Error("a target with no provenance was accepted; a figure derived from a plant's own " +
+			"vats and one read off a supplier's leaflet are different claims and a variance " +
+			"report that shows them alike invites the same argument every month")
+	}
+
+	f := mustCreateFormulation(t, p, createFormulationReq{
+		Code: "F1-PANEER", OutputProductRef: "PANEER", OutputUnit: "KILOGRAMS",
+		ExpectedYieldPPM: &target, ExpectationBasis: "median of 214 vats, Jan-Jun 2026",
+	})
+	if f.ExpectationBasis == "" {
+		t.Error("the provenance was accepted and then dropped")
+	}
+	if f.ExpectedPercent != "18.0000%" {
+		t.Errorf("the target renders as %q", f.ExpectedPercent)
+	}
+}
+
+// Two versions of one recipe cannot be in force at once. Resolved later — by
+// taking the newest, say — the choice is invisible, and the plant finds out
+// when two vats of the same product report variances against different targets.
+func TestTwoVersionsOfARecipeCannotBeInForceAtOnce(t *testing.T) {
+	p := startPlatform(t)
+	mustCreateFormulation(t, p, createFormulationReq{
+		Code: "F2-CURD", OutputProductRef: "CURD", OutputUnit: "KILOGRAMS",
+		ValidFrom: "2026-01-01T00:00:00Z", ValidTo: "2026-04-01T00:00:00Z",
+	})
+	if _, err := createFormulation(t, p, createFormulationReq{
+		Code: "F2-CURD", OutputProductRef: "CURD", OutputUnit: "KILOGRAMS",
+		ValidFrom: "2026-03-01T00:00:00Z", ValidTo: "2026-05-01T00:00:00Z",
+	}); err == nil {
+		t.Error("two versions of one recipe overlap")
+	}
+	// Abutting is how a plant actually replaces one, and must be accepted.
+	if _, err := createFormulation(t, p, createFormulationReq{
+		Code: "F2-CURD", OutputProductRef: "CURD", OutputUnit: "KILOGRAMS",
+		ValidFrom: "2026-04-01T00:00:00Z",
+	}); err != nil {
+		t.Errorf("the replacement starting the day the old one ended was refused: %v", err)
+	}
+}
+
+// A batch names a recipe by code, and gets the version that was on the wall the
+// day it was made — not today's.
+func TestABatchGetsTheVersionThatWasOnTheWallThatDay(t *testing.T) {
+	p := startPlatform(t)
+	old := int64(180000)
+	recent := int64(190000)
+	v1 := mustCreateFormulation(t, p, createFormulationReq{
+		Code: "F3-PANEER", OutputProductRef: "PANEER", OutputUnit: "KILOGRAMS",
+		ValidFrom: "2026-01-01T00:00:00Z", ValidTo: "2026-04-01T00:00:00Z",
+		ExpectedYieldPPM: &old, ExpectationBasis: "2025 history",
+	})
+	v2 := mustCreateFormulation(t, p, createFormulationReq{
+		Code: "F3-PANEER", OutputProductRef: "PANEER", OutputUnit: "KILOGRAMS",
+		ValidFrom:        "2026-04-01T00:00:00Z",
+		ExpectedYieldPPM: &recent, ExpectationBasis: "new separator, Q1 history",
+	})
+
+	march, err := createBatch(t, p, createBatchReq{
+		Code: "F3-MARCH", Kind: "FINISHED", ProductRef: "PANEER",
+		Produced:   quantityProto{Value: "1000.000", Unit: "KILOGRAMS"},
+		ProducedAt: "2026-03-15T06:00:00Z", FormulationCode: "F3-PANEER",
+	})
+	if err != nil {
+		t.Fatalf("March batch: %v", err)
+	}
+	if march.FormulationID != v1.ID {
+		t.Errorf("a batch made in March got version %s; the recipe on the wall in March was %s, "+
+			"and measuring it against the April one is the retroactive problem versioning "+
+			"exists to prevent", march.FormulationID, v1.ID)
+	}
+
+	may, err := createBatch(t, p, createBatchReq{
+		Code: "F3-MAY", Kind: "FINISHED", ProductRef: "PANEER",
+		Produced:   quantityProto{Value: "1000.000", Unit: "KILOGRAMS"},
+		ProducedAt: "2026-05-15T06:00:00Z", FormulationCode: "F3-PANEER",
+	})
+	if err != nil {
+		t.Fatalf("May batch: %v", err)
+	}
+	if may.FormulationID != v2.ID {
+		t.Errorf("a batch made in May got version %s, want %s", may.FormulationID, v2.ID)
+	}
+
+	// And the yield each reports is measured against its own version's target.
+	milkM := made(t, p, "F3-MILK-M", "INTERMEDIATE", "RAW_MILK", "6000.000", "KILOGRAMS")
+	mustRecordInput(t, p, march, milkM, "6000.000", "KILOGRAMS")
+	got := batchYield(t, p, yieldReq{ID: march.ID})
+	if got.ExpectedPPM == nil || *got.ExpectedPPM != old {
+		t.Errorf("the March batch is measured against %v, want the March target %d",
+			got.ExpectedPPM, old)
+	}
+	// 166666 observed against 180000 declared.
+	if got.VariancePPM == nil || *got.VariancePPM != -13334 {
+		t.Errorf("variance %v, want -13334 against the March target", got.VariancePPM)
+	}
+}
+
+// A batch pointed at the recipe for a different product is refused. The
+// variance would be against a target for something else: meaningless, and
+// alarming to look at.
+func TestABatchCannotFollowTheRecipeForSomethingElse(t *testing.T) {
+	p := startPlatform(t)
+	f := mustCreateFormulation(t, p, createFormulationReq{
+		Code: "F4-PANEER", OutputProductRef: "PANEER", OutputUnit: "KILOGRAMS",
+	})
+	_, err := createBatch(t, p, createBatchReq{
+		Code: "F4-GHEE", Kind: "FINISHED", ProductRef: "GHEE",
+		Produced:   quantityProto{Value: "100.000", Unit: "KILOGRAMS"},
+		ProducedAt: "2026-02-01T06:00:00Z", FormulationID: f.ID,
+	})
+	if err == nil {
+		t.Error("a ghee batch was measured against the paneer recipe")
+	}
+}
+
+// A batch pointed at a version that came into force after it was made is
+// refused: the retroactive problem, arriving through the other door.
+func TestABatchCannotFollowARecipeThatDidNotExistYet(t *testing.T) {
+	p := startPlatform(t)
+	f := mustCreateFormulation(t, p, createFormulationReq{
+		Code: "F5-PANEER", OutputProductRef: "PANEER", OutputUnit: "KILOGRAMS",
+		ValidFrom: "2026-06-01T00:00:00Z",
+	})
+	_, err := createBatch(t, p, createBatchReq{
+		Code: "F5-EARLY", Kind: "FINISHED", ProductRef: "PANEER",
+		Produced:   quantityProto{Value: "100.000", Unit: "KILOGRAMS"},
+		ProducedAt: "2026-02-01T06:00:00Z", FormulationID: f.ID,
+	})
+	if err == nil {
+		t.Error("a February batch was measured against a recipe that came into force in June")
+	}
+}
+
+// Paneer with no milk in it: the finding the whole check exists for.
+func TestAVatMissingARequiredIngredientIsReportedAsSerious(t *testing.T) {
+	p := startPlatform(t)
+	f := mustCreateFormulation(t, p, createFormulationReq{
+		Code: "F6-PANEER", OutputProductRef: "PANEER", OutputUnit: "KILOGRAMS",
+		Inputs: []formulationInputProto{
+			{ProductRef: "RAW_MILK", Required: true},
+			{ProductRef: "CULTURE", Required: false},
+		},
+	})
+	vat, err := createBatch(t, p, createBatchReq{
+		Code: "F6-VAT", Kind: "FINISHED", ProductRef: "PANEER",
+		Produced:   quantityProto{Value: "1000.000", Unit: "KILOGRAMS"},
+		ProducedAt: "2026-02-01T06:00:00Z", FormulationID: f.ID,
+	})
+	if err != nil {
+		t.Fatalf("vat: %v", err)
+	}
+	acid := made(t, p, "F6-ACID", "INTERMEDIATE", "CITRIC_ACID", "50.000", "KILOGRAMS")
+	mustRecordInput(t, p, vat, acid, "50.000", "KILOGRAMS")
+
+	got := checkRecipe(t, p, vat)
+	missing := finding(got, "MISSING_REQUIRED", "RAW_MILK")
+	if missing == nil {
+		t.Fatalf("paneer was made with no milk in it and nothing said so: %+v", got.Findings)
+	}
+	if !missing.Serious {
+		t.Error("a vat with no milk in it is not marked serious")
+	}
+	if got.SeriousCount != 1 {
+		t.Errorf("serious count %d, want 1", got.SeriousCount)
+	}
+
+	// The unused optional ingredient is a note, and the substitution is a note.
+	// Reporting all three the same way is how a reader skims past the one that
+	// matters.
+	if f := finding(got, "MISSING_OPTIONAL", "CULTURE"); f == nil {
+		t.Errorf("the unused optional ingredient was not mentioned: %+v", got.Findings)
+	} else if f.Serious {
+		t.Error("an unused optional ingredient is marked as serious as paneer with no milk")
+	}
+	if f := finding(got, "UNEXPECTED", "CITRIC_ACID"); f == nil {
+		t.Errorf("a substitution went unreported: %+v", got.Findings)
+	} else if f.Serious {
+		t.Error("a substitution is marked serious; a plant substitutes and a vat recorded " +
+			"with a note beside it beats a vat not recorded at all")
+	}
+}
+
+// A recipe followed exactly reports nothing. Without this the assertions above
+// would pass against a check that reports everything.
+func TestAVatThatFollowedTheRecipeReportsNothing(t *testing.T) {
+	p := startPlatform(t)
+	f := mustCreateFormulation(t, p, createFormulationReq{
+		Code: "F7-PANEER", OutputProductRef: "PANEER", OutputUnit: "KILOGRAMS",
+		Inputs: []formulationInputProto{{ProductRef: "RAW_MILK", Required: true}},
+	})
+	vat, err := createBatch(t, p, createBatchReq{
+		Code: "F7-VAT", Kind: "FINISHED", ProductRef: "PANEER",
+		Produced:   quantityProto{Value: "1000.000", Unit: "KILOGRAMS"},
+		ProducedAt: "2026-02-01T06:00:00Z", FormulationID: f.ID,
+	})
+	if err != nil {
+		t.Fatalf("vat: %v", err)
+	}
+	milk := made(t, p, "F7-MILK", "INTERMEDIATE", "RAW_MILK", "6000.000", "KILOGRAMS")
+	mustRecordInput(t, p, vat, milk, "6000.000", "KILOGRAMS")
+
+	got := checkRecipe(t, p, vat)
+	if len(got.Findings) != 0 {
+		t.Errorf("a vat that followed the recipe reported %+v", got.Findings)
+	}
+}
+
+// The declared and observed proportions are always put side by side. Whether
+// the gap between them is a finding waits on a tolerance the plant declares.
+func TestSharesAreReportedAndOnlyJudgedAgainstADeclaredTolerance(t *testing.T) {
+	p := startPlatform(t)
+	tight := int64(10000) // one per cent
+	half := int64(500000)
+
+	// Two recipes, identical but for the tolerance.
+	noTol := mustCreateFormulation(t, p, createFormulationReq{
+		Code: "F8-A", OutputProductRef: "CURD", OutputUnit: "KILOGRAMS",
+		Inputs: []formulationInputProto{
+			{ProductRef: "RAW_MILK", ExpectedSharePPM: &half, Required: true},
+			{ProductRef: "CREAM", ExpectedSharePPM: &half, Required: true},
+		},
+	})
+	withTol := mustCreateFormulation(t, p, createFormulationReq{
+		Code: "F8-B", OutputProductRef: "CURD", OutputUnit: "KILOGRAMS",
+		Inputs: []formulationInputProto{
+			{ProductRef: "RAW_MILK", ExpectedSharePPM: &half, ShareTolerancePPM: &tight,
+				Required: true},
+			{ProductRef: "CREAM", ExpectedSharePPM: &half, ShareTolerancePPM: &tight,
+				Required: true},
+		},
+	})
+
+	// The same badly-proportioned vat under each: 90% milk against a declared 50%.
+	for _, c := range []struct {
+		tag         string
+		f           *formulationProto
+		wantFinding bool
+	}{
+		{"A", noTol, false},
+		{"B", withTol, true},
+	} {
+		vat, err := createBatch(t, p, createBatchReq{
+			Code: "F8-VAT-" + c.tag, Kind: "FINISHED", ProductRef: "CURD",
+			Produced:   quantityProto{Value: "900.000", Unit: "KILOGRAMS"},
+			ProducedAt: "2026-02-01T06:00:00Z", FormulationID: c.f.ID,
+		})
+		if err != nil {
+			t.Fatalf("vat %s: %v", c.tag, err)
+		}
+		milk := made(t, p, "F8-MILK-"+c.tag, "INTERMEDIATE", "RAW_MILK", "900.000", "KILOGRAMS")
+		cream := made(t, p, "F8-CREAM-"+c.tag, "INTERMEDIATE", "CREAM", "100.000", "KILOGRAMS")
+		mustRecordInput(t, p, vat, milk, "900.000", "KILOGRAMS")
+		mustRecordInput(t, p, vat, cream, "100.000", "KILOGRAMS")
+
+		got := checkRecipe(t, p, vat)
+
+		// The figures are reported either way.
+		var milkShare *shareReadingProto
+		for i := range got.Shares {
+			if got.Shares[i].ProductRef == "RAW_MILK" {
+				milkShare = &got.Shares[i]
+			}
+		}
+		if milkShare == nil {
+			t.Fatalf("%s: the declared share was not reported at all: %+v", c.tag, got.Shares)
+		}
+		if milkShare.ObservedSharePPM != 900000 || milkShare.ExpectedSharePPM != 500000 {
+			t.Errorf("%s: reported %d observed against %d declared, want 900000 against 500000",
+				c.tag, milkShare.ObservedSharePPM, milkShare.ExpectedSharePPM)
+		}
+		if milkShare.DifferencePPM != 400000 {
+			t.Errorf("%s: difference %d, want 400000", c.tag, milkShare.DifferencePPM)
+		}
+
+		// The judgement waits on the tolerance.
+		f := finding(got, "SHARE_DIFFERS", "RAW_MILK")
+		if c.wantFinding && f == nil {
+			t.Errorf("%s: a vat forty per cent outside a one per cent tolerance was not "+
+				"reported: %+v", c.tag, got.Findings)
+		}
+		if !c.wantFinding && f != nil {
+			t.Errorf("%s: a vat was judged against a tolerance nobody declared: %s",
+				c.tag, f.Explanation)
+		}
+	}
+}
+
+// What a plant reads in order to set its own target.
+//
+// The platform does not know what a process should yield and does not invent
+// one. It shows the plant its own vats.
+func TestObservedHistoryIsWhatAPlantReadsToSetItsOwnTarget(t *testing.T) {
+	p := startPlatform(t)
+	f := mustCreateFormulation(t, p, createFormulationReq{
+		Code: "F9-CURD", OutputProductRef: "CURD", OutputUnit: "KILOGRAMS",
+	})
+
+	// Five vats yielding 15%, 16%, 17%, 18% and 19% — recorded out of order, so
+	// the median is a property of the figures and not of the insertion order.
+	for _, ppm := range []int64{170000, 150000, 190000, 160000, 180000} {
+		tag := fmt.Sprintf("%d", ppm)
+		src := made(t, p, "F9-MILK-"+tag, "INTERMEDIATE", "RAW_MILK", "1000.000", "KILOGRAMS")
+		out, err := createBatch(t, p, createBatchReq{
+			Code: "F9-VAT-" + tag, Kind: "FINISHED", ProductRef: "CURD",
+			// 1000.000 kg in, so ppm/1000 kg out gives exactly ppm.
+			Produced:   quantityProto{Value: fmt.Sprintf("%d.000", ppm/1000), Unit: "KILOGRAMS"},
+			ProducedAt: "2026-02-01T06:00:00Z", FormulationID: f.ID,
+		})
+		if err != nil {
+			t.Fatalf("vat %s: %v", tag, err)
+		}
+		mustRecordInput(t, p, out, src, "1000.000", "KILOGRAMS")
+	}
+
+	got := observedYield(t, p, f)
+	if got.BatchesCounted != 5 {
+		t.Fatalf("the history rests on %d batches, want 5: %+v", got.BatchesCounted, got)
+	}
+	for _, c := range []struct {
+		name string
+		got  *int64
+		want int64
+	}{
+		{"lowest", got.LowestPPM, 150000},
+		{"lower quartile", got.LowerQuartilePPM, 160000},
+		{"median", got.MedianPPM, 170000},
+		{"upper quartile", got.UpperQuartilePPM, 180000},
+		{"highest", got.HighestPPM, 190000},
+	} {
+		if c.got == nil || *c.got != c.want {
+			t.Errorf("%s is %v, want %d", c.name, c.got, c.want)
+		}
+	}
+	// Every figure is one a vat actually produced, not an interpolation between
+	// two that did. A plant setting a target off this list is looking at its own
+	// numbers.
+	if !strings.Contains(got.Note, "5") {
+		t.Errorf("note %q does not say how many batches it rests on; a median over five vats "+
+			"and one over five hundred look identical on a screen", got.Note)
+	}
+	if got.ExpectedPPM != nil {
+		t.Errorf("a target of %d appeared on a recipe that declared none", *got.ExpectedPPM)
+	}
+}
+
+// Batches whose yield needs a density are counted separately and said so. Three
+// usable observations beside forty unconvertible ones is not a history anybody
+// should set a target from, and a summary showing only the three would not say.
+func TestTheHistorySaysHowManyBatchesItHadToLeaveOut(t *testing.T) {
+	p := startPlatform(t)
+	f := mustCreateFormulation(t, p, createFormulationReq{
+		Code: "FA-BUTTER", OutputProductRef: "BUTTER", OutputUnit: "KILOGRAMS",
+	})
+
+	// One usable: kilograms in, kilograms out.
+	srcKg := made(t, p, "FA-CREAM-KG", "INTERMEDIATE", "CREAM", "1000.000", "KILOGRAMS")
+	okBatch, err := createBatch(t, p, createBatchReq{
+		Code: "FA-VAT-OK", Kind: "FINISHED", ProductRef: "BUTTER",
+		Produced:   quantityProto{Value: "400.000", Unit: "KILOGRAMS"},
+		ProducedAt: "2026-02-01T06:00:00Z", FormulationID: f.ID,
+	})
+	if err != nil {
+		t.Fatalf("usable vat: %v", err)
+	}
+	mustRecordInput(t, p, okBatch, srcKg, "1000.000", "KILOGRAMS")
+
+	// Two unconvertible: litres in, kilograms out.
+	for i := 1; i <= 2; i++ {
+		tag := fmt.Sprintf("%d", i)
+		srcL := made(t, p, "FA-CREAM-L"+tag, "INTERMEDIATE", "CREAM", "1000.000", "LITRES")
+		b, err := createBatch(t, p, createBatchReq{
+			Code: "FA-VAT-L" + tag, Kind: "FINISHED", ProductRef: "BUTTER",
+			Produced:   quantityProto{Value: "400.000", Unit: "KILOGRAMS"},
+			ProducedAt: "2026-02-01T06:00:00Z", FormulationID: f.ID,
+		})
+		if err != nil {
+			t.Fatalf("unconvertible vat %s: %v", tag, err)
+		}
+		mustRecordInput(t, p, b, srcL, "1000.000", "LITRES")
+	}
+
+	got := observedYield(t, p, f)
+	if got.BatchesCounted != 1 {
+		t.Errorf("counted %d batches, want the one whose units line up", got.BatchesCounted)
+	}
+	if got.BatchesNeedingADensity != 2 {
+		t.Errorf("reported %d batches needing a density, want 2; a summary that hides them "+
+			"looks like a recipe with a short history rather than one with an unconvertible one",
+			got.BatchesNeedingADensity)
+	}
+	if !strings.Contains(got.Note, "density") {
+		t.Errorf("note %q does not say why two batches were left out", got.Note)
+	}
+}
+
+// A recipe nobody has used yet answers, rather than failing.
+func TestARecipeNobodyHasUsedStillAnswers(t *testing.T) {
+	p := startPlatform(t)
+	f := mustCreateFormulation(t, p, createFormulationReq{
+		Code: "FB-NEW", OutputProductRef: "SMP", OutputUnit: "KILOGRAMS",
+	})
+	got := observedYield(t, p, f)
+	if got.BatchesCounted != 0 {
+		t.Errorf("a recipe nobody has used counted %d batches", got.BatchesCounted)
+	}
+	if got.MedianPPM != nil {
+		t.Errorf("a median of %d over no batches at all", *got.MedianPPM)
+	}
+	if got.Note == "" {
+		t.Error("no figures and no note; an empty report is read as nothing being wrong")
+	}
+}
+
+// A recipe named by code has to say which moment to look it up for.
+func TestARecipeByCodeMustSayWhichMoment(t *testing.T) {
+	p := startPlatform(t)
+	mustCreateFormulation(t, p, createFormulationReq{
+		Code: "FC-CURD", OutputProductRef: "CURD", OutputUnit: "KILOGRAMS",
+	})
+	_, err := svcclient.Call[observedYieldReq, observedYieldResp](
+		context.Background(), p.production(), productionSvc+"/GetObservedYield",
+		observedYieldReq{TenantID: p.tenant, Code: "FC-CURD"}, p.opts())
+	if err == nil {
+		t.Error("a recipe was looked up by code with no moment given; a recipe is several " +
+			"versions and answering with today's when somebody meant March is the retroactive " +
+			"problem versioning exists to prevent")
+	}
+	if _, err := svcclient.Call[observedYieldReq, observedYieldResp](
+		context.Background(), p.production(), productionSvc+"/GetObservedYield",
+		observedYieldReq{TenantID: p.tenant, Code: "FC-CURD", At: "2026-06-01T00:00:00Z"},
+		p.opts()); err != nil {
+		t.Errorf("a recipe looked up by code and moment was refused: %v", err)
 	}
 }

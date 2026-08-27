@@ -515,22 +515,64 @@ func TestNoForeignKeyCanCrossATenantBoundary(t *testing.T) {
 // The conversion must not quietly change what a key does on delete. A CASCADE
 // turned into NO ACTION leaves rows behind that the schema says should have
 // gone, and nothing complains until somebody counts them.
+//
+// Named rather than counted. A count was the first version of this and it broke
+// the day a service legitimately added a cascade — which told nobody anything
+// except that the number had moved. Naming them means a new cascade has to be
+// written down here, which is a deliberate act by whoever adds one, and a
+// cascade the conversion silently dropped still fails.
 func TestTheConversionKeepsTheReferentialActions(t *testing.T) {
 	owner, _ := isolated(t)
 
-	var cascades int
-	if err := owner.QueryRow(context.Background(), `
-		SELECT count(*) FROM pg_constraint c
+	// Every ON DELETE CASCADE the schemas declare, and why it is one.
+	want := map[string]string{
+		// A reconciliation run's flows are the run. Nothing about them survives
+		// it, and leaving them behind would leave a balance nobody can trace to
+		// the run that produced it.
+		"reconciled_flows": "the flows of a reconciliation run are meaningless without the run",
+		// A recipe's ingredients are the recipe. Note that a recipe any batch
+		// followed cannot be deleted at all — production_batches.formulation_id
+		// is NO ACTION — so this only ever fires on a recipe nobody used.
+		"production_formulation_inputs": "a recipe's ingredient list is meaningless without the recipe",
+	}
+
+	rows, err := owner.Query(context.Background(), `
+		SELECT r.relname, c.conname FROM pg_constraint c
 		JOIN pg_class r ON r.oid = c.conrelid
 		JOIN pg_namespace n ON n.oid = r.relnamespace
 		WHERE c.contype = 'f' AND n.nspname NOT IN ('pg_catalog','information_schema')
-		  AND c.confdeltype = 'c'`).Scan(&cascades); err != nil {
+		  AND c.confdeltype = 'c'
+		ORDER BY r.relname, c.conname`)
+	if err != nil {
 		t.Fatal(err)
 	}
-	// The schema ships exactly one ON DELETE CASCADE. If the conversion dropped
-	// it this is zero, and nothing else in the system would have noticed.
-	if cascades != 1 {
-		t.Errorf("%d foreign keys cascade on delete, want the 1 the schema declares", cascades)
+	defer rows.Close()
+
+	found := map[string]bool{}
+	for rows.Next() {
+		var table, constraint string
+		if err := rows.Scan(&table, &constraint); err != nil {
+			t.Fatal(err)
+		}
+		if _, expected := want[table]; !expected {
+			t.Errorf("%s.%s cascades on delete and is not one of the cascades this platform "+
+				"has decided on; add it here with the reason, or take the cascade off",
+				table, constraint)
+			continue
+		}
+		found[table] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	for table, why := range want {
+		if !found[table] {
+			t.Errorf("%s no longer cascades on delete: %s. Either the schema changed "+
+				"deliberately, in which case take it out of this list, or making the foreign "+
+				"keys tenant-safe rewrote the key and dropped the action — which leaves rows "+
+				"behind that nothing complains about until somebody counts them", table, why)
+		}
 	}
 }
 
