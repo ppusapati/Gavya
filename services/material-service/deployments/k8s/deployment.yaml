@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: material-service
+  labels:
+    app: material-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: material-service
+  template:
+    metadata:
+      labels:
+        app: material-service
+    spec:
+      containers:
+      - name: material-service
+        image: gavya/material-service:latest
+        ports:
+        - containerPort: 8105
+        envFrom:
+        - configMapRef:
+            name: material-service-config
+        - secretRef:
+            name: material-service-secret
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8105
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8105
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "1000m"
+            memory: "512Mi"

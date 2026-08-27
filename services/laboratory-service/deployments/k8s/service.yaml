@@ -1,0 +1,39 @@
+# Samples, custody and results: whether a reading may price milk.
+apiVersion: v1
+kind: Service
+metadata:
+  name: laboratory-service
+spec:
+  selector:
+    app: laboratory-service
+  ports:
+  - port: 80
+    targetPort: 8106
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: laboratory-service-config
+data:
+  SERVICE_NAME: laboratory-service
+  SERVER_ADDR: ":8106"
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: laboratory-service-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: laboratory-service
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70

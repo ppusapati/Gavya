@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: settlement-service
+  labels:
+    app: settlement-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: settlement-service
+  template:
+    metadata:
+      labels:
+        app: settlement-service
+    spec:
+      containers:
+      - name: settlement-service
+        image: gavya/settlement-service:latest
+        ports:
+        - containerPort: 8104
+        envFrom:
+        - configMapRef:
+            name: settlement-service-config
+        - secretRef:
+            name: settlement-service-secret
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8104
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8104
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "1000m"
+            memory: "512Mi"

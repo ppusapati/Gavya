@@ -219,6 +219,123 @@ defensible. It works strongest-evidence-first:
 could not be made at all — mismatched currency, a missing counterpart, no component
 detail on either side.
 
+### `procurement-service` — what a producer is owed
+
+Rate cards, priced collections, and corrections.
+
+A card is in force over a period and one card applies at a time per tenant, held
+by an exclusion constraint rather than resolved at pricing time. Resolved later —
+by taking the newest, say — the choice is invisible, and the society finds out
+when a producer compares two statements.
+
+Chart pricing lives in `libs/integrity/ratecard`: a point on a fat/SNF grid, an
+explicit policy for a reading between two points and another for one off the edge
+of the chart. Neither has a default. A card that does not say what happens between
+its points is a card that cannot price the reading a machine actually produced.
+
+**A correction re-prices from the readings, never from the old rate**, under the
+card that was in force on the collection day. The superseded version stays, with
+the reason for the change. A collection has one live priced version per
+producer/day/shift, enforced by a partial unique index over the live rows.
+
+### `settlement-service` — what a producer is paid
+
+Cycles, payables, deductions, recoveries, payments, and the statement.
+
+The statement is a **rendered fixed-width document**, not JSON. That is the whole
+point of it: a member reads it and adds the column by eye, so every figure is
+anchored to the right margin and quantity totals sit under the quantities rather
+than in the money column. It refuses to render a page whose figures do not
+reconcile, and it refuses a width too narrow to hold them rather than wrapping.
+
+An **adjustment** is a distinct kind of payable from a settlement. Recovering an
+overpayment needs a negative gross, which a settlement may never have; without the
+distinction the choice is between allowing negative settlements and being unable
+to correct a payment already made.
+
+### `material-service` — where the milk physically is
+
+Nodes are real things with codes: a cooler, a tanker with a registration, a silo.
+Movements are measured at both ends, so the difference between the two ends is
+recorded rather than reconciled away.
+
+Instruments carry calibration and an uncertainty, both supplied. There is no table
+of instrument uncertainties by measurement method in this platform, because that
+is an empirical property of a specific instrument in a specific plant.
+
+Two rules the database holds: a tanker is in one place at a time, and a movement
+is final once received.
+
+### `balance-service` — what the measurements can actually check
+
+Given a network of measured flows, which measurements are checked by another and
+which are taken on trust.
+
+The classification is graph-theoretic. A flow whose edge is a **bridge** — one
+whose removal disconnects the graph — is unchecked, because nothing else
+constrains it. A flow in a cycle is redundant: the cycle provides an independent
+route to the same quantity.
+
+A self-loop is a bridge, not a cycle. It contributes `+x − x = 0` to its node's
+balance and so constrains nothing; treating it as a cycle reports an unchecked
+measurement as checked, which is the one direction this must not be wrong in. The
+same holds for a meter with an unmeasured bypass — the bypass absorbs any error,
+so the meter cannot be checked.
+
+### `laboratory-service` — whether a reading may price milk
+
+Samples, chain of custody, results.
+
+A result is fit to price milk when its sample was sealed, its custody is unbroken
+from whoever drew it, and the instrument that read it was in calibration on the
+day. A result that fails any of those is **still recorded**, marked not fit with
+the reason attached — a platform that refused would simply be kept alongside a
+paper book, which is the failure this whole thing exists to end.
+
+An instrument with no recorded calibration yields `UNKNOWN`, not `NOT_ELIGIBLE`.
+Reporting a gap in the records identically to a finding is how a missing
+certificate becomes an accusation.
+
+Repeat readings of one analyte are **compared and reported, never resolved**. A
+laboratory that ran a sample twice did so to find out whether the two agree, and
+picking one throws away the answer to the question that was asked.
+
+### `production-service` — genealogy, recall and yield
+
+A recall asks one question in two directions. Forward: this tanker was
+contaminated, which cartons contain it. Backward: this carton came back, what went
+into it and what else came out of the same silo.
+
+**Either answer must be complete or say plainly that it is not.** A partial list of
+affected cartons does not sit there being partial — it gets acted on, the named
+ones come off the shelf and the missed ones stay there with somebody's confidence
+behind them. So every walk reports whether it finished, and one that stopped early
+names the batches it had not yet followed.
+
+Raw milk is a batch like any other, pointing back at the movement it arrived on.
+Modelling it as something else would stop the genealogy at the plant gate, which
+is exactly where a recall needs to keep going.
+
+Held in the database: a batch cannot be its own ancestor, checked by recursive
+descent; a lot cannot give up more than it holds; units must match to be compared,
+because converting needs a density a trigger does not have; and a batch under hold
+cannot be fed into anything, because a hold that does not stop the lot moving is
+not a hold.
+
+**Formulations** are versioned recipes, one in force at a time per code, with the
+same half-open period rate cards use. A batch records the exact version it
+followed. Yield is observed; the expected yield lives on the recipe and must carry
+its provenance, because a figure derived from a plant's own vats and one read off a
+supplier's leaflet are different claims. Where no target is declared the observed
+yield is reported and the report says none was declared — never a variance against
+an invented number.
+
+`GetObservedYield` is the platform's answer to a question it cannot answer for
+anybody. It does not know what a process should yield, and adds no table of
+standard yields. It shows a plant its own vats — count, range, median, quartiles,
+every figure one a vat actually produced — and lets the plant declare its own
+target from them.
+
 ## `libs/integrity`
 
 - **`money`** — fixed-point arithmetic. Products are carried at full 128-bit width
@@ -231,6 +348,16 @@ detail on either side.
   cannot be told from an amendment.
 - **`bitemporal`** — valid time and transaction time, with an `EndOfTime` sentinel
   rather than `NULL` so interval overlap stays expressible in plain SQL.
+- **`quantity`** — exact arithmetic on measured milk, in litres or kilograms.
+  Converting between them requires a supplied density and a supplied rounding
+  mode; there is no 1.03 default, because a three per cent error applied to every
+  conversion in a plant reads as a process problem rather than an arithmetic one.
+- **`ratecard`** — chart pricing, with explicit policies for a reading between two
+  points and one off the edge of the chart.
+- **`isolation`** — tenant isolation, tenant-safe foreign keys, and the reference
+  decisions. Every reference-shaped column carrying no foreign key is decided by a
+  person, with the reason, and the deploy fails rather than warns on an undecided
+  one.
 - **`mlclient`** — the typed Go boundary to the Rust tier.
 
 ## Running the tests

@@ -1,0 +1,281 @@
+# State of the platform, and what is left
+
+This document exists because the plan did not.
+
+Until now the roadmap lived in a conversation. Everything in `docs/integrity-platform.md`
+describes what the platform *is*; nothing described what had been decided, what had
+been deliberately deferred, or what somebody picking this up on a Monday should do
+next. That is a gap of the same kind the platform spends its time refusing
+elsewhere: a state nobody wrote down is a state that has to be guessed at.
+
+Two things to know about how to read it:
+
+- **The "built" section is verifiable.** Every claim in it can be checked by
+  running something, and the command is given where it is not obvious.
+- **The "history" section is not, entirely.** The work was done in phases, and the
+  boundaries between the early ones are recorded nowhere but in the commit log.
+  Rather than invent crisp phase numbers after the fact, it says what was decided
+  and leaves the sequencing loose where it genuinely is.
+
+---
+
+## What is built
+
+Twenty-nine Go services, five Rust ML services, one shared Go library and one
+shared Rust crate.
+
+```sh
+# everything, from the repository root
+for d in $(go list -m -f '{{.Dir}}' | grep -v '/pkg$'); do (cd "$d" && go test ./...); done
+cd ml && cargo test --workspace
+
+# end to end: builds the real binaries, real PostgreSQL, real HTTP
+cd e2e && TEST_DATABASE_DSN="postgres://user@host:port/%s?sslmode=disable" \
+  go test -tags e2e ./...
+```
+
+The `%s` in that DSN is not decoration — it is where each service's own database
+name is substituted. A DSN without it silently puts every service in one database,
+and the suite still passes, which is worse than failing.
+
+### The integrity spine
+
+`ingestion` → `observation` → `canonical` → `pooling` → `shadow-settlement` → `balance`.
+
+Described in full in [`integrity-platform.md`](integrity-platform.md). In one line:
+the platform recomputes an incumbent system's settlements from the same
+collections and reports every difference with a reason, without ever paying from
+its own number.
+
+### Commerce
+
+- **`procurement-service`** — rate cards, chart pricing, priced collections and
+  corrections. A correction re-prices from the readings under the card in force on
+  the collection day, never from the old rate; the superseded version stays.
+- **`settlement-service`** — cycles, producer payables, deductions, recoveries,
+  payments, and the producer statement as a rendered fixed-width document rather
+  than JSON. Adjustments are a distinct kind of payable, so recovering an
+  overpayment is expressible without a settlement going negative.
+
+### The physical layer
+
+- **`material-service`** — nodes (a cooler with a code, a tanker with a
+  registration), movements measured at both ends, and instruments with
+  calibration and uncertainty.
+- **`balance-service`** — the mathematics material-service supplies the model for.
+  Classifies every measured flow as observable, unobservable, redundant or
+  just-determined, using graph bridges. A meter with an unmeasured bypass is
+  reported as unchecked, because the bypass absorbs any error.
+
+### Quality
+
+- **`laboratory-service`** — samples, chain of custody, results. A result is fit to
+  price milk when its sample was sealed, its custody is unbroken and the
+  instrument was in calibration. Results that fail are still recorded, with the
+  reason, rather than refused.
+
+### Genealogy
+
+- **`production-service`** — batches, inputs, recall traversal in both directions,
+  and formulations. The property the service exists for: a recall that stopped
+  early does not look like one that finished. Raw milk is a batch like any other,
+  so the genealogy does not stop at the plant gate.
+
+### The ML tier
+
+Five Rust services in `ml/`: anomaly, uncertainty, divergence, reconciliation, and
+the shared `mlcore` crate. Every call is advisory; every caller has a complete
+deterministic answer without it.
+
+**Currently disabled in every deployment.** Each Go caller reads its endpoint from
+an environment variable that defaults to empty, and logs at boot that the tier is
+off. See *Open work* below.
+
+### Cross-cutting
+
+- **Tenant isolation** in the database, not in every query. `tenant_id` on every
+  table, RLS with FORCE, and a role that cannot bypass it.
+- **A hash-chained append-only audit** written inside the caller's transaction, so
+  a change and its record land together or not at all.
+- **Reference decisions.** Every reference-shaped column that carries no foreign
+  key is decided by a person and recorded in
+  `libs/integrity/isolation/references.sql`, with the reason. The deploy fails
+  rather than warns on an undecided one.
+- **Exact money and exact quantities.** `libs/integrity/money` and
+  `libs/integrity/quantity`. No float touches a currency amount or a measured
+  volume on the integrity path.
+
+---
+
+## How this platform decides things
+
+Two habits are worth stating, because they explain a lot of the code that would
+otherwise look over-careful.
+
+### A default that looks like a decision
+
+Wherever the platform would have to pick a number nobody measured, it refuses and
+says so instead. A deduction policy, a recovery priority, a milk density, a
+rounding mode, a statement width, an instrument's uncertainty, a process yield, a
+share tolerance — each is supplied by whoever knows it, or the answer comes back
+unavailable with the reason attached.
+
+The alternative is not neutral. A density of 1.03 quietly applied to every
+litres-to-kilograms conversion is a three per cent error in every yield in a
+plant, and it reads as a process problem rather than an arithmetic one.
+
+Where the platform genuinely cannot know something but the answer is findable, it
+builds the way to find it rather than guessing. `GetObservedYield` is the clearest
+case: it does not know what a process should yield, so it shows a plant its own
+vats — count, range, median, quartiles — and lets the plant declare its own target.
+
+### Controls that report success while doing nothing
+
+Repeatedly found, usually in this platform's own checks:
+
+- The reference-decision check was blind to 70% of columns because it only
+  considered names matching a table name.
+- The gateway's upstream-coverage test checked that every listed path routed, but
+  never that every upstream appeared — two services had been added without
+  routing while it passed.
+- `Net + Deducted == Gross` was asserted as an invariant. It is an identity; it
+  cannot fail.
+- A referential-actions test counted a magic number of `ON DELETE CASCADE`s.
+  Adding a legitimate one broke it, which told nobody anything except that the
+  number had moved.
+
+The discipline that catches these is **mutation testing**: reintroduce the defect
+an assertion guards and confirm the assertion fails. A test that still passes was
+not testing what its name says. This is applied to every load-bearing assertion,
+and it has caught more real problems than reading the code did.
+
+---
+
+## Open work
+
+Ordered by what would be lost if it were left undone.
+
+### 1. The ML tier — **connected**
+
+`e2e/mlharness_test.go` starts the four Rust binaries and a second copy of the
+three Go services that call them, so both halves run in one suite:
+
+- The main platform still has no ML tier, and still proves the platform is
+  complete without one. That was never the gap.
+- A second platform has the tier connected, and `e2e/ml_test.go` asserts that
+  connecting it *changes the answer* — an observation that came back with its
+  uncertainty marked missing now carries a real estimate with a coverage factor
+  and a model version on it. Verified by mutation: stop the harness passing the
+  URLs through and the test fails with "the tier was connected, answered, and the
+  observation still says its uncertainty is missing".
+
+It skips, loudly and by name, where `cargo` is absent. A skip is honest; running
+the disabled-tier tests again under an ML-sounding name would not be.
+
+The encoding traps — a non-finite float arriving as zero, insufficient evidence
+arriving as a retryable 5xx, a model pin ignored — stay in
+`libs/integrity/mlclient/contract_integration_test.go`, which drives the real
+binaries through the real typed client. That is the right place for them and
+duplicating them in the e2e suite with hand-rolled requests would be a second,
+worse copy. It is behind the `mlintegration` build tag because it needs
+`cargo build` first, not because it is optional, and `scripts/check-all.sh` runs
+it.
+
+**Still open:** the tier remains disabled in every *deployment* — compose and the
+Kubernetes ConfigMaps leave the URLs empty. That is a deliberate default, but it
+means no deployment has ever run with it on.
+
+### 2. Seven services predate the integrity work
+
+`billing`, `breeding`, `cattle-market`, `feed`, `inventory`, `notification`,
+`product-catalog` have no end-to-end coverage at all.
+
+Four of them read money out of the database into `float64`. The SQL is exact —
+`NUMERIC(12,2)` throughout — and `order`/`billing` already moved their arithmetic
+into the database so the multiplication happens in the column's own type. What
+remains is the read path: an exact figure becomes approximate the moment it is
+loaded into a Go struct. Checked and worth stating precisely: cattle-market does
+not compare bids against each other in float, only against zero, so this is a
+representation and round-trip problem rather than a live comparison bug.
+
+### 3. Deployment drift — **closed**
+
+Found and fixed, and the reason it is listed here rather than deleted is that the
+fixes were the small part:
+
+- `docker-compose.yaml` was missing `settlement`, `material`, `laboratory` and
+  `production` entirely, and the gateway had no URL for `procurement` either — so
+  under compose a fifth of the platform was unreachable through the only address
+  a person outside it has. Every unit test passed. The e2e suite passed, because
+  it calls services directly.
+- Six services had no Kubernetes manifests: `identity`, `procurement`,
+  `settlement`, `material`, `laboratory`, `production`.
+
+`services/gateway-service/internal/handler/deployment_test.go` now compares the
+code and the deployment descriptors as two lists of the same thing. Run it with
+`-count=1`, or through `scripts/check-all.sh`: compose sits outside the module,
+Go's test cache does not track it, and without that flag the check reports a
+cached pass while doing nothing.
+
+### 4. Small test gaps — **closed**
+
+`bitemporal`, `origin` and `procurement-service`'s domain now have tests, each
+mutation-checked. Two defects fell out of writing them, which is the argument for
+having written them:
+
+- **`origin.HashFields` could collide.** It separated keys from values with 0x1f
+  and pairs with 0x1e, so a field containing one of those bytes was
+  indistinguishable from the delimiter between fields. `{"producer\x1fP-001":
+  "x"}` and `{"producer": "P-001\x1fx"}` hashed identically, as did `{"k":
+  "v\x1ek2\x1fv2"}` and `{"k": "v", "k2": "v2"}`. Two source records sharing one
+  payload hash is precisely what the hash exists to prevent: a re-import of one
+  becomes indistinguishable from an amendment of the other, and the import path's
+  idempotency stops holding. Now length-prefixed, which content cannot forge.
+  Nothing called it yet, so no stored hash needed migrating — but that is luck,
+  not design.
+- **`bitemporal` accepted a zero-width valid interval.** The interval is
+  half-open, so `[t, t)` contains nothing, not even `t`. A record written with one
+  exists, occupies its slot, and can never be returned by any query at any valid
+  time — worse than a refusal, because nothing afterwards reports it as missing.
+  Now `ErrEmptyInterval`.
+
+### 5. Formulations belong in a registry that does not exist yet
+
+Expected yield moved from the batch to the formulation, which is right. The
+formulation still has no separate lifecycle of its own beyond versioning — no
+approval, no plant scoping, no derivation of one recipe from another.
+
+---
+
+## Blocked, and has been since early on
+
+None of these can be worked around by writing more code, and each has been
+deliberately left rather than guessed at:
+
+- **One real AMCU export file.** Every vendor's format differs and none publish a
+  schema. A parser written against an invented format is a parser that fails on
+  first contact, silently, on somebody's collection data.
+- **One analyser bench capture.** Instrument uncertainty by measurement method is
+  an empirical property of a specific instrument in a specific plant. There is no
+  table of these and this platform will not invent one.
+- **Twenty buyer conversations.** What a society will actually pay for, and which
+  of these guarantees it recognises as valuable, is not derivable from the code.
+
+---
+
+## What was decided, and why
+
+Recorded because the reasoning is the expensive part and it is not visible in the
+diff.
+
+| Decision | Reason |
+|---|---|
+| Shadow mode, never paying from the platform's own number | Nobody sensibly agrees to trust a new settlement figure on day one with nothing to check it against. |
+| All ML in Rust, reached only over the network | No cgo, no shared memory, no in-process model loading. A model failure degrades an advisory signal; it cannot take down the authoritative path. |
+| Auth and authorization in scope | Explicitly reversed an earlier decision to defer them. A multi-tenant platform without them is a demo. |
+| Tenant isolation in the database rather than in queries | Two cross-tenant leaks were found in one service's hand-written queries. Both returned plausible results and no test failed. |
+| Money and quantities as scaled integers | The rounding trail is auditable and a settlement carries no unexplainable residual. |
+| Every schema file re-runnable | A schema file that only works on an empty database works once, and the second time is in production. This has been violated twice — both times a `DROP` refused by a dependent object, killing the rest of the file. |
+| Corrections by supersession, never in place | A figure that changed and cannot be shown to have changed is one nobody can defend to the member who asks about it. |
+| Deployment descriptors checked against the code | A service missing from compose starts, answers, and is unreachable. Nothing else in the repository notices, because every other test either does not need the gateway or calls services directly. |
+| Refuse rather than default; report rather than refuse | Two different rules, and which applies depends on whether the platform would be inventing a number (refuse) or judging somebody's process (report). A plant substitutes ingredients; refusing that means the vat is recorded wrongly or not at all, and a gap in the genealogy is worse than a note beside it. |

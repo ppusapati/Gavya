@@ -1,0 +1,43 @@
+# Cycles, payables and the producer statement: what a producer is paid.
+apiVersion: v1
+kind: Service
+metadata:
+  name: settlement-service
+spec:
+  selector:
+    app: settlement-service
+  ports:
+  - port: 80
+    targetPort: 8104
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: settlement-service-config
+data:
+  SERVICE_NAME: settlement-service
+  SERVER_ADDR: ":8104"
+  # Not optional. Pointed at nothing, settlement gathers nothing and reports a
+  # fortnight in which every producer earned zero — a plausible-looking answer
+  # that is entirely wrong, which is the worst kind.
+  PROCUREMENT_URL: "http://procurement-service"
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: settlement-service-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: settlement-service
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70

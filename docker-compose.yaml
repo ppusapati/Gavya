@@ -61,6 +61,11 @@ services:
       POOLING_SERVICE_URL: "http://pooling-service:8094"
       BALANCE_SERVICE_URL: "http://balance-service:8095"
       SHADOW_SETTLEMENT_SERVICE_URL: "http://shadow-settlement-service:8090"
+      PROCUREMENT_SERVICE_URL: "http://procurement-service:8103"
+      SETTLEMENT_SERVICE_URL: "http://settlement-service:8104"
+      MATERIAL_SERVICE_URL: "http://material-service:8105"
+      LABORATORY_SERVICE_URL: "http://laboratory-service:8106"
+      PRODUCTION_SERVICE_URL: "http://production-service:8107"
     depends_on:
       - tenant-service
       - cattle-service
@@ -363,10 +368,67 @@ services:
       context: .
       dockerfile: services/procurement-service/Dockerfile
     ports:
-      - "8103:8080"
+      - "8103:8103"
     environment:
       SERVICE_NAME: procurement-service
-      SERVER_ADDR: ":8080"
+      SERVER_ADDR: ":8103"
+      DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  settlement-service:
+    build:
+      context: .
+      dockerfile: services/settlement-service/Dockerfile
+    ports:
+      - "8104:8104"
+    environment:
+      SERVICE_NAME: settlement-service
+      SERVER_ADDR: ":8104"
+      DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+      PROCUREMENT_URL: "http://procurement-service:8103"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  material-service:
+    build:
+      context: .
+      dockerfile: services/material-service/Dockerfile
+    ports:
+      - "8105:8105"
+    environment:
+      SERVICE_NAME: material-service
+      SERVER_ADDR: ":8105"
+      DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  laboratory-service:
+    build:
+      context: .
+      dockerfile: services/laboratory-service/Dockerfile
+    ports:
+      - "8106:8106"
+    environment:
+      SERVICE_NAME: laboratory-service
+      SERVER_ADDR: ":8106"
+      DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  production-service:
+    build:
+      context: .
+      dockerfile: services/production-service/Dockerfile
+    ports:
+      - "8107:8107"
+    environment:
+      SERVICE_NAME: production-service
+      SERVER_ADDR: ":8107"
       DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
     depends_on:
       postgres:

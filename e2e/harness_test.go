@@ -282,6 +282,7 @@ func buildAndStart() (*platform, error) {
 // TestMain stops the shared services once every test has finished.
 func TestMain(m *testing.M) {
 	code := m.Run()
+	stopMLPlatform()
 	for _, cmd := range sharedProcs {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()

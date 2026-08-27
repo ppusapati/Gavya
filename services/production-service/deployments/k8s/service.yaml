@@ -1,0 +1,39 @@
+# Batches, recall traversal and formulations.
+apiVersion: v1
+kind: Service
+metadata:
+  name: production-service
+spec:
+  selector:
+    app: production-service
+  ports:
+  - port: 80
+    targetPort: 8107
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: production-service-config
+data:
+  SERVICE_NAME: production-service
+  SERVER_ADDR: ":8107"
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: production-service-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: production-service
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70

@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: procurement-service
+  labels:
+    app: procurement-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: procurement-service
+  template:
+    metadata:
+      labels:
+        app: procurement-service
+    spec:
+      containers:
+      - name: procurement-service
+        image: gavya/procurement-service:latest
+        ports:
+        - containerPort: 8103
+        envFrom:
+        - configMapRef:
+            name: procurement-service-config
+        - secretRef:
+            name: procurement-service-secret
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8103
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8103
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "1000m"
+            memory: "512Mi"

@@ -16,6 +16,7 @@ import (
 var (
 	ErrInvertedInterval = errors.New("bitemporal: valid_to precedes valid_from")
 	ErrZeroValidFrom    = errors.New("bitemporal: valid_from must be set")
+	ErrEmptyInterval    = errors.New("bitemporal: valid_from equals valid_to, so the fact was true for no time at all")
 )
 
 // EndOfTime marks an open-ended valid interval. A concrete sentinel rather than
@@ -44,6 +45,14 @@ func (i Interval) Validate() error {
 	}
 	if i.To.Before(i.From) {
 		return fmt.Errorf("%w: %s < %s", ErrInvertedInterval, i.To, i.From)
+	}
+	// The interval is half-open, so [t, t) contains nothing — not even t. A
+	// record written with one exists, occupies whatever slot it was written
+	// into, and can never be returned by any query at any valid time. That is
+	// worse than a refusal, because nothing afterwards reports it as missing:
+	// it is simply a fact the platform holds and cannot find.
+	if i.To.Equal(i.From) {
+		return fmt.Errorf("%w: %s", ErrEmptyInterval, i.From)
 	}
 	return nil
 }

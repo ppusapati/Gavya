@@ -1,0 +1,39 @@
+# Rate cards and priced collections: what a producer is owed.
+apiVersion: v1
+kind: Service
+metadata:
+  name: procurement-service
+spec:
+  selector:
+    app: procurement-service
+  ports:
+  - port: 80
+    targetPort: 8103
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: procurement-service-config
+data:
+  SERVICE_NAME: procurement-service
+  SERVER_ADDR: ":8103"
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: procurement-service-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: procurement-service
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70

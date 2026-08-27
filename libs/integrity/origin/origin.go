@@ -8,6 +8,7 @@ package origin
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -115,20 +116,48 @@ func HashPayload(payload []byte) string {
 }
 
 // HashFields produces a payload hash from a field map for sources that deliver
-// structured rows rather than opaque documents. Keys are sorted so the hash
-// does not depend on map iteration order.
+// structured rows rather than opaque documents. Keys are sorted so the hash does
+// not depend on map iteration order.
+//
+// Each key and value is length-prefixed rather than delimited, and that is not
+// fastidiousness. The first version separated them with 0x1f and 0x1e, which
+// collides the moment a field contains one of those bytes:
+//
+//	{"producer\x1fP-001": "x"}  and  {"producer": "P-001\x1fx"}
+//	{"k": "v\x1ek2\x1fv2"}      and  {"k": "v", "k2": "v2"}
+//
+// Both pairs hashed identically. Two structurally different source records with
+// one payload hash is exactly the thing this hash exists to make impossible: a
+// re-import of one becomes indistinguishable from an amendment of the other,
+// and the idempotency the whole import path rests on stops holding.
+//
+// A length prefix cannot be forged by content, because the length is written
+// outside the bytes it describes.
 func HashFields(fields map[string]string) string {
 	keys := make([]string, 0, len(fields))
 	for k := range fields {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
+
 	h := sha256.New()
+	var n [8]byte
+	write := func(s string) {
+		binary.BigEndian.PutUint64(n[:], uint64(len(s)))
+		h.Write(n[:])
+		h.Write([]byte(s))
+	}
+	// The field count leads, so the encoding says how many pairs follow rather
+	// than being read to the end to find out. Length-prefixing alone already
+	// makes a smaller map hash differently from a larger one — a shorter byte
+	// string is a different byte string — so this is not what stops that; it is
+	// here so the encoding is self-describing if anything ever has to parse it
+	// back rather than only hash it.
+	binary.BigEndian.PutUint64(n[:], uint64(len(keys)))
+	h.Write(n[:])
 	for _, k := range keys {
-		h.Write([]byte(k))
-		h.Write([]byte{0x1f})
-		h.Write([]byte(fields[k]))
-		h.Write([]byte{0x1e})
+		write(k)
+		write(fields[k])
 	}
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }
