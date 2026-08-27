@@ -19,7 +19,14 @@ data:
   SERVER_ADDR: ":8095"
   # Left unset by default. Without a reconciler a window is still validated and
   # its imbalance still recorded; the run simply carries no adjustments.
-  RECONCILIATION_ML_URL: ""
+  # The ML tier, from ml/deployments/k8s/ml-tier.yaml. Every call through these
+  # is advisory: emptying one turns that tier off and the service still starts,
+  # still answers, and simply stops offering the advisory signal.
+  #
+  # Three of these four were empty and one was set, with nothing saying whether
+  # that was a decision. compose wired all four. A deployment descriptor that
+  # disagrees with the one beside it is not a configuration choice, it is drift.
+  RECONCILIATION_ML_URL: "http://reconciliation-service:9103"
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler

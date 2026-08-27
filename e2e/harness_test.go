@@ -108,6 +108,19 @@ var services = []service{
 	// contain it — is the one thing in this platform where a partial answer is
 	// worse than none, because the list gets acted on.
 	{name: "production-service", database: "e2e_production", schema: "services/production-service/internal/db/schema.sql"},
+
+	// The seven services that predate the integrity work. They had no
+	// end-to-end coverage at all: nothing anywhere showed that they start, that
+	// they answer, or that one tenant cannot read another's rows through them —
+	// which is the platform's central guarantee and the one thing a service
+	// cannot be trusted without.
+	{name: "product-catalog-service", database: "e2e_catalog", schema: "services/product-catalog-service/internal/db/schema.sql"},
+	{name: "inventory-service", database: "e2e_inventory", schema: "services/inventory-service/internal/db/schema.sql"},
+	{name: "billing-service", database: "e2e_billing", schema: "services/billing-service/internal/db/schema.sql"},
+	{name: "cattle-market-service", database: "e2e_cattlemarket", schema: "services/cattle-market-service/internal/db/schema.sql"},
+	{name: "breeding-service", database: "e2e_breeding", schema: "services/breeding-service/internal/db/schema.sql"},
+	{name: "feed-service", database: "e2e_feed", schema: "services/feed-service/internal/db/schema.sql"},
+	{name: "notification-service", database: "e2e_notification", schema: "services/notification-service/internal/db/schema.sql"},
 }
 
 // platform is a running set of services, addressed by name.
@@ -425,6 +438,14 @@ func (p *platform) laboratory() *svcclient.Client {
 func (p *platform) production() *svcclient.Client {
 	return p.clients["production-service"]
 }
+
+func (p *platform) catalog() *svcclient.Client      { return p.clients["product-catalog-service"] }
+func (p *platform) inventory() *svcclient.Client    { return p.clients["inventory-service"] }
+func (p *platform) billing() *svcclient.Client      { return p.clients["billing-service"] }
+func (p *platform) cattleMarket() *svcclient.Client { return p.clients["cattle-market-service"] }
+func (p *platform) breeding() *svcclient.Client     { return p.clients["breeding-service"] }
+func (p *platform) feed() *svcclient.Client         { return p.clients["feed-service"] }
+func (p *platform) notification() *svcclient.Client { return p.clients["notification-service"] }
 
 func (p *platform) opts() svcclient.CallOptions {
 	// Tenant and Actor are what the gateway sets from a verified session. These

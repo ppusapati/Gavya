@@ -181,22 +181,59 @@ worse copy. It is behind the `mlintegration` build tag because it needs
 `cargo build` first, not because it is optional, and `scripts/check-all.sh` runs
 it.
 
-**Still open:** the tier remains disabled in every *deployment* — compose and the
-Kubernetes ConfigMaps leave the URLs empty. That is a deliberate default, but it
-means no deployment has ever run with it on.
+The deployment descriptors disagreed about it, too. compose wired all four ML
+URLs; Kubernetes wired one of four and left three empty, with nothing anywhere
+saying whether that was a decision — so the anomaly tier would have run under
+compose and silently not under Kubernetes, and an observation scored in testing
+would be unscored in production. Now consistent, with a check that keeps them so:
+it does not require the tier to be enabled, only that the two files say the same
+thing. Emptying a URL remains the supported way to turn a tier off.
 
-### 2. Seven services predate the integrity work
+### 2. The seven older services — **covered**
 
-`billing`, `breeding`, `cattle-market`, `feed`, `inventory`, `notification`,
-`product-catalog` have no end-to-end coverage at all.
+`billing`, `breeding`, `cattle-market`, `feed`, `inventory`, `notification` and
+`product-catalog` are in the e2e harness, so all eighteen services now start and
+answer a health check in one suite run — which nothing had ever shown for these.
 
-Four of them read money out of the database into `float64`. The SQL is exact —
-`NUMERIC(12,2)` throughout — and `order`/`billing` already moved their arithmetic
-into the database so the multiplication happens in the column's own type. What
-remains is the read path: an exact figure becomes approximate the moment it is
-loaded into a Go struct. Checked and worth stating precisely: cattle-market does
-not compare bids against each other in float, only against zero, so this is a
-representation and round-trip problem rather than a live comparison bug.
+`e2e/erp_test.go` writes a row as one tenant and asks as another, for each of
+them. What that proves is that the service's own query is scoped: the harness
+connects as a superuser, and a superuser bypasses row-level security, so RLS is
+not what is being tested there. That is deliberate and stated in the file — the
+query layer is the one found wrong twice in hand-written SQL and the one nothing
+was checking for these seven; RLS is the backstop and `isolation_test.go` proves
+it separately as `gavya_app`. Verified by mutation: replacing feed-service's
+`tenant_id = $1` with a tautology makes it fail with "a second tenant sees 4
+rows through feed-service, and it wrote none".
+
+**The money question turned out to be more precise than "float64 is bad".**
+Measured rather than argued:
+
+- Through `NUMERIC(12,2)`, 200,000 values across the column's whole range
+  round-tripped `float64 -> JSON -> float64` losing nothing. Go formats a float64
+  with the shortest representation that round-trips, so the decimal survives.
+- But five services widen their money columns to `NUMERIC(18,4)` at deploy, so
+  one schema serves a yen deployment and a dinar one. At four decimals float64
+  is exact only below about 10^11. Below that, nothing lost across 100,000
+  values; above 10^12, more than three quarters lost a digit. 6791947779410.3551
+  comes back as 6791947779410.3555.
+
+So the column could hold values the code cannot carry and nothing said so. The
+schemas now bound every four-decimal money column to what float64 carries
+exactly, refusing the value rather than mangling it on the way out — where both
+ends would believe they agreed. The ceiling is a hundred billion of any
+currency, so it refuses nothing a dairy does.
+
+One usability defect fell out of writing those tests: `ListNotifications`
+compared channel and status unconditionally, so a caller passing neither — which
+the request type invites, since neither is required — got an empty list back.
+An empty list is indistinguishable from a tenant with no notifications, so the
+obvious call returned the obviously wrong answer and looked right doing it. An
+unset filter now means "not filtering by that".
+
+**Still open:** the real fix is reading these as exact decimals, as the integrity
+services do with `libs/integrity/money`. That is a breaking wire change across
+four services and has not been made. The bound is what stops the database
+holding a figure the code would silently change in the meantime.
 
 ### 3. Deployment drift — **closed**
 

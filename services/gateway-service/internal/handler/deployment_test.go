@@ -361,3 +361,92 @@ func dirExists(p string) bool {
 	fi, err := os.Stat(p)
 	return err == nil && fi.IsDir()
 }
+
+// The two deployment descriptors must agree about the ML tier.
+//
+// Every call through these is advisory, so emptying one is a supported way to
+// turn a tier off. What is not supported is the two files disagreeing: compose
+// wired all four ML URLs, Kubernetes wired one of four and left three empty, and
+// nothing anywhere said whether that was a decision. A deployment where the
+// anomaly tier runs under compose and silently does not under Kubernetes is one
+// where an observation is scored in testing and unscored in production.
+//
+// This does not require them to be set. It requires them to say the same thing.
+func TestComposeAndKubernetesAgreeAboutTheMLTier(t *testing.T) {
+	root := repoRoot(t)
+	compose := readRepoFile(t, "docker-compose.yaml")
+
+	// Every ML URL any service reads, taken from the configs rather than listed.
+	var vars []string
+	configs, err := filepath.Glob(filepath.Join(root, "services", "*", "internal", "config", "config.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	re := regexp.MustCompile(`getEnv\("([A-Z_]+_ML_URL)"`)
+	seen := map[string]bool{}
+	for _, f := range configs {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range re.FindAllStringSubmatch(string(b), -1) {
+			if !seen[m[1]] {
+				seen[m[1]] = true
+				vars = append(vars, m[1])
+			}
+		}
+	}
+	sort.Strings(vars)
+	if len(vars) == 0 {
+		t.Fatal("no ML URL variables found in any service config; this check would pass " +
+			"against a platform that had stopped calling the tier entirely")
+	}
+
+	k8s := map[string]string{}
+	manifests, _ := filepath.Glob(filepath.Join(root, "services", "*", "deployments", "k8s", "*.yaml"))
+	for _, f := range manifests {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dec := yaml.NewDecoder(bytes.NewReader(b))
+		for {
+			var d map[string]any
+			if err := dec.Decode(&d); err != nil {
+				break
+			}
+			data, _ := d["data"].(map[string]any)
+			for _, v := range vars {
+				if raw, ok := data[v]; ok {
+					s, _ := raw.(string)
+					k8s[v] = s
+				}
+			}
+		}
+	}
+
+	composeSet := regexp.MustCompile(`(?m)^\s+([A-Z_]+_ML_URL): "([^"]*)"`)
+	inCompose := map[string]string{}
+	for _, m := range composeSet.FindAllStringSubmatch(compose, -1) {
+		inCompose[m[1]] = m[2]
+	}
+
+	for _, v := range vars {
+		ck, inK := k8s[v]
+		cc, inC := inCompose[v]
+		switch {
+		case !inK && !inC:
+			// Neither names it. Both deployments then get the binary's default,
+			// which is empty, and they agree.
+		case !inK:
+			t.Errorf("compose sets %s to %q and no Kubernetes ConfigMap mentions it, so that "+
+				"tier runs under compose and silently does not under Kubernetes", v, cc)
+		case !inC:
+			t.Errorf("a Kubernetes ConfigMap sets %s to %q and compose never mentions it", v, ck)
+		case (ck == "") != (cc == ""):
+			t.Errorf("%s is %q under Kubernetes and %q under compose; one deployment consults "+
+				"that tier and the other does not, and nothing says which was intended",
+				v, ck, cc)
+		}
+	}
+}

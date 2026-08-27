@@ -91,9 +91,23 @@ func (r *repo) MarkAllNotificationsRead(ctx context.Context, recipientID, tenant
 	return err
 }
 
+// ListNotifications returns a tenant's notifications, optionally narrowed by
+// channel and status.
+//
+// An empty filter means "not filtering by that", not "match the empty string".
+// It compared both unconditionally, so a caller that passed neither — which the
+// request type invites, since neither field is required — got an empty list back
+// and no indication why. An empty list is indistinguishable from a tenant with
+// no notifications, so the mistake is invisible from the caller's side: the
+// obvious call returns the obviously wrong answer and looks right doing it.
 func (r *repo) ListNotifications(ctx context.Context, tenantID, channel, status string) ([]*domain.Notification, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT `+notificationCols+` FROM notifications WHERE tenant_id=$1 AND channel=$2 AND status=$3 AND deleted_at IS NULL ORDER BY created_at DESC`,
+		`SELECT `+notificationCols+` FROM notifications
+		 WHERE tenant_id=$1
+		   AND ($2 = '' OR channel = $2)
+		   AND ($3 = '' OR status = $3)
+		   AND deleted_at IS NULL
+		 ORDER BY created_at DESC`,
 		tenantID, channel, status,
 	)
 	if err != nil {

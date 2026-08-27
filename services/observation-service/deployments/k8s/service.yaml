@@ -28,8 +28,15 @@ data:
   MEASUREMENT_REGIME: "IN_LEGAL_METROLOGY"
   # Both ML endpoints are left unset by default. The service records every
   # observation without them; it simply states no confidence and flags nothing.
-  UNCERTAINTY_ML_URL: ""
-  ANOMALY_ML_URL: ""
+  # The ML tier, from ml/deployments/k8s/ml-tier.yaml. Every call through these
+  # is advisory: emptying one turns that tier off and the service still starts,
+  # still answers, and simply stops offering the advisory signal.
+  #
+  # Three of these four were empty and one was set, with nothing saying whether
+  # that was a decision. compose wired all four. A deployment descriptor that
+  # disagrees with the one beside it is not a configuration choice, it is drift.
+  UNCERTAINTY_ML_URL: "http://uncertainty-service:9102"
+  ANOMALY_ML_URL: "http://anomaly-service:9101"
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
