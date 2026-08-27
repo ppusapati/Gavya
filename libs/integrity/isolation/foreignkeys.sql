@@ -208,6 +208,29 @@ ORDER BY n.nspname, src.relname, c.conname;
 -- that was deleted, or one that never existed. Making it a foreign key is a
 -- decision per column — some of these genuinely are not references — so this
 -- reports rather than acts.
+-- Two views in references.sql are built on this one, so they have to go first.
+--
+-- Without these two lines this file applies exactly once. On the second run the
+-- DROP below is refused — PostgreSQL will not drop a view something depends on
+-- — and because the DROP fails the CREATE after it fails too, and the whole
+-- file dies here. Every deployment after the first would stop at this line, and
+-- the checks in the rest of the file would silently stop being applied.
+--
+-- The same defect was found in references.sql, one file over, where a
+-- DROP FUNCTION was refused by a view built on it. It is worth naming the
+-- shape: a schema file that only works on an empty database is a schema file
+-- that works once, and the second time is in production.
+--
+-- Dropped by name rather than with CASCADE. CASCADE would take out whatever
+-- happened to depend on this view and not put it back, so a deployment that ran
+-- this file and then did not run references.sql would come up with the
+-- reference-decision checks quietly missing — a control reporting success while
+-- doing nothing, which is the failure mode this whole directory exists to
+-- prevent. Named drops fail loudly if the pair ever gets out of step.
+-- references.sql recreates both, and the deploy runs it after this file.
+DROP VIEW IF EXISTS gavya_undecided_references;
+DROP VIEW IF EXISTS gavya_unguessable_references;
+
 DROP VIEW IF EXISTS gavya_unconstrained_reference_report;
 CREATE VIEW gavya_unconstrained_reference_report AS
 SELECT

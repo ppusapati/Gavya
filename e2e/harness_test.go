@@ -104,6 +104,10 @@ var services = []service{
 	// that cannot be traced to a sealed sample held by known hands is a number a
 	// society cannot defend when a member asks about it.
 	{name: "laboratory-service", database: "e2e_laboratory", schema: "services/laboratory-service/internal/db/schema.sql"},
+	// Batch genealogy. The recall question — this tanker was bad, which cartons
+	// contain it — is the one thing in this platform where a partial answer is
+	// worse than none, because the list gets acted on.
+	{name: "production-service", database: "e2e_production", schema: "services/production-service/internal/db/schema.sql"},
 }
 
 // platform is a running set of services, addressed by name.
@@ -416,6 +420,9 @@ func (p *platform) balance() *svcclient.Client {
 }
 func (p *platform) laboratory() *svcclient.Client {
 	return p.clients["laboratory-service"]
+}
+func (p *platform) production() *svcclient.Client {
+	return p.clients["production-service"]
 }
 
 func (p *platform) opts() svcclient.CallOptions {

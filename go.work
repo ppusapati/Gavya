@@ -13,6 +13,7 @@ use (
 	./services/settlement-service
 	./services/material-service
 	./services/laboratory-service
+	./services/production-service
 	./services/shadow-settlement-service
 	./services/identity-service
 	./services/observation-service

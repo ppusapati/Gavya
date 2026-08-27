@@ -453,7 +453,23 @@ BEGIN
         ('lab_results', 'instrument_ref', '', false,
             'the laboratory does not hold the certificate register; the reference is to an '
             'instrument recorded elsewhere, and the calibration it depends on is copied onto '
-            'the row rather than joined to')
+            'the row rather than joined to'),
+        -- production_batches.source_ref is the same shape as lab_samples.source_ref
+        -- and recorded for the same reason: the schema comment beside it says the
+        -- decision is here, and a comment that says where to look should be right.
+        --
+        -- The two _id columns on production_inputs are not in this list because
+        -- they are not unconstrained: both carry a composite foreign key against
+        -- (tenant_id, id), which is what keeps one tenant's batch out of another
+        -- tenant's genealogy.
+        ('production_batches', 'source_ref', '', false,
+            'raw milk points back out of the plant at whatever source_kind says — a movement or '
+            'a node, both in material-service — which is where a recall keeps going past the '
+            'plant gate'),
+        ('production_batches', 'product_ref', '', false,
+            'what the plant calls the thing it made, in its own words; deliberately not a '
+            'reference, because a closed list here would be this platform deciding what a dairy '
+            'is allowed to make')
     ) AS t(table_name, column_name, references_table, enforce, reason);
 END
 $fn$ LANGUAGE plpgsql IMMUTABLE;

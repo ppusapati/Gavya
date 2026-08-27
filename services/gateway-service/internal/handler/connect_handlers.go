@@ -85,6 +85,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		{"/balance.v1.", h.cfg.BalanceServiceURL},
 		{"/material.v1.", h.cfg.MaterialServiceURL},
 		{"/laboratory.v1.", h.cfg.LaboratoryServiceURL},
+		{"/production.v1.", h.cfg.ProductionServiceURL},
 		{"/shadowsettlement.v1.", h.cfg.ShadowSettlementServiceURL},
 	}
 
