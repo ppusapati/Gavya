@@ -7,6 +7,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/ppusapati/gavya/libs/integrity/audit"
+
 	"github.com/ppusapati/gavya/services/billing-service/internal/domain"
 )
 
@@ -52,13 +55,19 @@ type Repository interface {
 	RecordPaymentAndSettle(ctx context.Context, p *domain.Payment, amount string, money Money) (*PaymentOutcome, error)
 }
 
+// IDs supplies the identifier each audit entry carries.
+type IDs interface{ New() string }
+
 type repo struct {
 	pool *pgxpool.Pool
+	ids  IDs
 }
 
-func New(pool *pgxpool.Pool) Repository {
-	return &repo{pool: pool}
+func New(pool *pgxpool.Pool, ids IDs) Repository {
+	return &repo{pool: pool, ids: ids}
 }
+
+const serviceName = "billing-service"
 
 type scanner interface {
 	Scan(dest ...any) error
@@ -87,12 +96,58 @@ func (r *repo) GetInvoice(ctx context.Context, id, tenantID string) (*domain.Inv
 	return scanInvoice(row)
 }
 
+// UpdateInvoiceStatus moves an invoice between states and records what it was in.
+//
+// An invoice's status is a decision, not a fact about the world: sending it,
+// voiding it, marking it paid. `updated_by` names whoever made the last one and
+// nothing said what they changed it from — so an invoice reading "void" gave no
+// indication whether it had been a draft nobody had sent or something a customer
+// had already paid against. Those are different conversations.
+//
+// The entry goes in the same transaction as the change, so an invoice that moved
+// and a record of it moving cannot come apart.
 func (r *repo) UpdateInvoiceStatus(ctx context.Context, id, tenantID, status, updatedBy string) (*domain.Invoice, error) {
-	row := r.pool.QueryRow(ctx,
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	// Read under the lock the update will take, so a concurrent transition
+	// cannot land between the read and the write and be recorded as the state
+	// this change started from.
+	var before string
+	var total float64
+	if err := tx.QueryRow(ctx,
+		`SELECT status, total_amount FROM invoices
+		  WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL FOR UPDATE`,
+		id, tenantID).Scan(&before, &total); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+
+	row := tx.QueryRow(ctx,
 		`UPDATE invoices SET status=$3,updated_by=$4,updated_at=NOW() WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL RETURNING `+invoiceCols,
 		id, tenantID, status, updatedBy,
 	)
-	return scanInvoice(row)
+	inv, err := scanInvoice(row)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "update_invoice_status", ResourceType: "invoice", ResourceID: id,
+		Before: map[string]any{"status": before},
+		// The total travels with it because what an invoice was worth is what
+		// makes a void worth asking about.
+		After:       map[string]any{"status": status, "total_amount": total},
+		ServiceName: serviceName,
+	}); err != nil {
+		return nil, err
+	}
+	return inv, tx.Commit(ctx)
 }
 
 func (r *repo) ListOutstandingInvoices(ctx context.Context, tenantID string) ([]*domain.Invoice, error) {

@@ -121,6 +121,33 @@ var services = []service{
 	{name: "breeding-service", database: "e2e_breeding", schema: "services/breeding-service/internal/db/schema.sql"},
 	{name: "feed-service", database: "e2e_feed", schema: "services/feed-service/internal/db/schema.sql"},
 	{name: "notification-service", database: "e2e_notification", schema: "services/notification-service/internal/db/schema.sql"},
+
+	// The rest of the tree. Adding the seven above left eleven services still
+	// unstarted by anything, which made "every service in the platform answers
+	// health" a claim about eighteen of twenty-nine.
+	//
+	// Three are deliberately absent and stay absent:
+	//   - gateway-service routes to every upstream and is covered by its own
+	//     unit tests, which check the routing table rather than the network.
+	//   - audit-service's schema is applied to every database here already, and
+	//     audit_test.go drives its tamper-evidence against a real database.
+	//   - identity-service starts its own binary in identity_service_test.go,
+	//     because what that test checks is the refusal to start.
+	{name: "tenant-service", database: "e2e_tenant", schema: "services/tenant-service/internal/db/schema.sql"},
+	{name: "cattle-service", database: "e2e_cattle", schema: "services/cattle-service/internal/db/schema.sql"},
+	{name: "milk-service", database: "e2e_milk", schema: "services/milk-service/internal/db/schema.sql"},
+	{name: "health-service", database: "e2e_health", schema: "services/health-service/internal/db/schema.sql"},
+	{name: "farm-service", database: "e2e_farm", schema: "services/farm-service/internal/db/schema.sql"},
+	{name: "order-service", database: "e2e_order", schema: "services/order-service/internal/db/schema.sql"},
+	{name: "reporting-service", database: "e2e_reporting", schema: "services/reporting-service/internal/db/schema.sql"},
+	{
+		name: "file-service", database: "e2e_file",
+		schema: "services/file-service/internal/db/schema.sql",
+		// It refuses to start without somewhere to put a file, which is the
+		// right refusal: a file service that silently accepts uploads and drops
+		// them is worse than one that will not start.
+		env: []string{"STORAGE_PROVIDER=local", "STORAGE_BUCKET=/tmp/gavya-e2e-files"},
+	},
 }
 
 // platform is a running set of services, addressed by name.
@@ -446,6 +473,11 @@ func (p *platform) cattleMarket() *svcclient.Client { return p.clients["cattle-m
 func (p *platform) breeding() *svcclient.Client     { return p.clients["breeding-service"] }
 func (p *platform) feed() *svcclient.Client         { return p.clients["feed-service"] }
 func (p *platform) notification() *svcclient.Client { return p.clients["notification-service"] }
+func (p *platform) order() *svcclient.Client        { return p.clients["order-service"] }
+func (p *platform) health() *svcclient.Client       { return p.clients["health-service"] }
+func (p *platform) cattle() *svcclient.Client       { return p.clients["cattle-service"] }
+func (p *platform) farm() *svcclient.Client         { return p.clients["farm-service"] }
+func (p *platform) reporting() *svcclient.Client    { return p.clients["reporting-service"] }
 
 func (p *platform) opts() svcclient.CallOptions {
 	// Tenant and Actor are what the gateway sets from a verified session. These

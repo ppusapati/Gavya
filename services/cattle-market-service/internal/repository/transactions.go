@@ -7,6 +7,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/ppusapati/gavya/libs/integrity/audit"
+
 	"github.com/ppusapati/gavya/services/cattle-market-service/internal/domain"
 )
 
@@ -71,6 +73,22 @@ func (r *repo) AcceptBidAndCloseListing(ctx context.Context, bidID, tenantID, up
 		listingID, tenantID, domain.ListingSold, updatedBy))
 	if err != nil {
 		return nil, nil, fmt.Errorf("close listing: %w", err)
+	}
+
+	// Accepting a bid closes a listing and settles a price. The listing's prior
+	// status is already read above, under the lock, so recording it costs
+	// nothing and answers the question somebody asks when a seller disputes
+	// which bid was taken.
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "accept_bid", ResourceType: "cattle_listing", ResourceID: listingID,
+		Before: map[string]any{"status": status},
+		After: map[string]any{
+			"status": domain.ListingSold, "accepted_bid_id": bidID,
+			"bid_amount": bid.BidAmount, "currency": bid.Currency,
+		},
+		ServiceName: serviceName,
+	}); err != nil {
+		return nil, nil, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -152,6 +170,21 @@ func (r *repo) RecordSaleAndTransfer(
 		 WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL`,
 		sale.ListingID, sale.TenantID, domain.ListingSold, sale.UpdatedBy); err != nil {
 		return nil, nil, fmt.Errorf("close listing: %w", err)
+	}
+
+	// The sale and the ownership row are inserts and are their own record. What
+	// is overwritten is the listing's status, so that is what is recorded here,
+	// along with the price the animal changed hands at.
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "record_sale", ResourceType: "cattle_listing", ResourceID: sale.ListingID,
+		Before: map[string]any{"status": status},
+		After: map[string]any{
+			"status": domain.ListingSold, "sale_id": created.ID,
+			"sale_price": price, "currency": sale.Currency,
+		},
+		ServiceName: serviceName,
+	}); err != nil {
+		return nil, nil, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {

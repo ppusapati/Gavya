@@ -7,6 +7,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ppusapati/gavya/libs/integrity/audit"
+
 	"github.com/ppusapati/gavya/services/health-service/internal/domain"
 )
 
@@ -47,13 +49,19 @@ type Repository interface {
 	ListVetVisits(ctx context.Context, tenantID, cattleID string) ([]*domain.VetVisit, error)
 }
 
+// IDs supplies the identifier each audit entry carries.
+type IDs interface{ New() string }
+
 type repo struct {
 	pool *pgxpool.Pool
+	ids  IDs
 }
 
-func New(pool *pgxpool.Pool) Repository {
-	return &repo{pool: pool}
+func New(pool *pgxpool.Pool, ids IDs) Repository {
+	return &repo{pool: pool, ids: ids}
 }
+
+const serviceName = "health-service"
 
 type scanner interface {
 	Scan(dest ...any) error
@@ -158,13 +166,52 @@ func (r *repo) ListTreatmentHistory(ctx context.Context, tenantID, cattleID stri
 	return result, rows.Err()
 }
 
+// UpdateTreatmentStatus moves a treatment between states and records what it was in.
+//
+// A treatment's status decides when milk from that animal may be sold again.
+// Marking one complete early shortens a withdrawal period, and a status with no
+// history behind it cannot be checked against the date the milk went in the can.
+//
+// The entry goes in the same transaction as the change, so a state that moved
+// and the record of it moving cannot come apart.
 func (r *repo) UpdateTreatmentStatus(ctx context.Context, id, tenantID, status, updatedBy string) (*domain.Treatment, error) {
-	row := r.pool.QueryRow(ctx,
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	// Read under the lock the update will take, so a concurrent transition
+	// cannot land in between and be recorded as the state this one started from.
+	var before string
+	if err := tx.QueryRow(ctx,
+		`SELECT status FROM treatments WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL FOR UPDATE`,
+		id, tenantID).Scan(&before); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+
+	row := tx.QueryRow(ctx,
 		`UPDATE treatments SET status=$3,updated_by=$4,updated_at=NOW()
 		 WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL RETURNING `+treatmentCols,
 		id, tenantID, status, updatedBy,
 	)
-	return scanTreatment(row)
+	out, err := scanTreatment(row)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "update_treatment_status", ResourceType: "treatment", ResourceID: id,
+		Before:      map[string]any{"status": before},
+		After:       map[string]any{"status": status},
+		ServiceName: serviceName,
+	}); err != nil {
+		return nil, err
+	}
+	return out, tx.Commit(ctx)
 }
 
 func (r *repo) CreateVetVisit(ctx context.Context, v *domain.VetVisit) (*domain.VetVisit, error) {

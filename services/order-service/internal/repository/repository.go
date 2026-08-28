@@ -8,6 +8,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/ppusapati/gavya/libs/integrity/audit"
+
 	"github.com/ppusapati/gavya/services/order-service/internal/domain"
 )
 
@@ -51,13 +53,19 @@ type Repository interface {
 	GetInvoice(ctx context.Context, id, tenantID string) (*domain.Invoice, error)
 }
 
+// IDs supplies the identifier each audit entry carries.
+type IDs interface{ New() string }
+
 type repo struct {
 	pool *pgxpool.Pool
+	ids  IDs
 }
 
-func New(pool *pgxpool.Pool) Repository {
-	return &repo{pool: pool}
+func New(pool *pgxpool.Pool, ids IDs) Repository {
+	return &repo{pool: pool, ids: ids}
 }
+
+const serviceName = "order-service"
 
 type scanner interface {
 	Scan(dest ...any) error
@@ -105,12 +113,52 @@ func (r *repo) ListOrders(ctx context.Context, tenantID, status string) ([]*doma
 	return result, rows.Err()
 }
 
+// UpdateOrderStatus moves a order between states and records what it was in.
+//
+// An order's status is a decision — confirmed, cancelled, delivered — and
+// `updated_by` named whoever made the last one without saying what they changed
+// it from. An order reading "cancelled" gave no indication whether it had been a
+// draft nobody had confirmed or something already out for delivery.
+//
+// The entry goes in the same transaction as the change, so a state that moved
+// and the record of it moving cannot come apart.
 func (r *repo) UpdateOrderStatus(ctx context.Context, id, tenantID, status, updatedBy string) (*domain.Order, error) {
-	row := r.pool.QueryRow(ctx,
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	// Read under the lock the update will take, so a concurrent transition
+	// cannot land in between and be recorded as the state this one started from.
+	var before string
+	if err := tx.QueryRow(ctx,
+		`SELECT status FROM orders WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL FOR UPDATE`,
+		id, tenantID).Scan(&before); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+
+	row := tx.QueryRow(ctx,
 		`UPDATE orders SET status=$3,updated_by=$4,updated_at=NOW() WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL RETURNING `+orderCols,
 		id, tenantID, status, updatedBy,
 	)
-	return scanOrder(row)
+	out, err := scanOrder(row)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "update_order_status", ResourceType: "order", ResourceID: id,
+		Before:      map[string]any{"status": before},
+		After:       map[string]any{"status": status},
+		ServiceName: serviceName,
+	}); err != nil {
+		return nil, err
+	}
+	return out, tx.Commit(ctx)
 }
 
 func (r *repo) ListOrderItems(ctx context.Context, orderID, tenantID string) ([]*domain.OrderItem, error) {

@@ -199,6 +199,26 @@ thing. Emptying a URL remains the supported way to turn a tier off.
 `product-catalog` are in the e2e harness, so all eighteen services now start and
 answer a health check in one suite run — which nothing had ever shown for these.
 
+**All twenty-six startable services are now in the harness**, not the eighteen
+that first closed this item — adding the seven left eleven others unstarted by
+anything, which made "every service answers health" a claim about eighteen of
+twenty-nine. `gateway` is covered by its own routing tests, `audit`'s schema is
+applied to every database here and its tamper-evidence is driven directly, and
+`identity` starts its own binary because what that test checks is the refusal to
+start. The harness list says so beside each.
+
+Extending it to `cattle`, `farm` and `reporting` found a real defect immediately.
+**An animal recorded without a breed could be created and never read back.**
+`breed_id` is nullable and the insert wrote NULL for an empty one, which is right
+— an absent optional reference should be NULL, or the foreign key does not mean
+what it says. But every SELECT read it into a plain Go string, and pgx cannot
+scan NULL into one. `owner_id` and `farm_id` were written the same way. Worse,
+`ListCattle` scans the same columns, so one unclassified crossbred cow made the
+whole tenant's list fail — the failure was not confined to the row that caused
+it. Fixed by coalescing in the SELECTs, which is the exact reverse of what the
+insert does, and there is now a test that says so on purpose rather than finding
+it by accident.
+
 `e2e/erp_test.go` writes a row as one tenant and asks as another, for each of
 them. What that proves is that the service's own query is scoped: the harness
 connects as a superuser, and a superuser bypasses row-level security, so RLS is
@@ -356,12 +376,38 @@ than against the schema text, which matters: `billing`'s `tax_rate` reads as
 further down the same file, so reading the text alone reports a disagreement that
 does not exist.
 
-**Still open:** the other eight services still update content in place with no
-audit entry. Nothing there destroys a money figure, so it is a record-keeping gap
-rather than an integrity one — but a status that changed, a stock level that was
-adjusted, a notification that was marked read all leave `updated_by` and no
-history. Adding `audit.Write` to their mutating paths is the proportionate fix
-and follows the pattern six services already use.
+**Closed for the transitions that are decisions.** `billing`, `order`,
+`cattle-market`, `breeding` and `health` now record what a status changed *from*,
+in the same transaction as the change. Which ones got entries was a judgement
+rather than a sweep:
+
+- **Written.** An invoice voided, an order cancelled, a bid accepted, a sale
+  recorded, a pregnancy confirmed or lost, a treatment marked complete. Each is a
+  decision somebody could be asked to defend, and an invoice reading "cancelled"
+  gave no indication whether it had been a draft nobody sent or something a
+  customer had already been billed for.
+- **Not written, and not an omission.** `inventory` already writes a
+  `stock_movements` row for every adjustment, so its history is preserved the way
+  order totals are — the movement is the record. `notification`'s mark-as-read is
+  not a decision anybody disputes.
+
+Verified by mutation: removing either audit write makes the e2e tests fail saying
+the invoice was voided, or the order cancelled, and nothing records it.
+
+Adding the writes made two of cattle-market's own integration tests fail, and
+they were right to. `libs/integrity/audit` refuses an entry it cannot attribute,
+and those tests called the repository directly with a bare context — no tenant,
+no actor. A record of a change that cannot say who made it is not a record
+anybody can use, so the refusal is the feature. The tests now carry an acting
+context and apply the audit schema alongside the service's own, which is the
+deployment constraint the e2e harness already documents: the trail is written
+inside the caller's transaction, so `audit_logs` has to be reachable from the
+caller's connection.
+
+**Still open:** the create paths in these services write no audit entry either. A
+row that was created and never changed has its own `created_by` and `created_at`,
+so the gap is narrower than it was — but a row that was created and then deleted
+leaves nothing at all.
 
 ---
 

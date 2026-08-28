@@ -15,6 +15,12 @@ import (
 	"github.com/ppusapati/gavya/services/breeding-service/internal/domain"
 )
 
+// testIDs supplies the identifiers audit entries carry. The chain does not care
+// what the id is, only that it is unique.
+type testIDs struct{}
+
+func (testIDs) New() string { return newTestID("AU") }
+
 // A breeding record and the state it moves an animal into are one fact. That
 // they commit together is a property of the transaction, and only a real
 // database can show it.
@@ -83,7 +89,7 @@ type herd struct {
 
 func newHerd(t *testing.T) *herd {
 	t.Helper()
-	return &herd{repo: New(testPool(t)), tenant: newTestID("tnt")}
+	return &herd{repo: New(testPool(t), testIDs{}), tenant: newTestID("tnt")}
 }
 
 func (h *herd) cycle(t *testing.T) *domain.BreedingCycle {

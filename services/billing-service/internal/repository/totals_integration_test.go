@@ -94,11 +94,17 @@ func newFixture(t *testing.T) *fixture {
 	return newFixtureIn(t, rupees, false)
 }
 
+// testIDs supplies the identifiers audit entries carry. The chain does not care
+// what the id is, only that it is unique.
+type testIDs struct{}
+
+func (testIDs) New() string { return newTestID("AU") }
+
 func newFixtureIn(t *testing.T, money Money, taxInclusive bool) *fixture {
 	t.Helper()
 	pool := testPool(t)
 	f := &fixture{
-		repo:    New(pool),
+		repo:    New(pool, testIDs{}),
 		tenant:  newTestID("tnt"),
 		invoice: newTestID("inv"),
 		money:   money,

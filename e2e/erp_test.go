@@ -292,6 +292,81 @@ type listNotificationsResp struct {
 
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// cattle, farm, reporting
+// ---------------------------------------------------------------------------
+
+type createCattleReq struct {
+	TenantID  string  `json:"tenant_id"`
+	TagNumber string  `json:"tag_number"`
+	Name      string  `json:"name"`
+	Gender    string  `json:"gender"`
+	Weight    float64 `json:"weight"`
+	CreatedBy string  `json:"created_by"`
+}
+
+type cattleResp struct {
+	Cattle *struct {
+		ID string `json:"id"`
+	} `json:"cattle"`
+}
+
+type listCattleReq struct {
+	TenantID string `json:"tenant_id"`
+	Limit    int32  `json:"limit"`
+}
+
+type listCattleResp struct {
+	Cattle []*struct {
+		ID string `json:"id"`
+	} `json:"cattle"`
+}
+
+type createFarmReq struct {
+	TenantID  string `json:"tenant_id"`
+	Name      string `json:"name"`
+	Code      string `json:"code"`
+	Address   string `json:"address"`
+	Country   string `json:"country"`
+	Capacity  int    `json:"capacity"`
+	Status    string `json:"status"`
+	CreatedBy string `json:"created_by"`
+}
+
+type farmResp struct {
+	Farm *struct {
+		ID string `json:"id"`
+	} `json:"farm"`
+}
+
+type listFarmsResp struct {
+	Farms []*struct {
+		ID string `json:"id"`
+	} `json:"farms"`
+}
+
+type requestReportReq struct {
+	TenantID    string `json:"tenant_id"`
+	Name        string `json:"name"`
+	ReportType  string `json:"report_type"`
+	Parameters  string `json:"parameters"`
+	FileFormat  string `json:"file_format"`
+	RequestedBy string `json:"requested_by"`
+	CreatedBy   string `json:"created_by"`
+}
+
+type reportResp struct {
+	Report *struct {
+		ID string `json:"id"`
+	} `json:"report"`
+}
+
+type listReportsResp struct {
+	Reports []*struct {
+		ID string `json:"id"`
+	} `json:"reports"`
+}
+
 func erpCases() []isolationCase {
 	return []isolationCase{
 		{
@@ -452,6 +527,77 @@ func erpCases() []isolationCase {
 					func(r *listNotificationsResp) int { return len(r.Notifications) })
 			},
 		},
+		{
+			name:   "cattle-service",
+			client: (*platform).cattle,
+			svc:    "cattle.v1.CattleService",
+			write: func(t *testing.T, p *platform) string {
+				t.Helper()
+				resp, err := svcclient.Call[createCattleReq, cattleResp](
+					context.Background(), p.cattle(),
+					"cattle.v1.CattleService/CreateCattle",
+					createCattleReq{TenantID: p.tenant, TagNumber: newID("tag"),
+						Name: "e2e", Gender: "F", Weight: 420, CreatedBy: "e2e"}, p.opts())
+				if err != nil {
+					t.Fatalf("create cattle: %v", err)
+				}
+				return resp.Cattle.ID
+			},
+			count: func(t *testing.T, c *svcclient.Client, tenant string) int {
+				return countVia[listCattleReq, listCattleResp](t, c,
+					"cattle.v1.CattleService/ListCattle",
+					listCattleReq{TenantID: tenant, Limit: 100}, tenant,
+					func(r *listCattleResp) int { return len(r.Cattle) })
+			},
+		},
+		{
+			name:   "farm-service",
+			client: (*platform).farm,
+			svc:    "farm.v1.FarmService",
+			write: func(t *testing.T, p *platform) string {
+				t.Helper()
+				code := newID("frm")
+				resp, err := svcclient.Call[createFarmReq, farmResp](
+					context.Background(), p.farm(), "farm.v1.FarmService/CreateFarm",
+					createFarmReq{TenantID: p.tenant, Name: code, Code: code,
+						Address: "e2e", Country: "IN", Capacity: 100,
+						Status: "active", CreatedBy: "e2e"}, p.opts())
+				if err != nil {
+					t.Fatalf("create farm: %v", err)
+				}
+				return resp.Farm.ID
+			},
+			count: func(t *testing.T, c *svcclient.Client, tenant string) int {
+				return countVia[tenantReq, listFarmsResp](t, c,
+					"farm.v1.FarmService/ListFarms",
+					tenantReq{TenantID: tenant}, tenant,
+					func(r *listFarmsResp) int { return len(r.Farms) })
+			},
+		},
+		{
+			name:   "reporting-service",
+			client: (*platform).reporting,
+			svc:    "reporting.v1.ReportingService",
+			write: func(t *testing.T, p *platform) string {
+				t.Helper()
+				resp, err := svcclient.Call[requestReportReq, reportResp](
+					context.Background(), p.reporting(),
+					"reporting.v1.ReportingService/RequestReport",
+					requestReportReq{TenantID: p.tenant, Name: newID("rep"),
+						ReportType: "collections", Parameters: "{}", FileFormat: "csv",
+						RequestedBy: "e2e", CreatedBy: "e2e"}, p.opts())
+				if err != nil {
+					t.Fatalf("request report: %v", err)
+				}
+				return resp.Report.ID
+			},
+			count: func(t *testing.T, c *svcclient.Client, tenant string) int {
+				return countVia[tenantReq, listReportsResp](t, c,
+					"reporting.v1.ReportingService/ListReports",
+					tenantReq{TenantID: tenant}, tenant,
+					func(r *listReportsResp) int { return len(r.Reports) })
+			},
+		},
 	}
 }
 
@@ -496,9 +642,12 @@ func TestOneTenantCannotSeeAnothersRowsThroughTheOlderServices(t *testing.T) {
 // seven were added to the harness nothing had ever started them.
 func TestEveryServiceInThePlatformAnswersHealth(t *testing.T) {
 	p := startPlatform(t)
-	if len(p.clients) < 18 {
-		t.Fatalf("the platform has %d services; the harness is meant to run every one, and a "+
-			"count that has quietly shrunk means a service stopped being tested", len(p.clients))
+	// Twenty-six of the twenty-nine services in the tree. gateway, audit and
+	// identity are covered elsewhere, and the harness list says why beside each.
+	if len(p.clients) < 26 {
+		t.Fatalf("the platform has %d services; the harness is meant to run every one it can, "+
+			"and a count that has quietly shrunk means a service stopped being tested",
+			len(p.clients))
 	}
 	for name, c := range p.clients {
 		if err := c.Health(context.Background()); err != nil {
@@ -772,5 +921,196 @@ func TestChangingASKUPriceRecordsWhatItWas(t *testing.T) {
 	}
 	if !strings.Contains(string(after), "47.75") {
 		t.Errorf("the audit entry's new_value is %s and does not carry the new price", after)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// A status that changed, and what it changed from
+// ---------------------------------------------------------------------------
+
+type createOrderReq struct {
+	TenantID   string `json:"tenant_id"`
+	CustomerID string `json:"customer_id"`
+	Currency   string `json:"currency"`
+	CreatedBy  string `json:"created_by"`
+}
+
+type orderActionReq struct {
+	ID        string `json:"id"`
+	TenantID  string `json:"tenant_id"`
+	UpdatedBy string `json:"updated_by"`
+}
+
+type orderRespProto struct {
+	Order *struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	} `json:"order"`
+}
+
+// transitionsFor reads what a service recorded about one resource's status
+// changes, in order.
+func transitionsFor(t *testing.T, database, tenant, resourceID, action string) []string {
+	t.Helper()
+	conn, err := pgx.Connect(context.Background(), dsn(t, database))
+	if err != nil {
+		t.Fatalf("connect to %s: %v", database, err)
+	}
+	defer conn.Close(context.Background())
+
+	rows, err := conn.Query(context.Background(), `
+		SELECT old_value, new_value FROM audit_logs
+		 WHERE tenant_id=$1 AND resource_id=$2 AND action=$3
+		 ORDER BY created_at`, tenant, resourceID, action)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var before, after []byte
+		if err := rows.Scan(&before, &after); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, string(before)+" -> "+string(after))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// Voiding an invoice records the state it was voided from.
+//
+// A status is a decision, not a fact about the world, and `updated_by` named
+// whoever made the last one without saying what they changed it from. An invoice
+// reading "cancelled" gave no indication whether it had been a draft nobody had
+// sent or something a customer had already been billed for. Those are different
+// conversations, and the second one is a dispute.
+func TestVoidingAnInvoiceRecordsWhatItWasVoidedFrom(t *testing.T) {
+	p := startPlatform(t)
+
+	inv, err := svcclient.Call[createInvoiceReq, invoiceResp](
+		context.Background(), p.billing(), "billing.v1.BillingService/CreateInvoice",
+		createInvoiceReq{TenantID: p.tenant, CustomerID: newID("cus"),
+			ReferenceID: newID("ord"), ReferenceType: "ORDER", Currency: "INR",
+			IssuedAt: time.Now().UTC(), CreatedBy: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("create invoice: %v", err)
+	}
+
+	// Sent, then voided — so the state it was voided from is one somebody would
+	// argue about, rather than the draft it started as.
+	for _, step := range []string{"SendInvoice", "VoidInvoice"} {
+		if _, err := svcclient.Call[invoiceActionReq, invoiceResp](
+			context.Background(), p.billing(), "billing.v1.BillingService/"+step,
+			invoiceActionReq{ID: inv.Invoice.ID, TenantID: p.tenant, UpdatedBy: "e2e"},
+			p.opts()); err != nil {
+			t.Fatalf("%s: %v", step, err)
+		}
+	}
+
+	got := transitionsFor(t, "e2e_billing", p.tenant, inv.Invoice.ID, "update_invoice_status")
+	if len(got) != 2 {
+		t.Fatalf("an invoice was sent and then voided and %d transitions were recorded: %v\n"+
+			"Both are decisions somebody made, and neither leaves any other trace", len(got), got)
+	}
+	if !strings.Contains(got[1], "sent") {
+		t.Errorf("the void records %q; without the state it was voided from, an invoice a "+
+			"customer had already been sent is indistinguishable from a draft nobody saw", got[1])
+	}
+	if !strings.Contains(got[1], "cancelled") {
+		t.Errorf("the void records %q; a voided invoice reaches the status 'cancelled' in this "+
+			"service, and the entry has to say what it became", got[1])
+	}
+}
+
+// Cancelling an order records what it was cancelled from.
+//
+// The same failure as the invoice, in the service beside it: an order reading
+// "cancelled" said nothing about whether it had been confirmed and was out for
+// delivery.
+func TestCancellingAnOrderRecordsWhatItWasCancelledFrom(t *testing.T) {
+	p := startPlatform(t)
+
+	order, err := svcclient.Call[createOrderReq, orderRespProto](
+		context.Background(), p.order(), "order.v1.OrderService/CreateOrder",
+		createOrderReq{TenantID: p.tenant, CustomerID: newID("cus"),
+			Currency: "INR", CreatedBy: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("create order: %v", err)
+	}
+	if _, err := svcclient.Call[orderActionReq, orderRespProto](
+		context.Background(), p.order(), "order.v1.OrderService/CancelOrder",
+		orderActionReq{ID: order.Order.ID, TenantID: p.tenant, UpdatedBy: "e2e"},
+		p.opts()); err != nil {
+		t.Fatalf("cancel order: %v", err)
+	}
+
+	got := transitionsFor(t, "e2e_order", p.tenant, order.Order.ID, "update_order_status")
+	if len(got) != 1 {
+		t.Fatalf("an order was cancelled and %d transitions were recorded: %v\n"+
+			"`updated_by` names who and nothing says what it was cancelled from", len(got), got)
+	}
+	if !strings.Contains(got[0], "cancel") {
+		t.Errorf("the entry records %q and does not say the order was cancelled", got[0])
+	}
+}
+
+// An animal recorded without a breed can be read back.
+//
+// `breed_id` is nullable and the insert wrote NULL for an empty one, which is
+// right — an absent optional reference should be NULL rather than the empty
+// string, or the foreign key does not mean what it says. But every SELECT read
+// it into a plain Go string, and pgx cannot scan NULL into one.
+//
+// So a crossbred cow nobody had classified could be created and then never read
+// back. Worse, ListCattle scans the same columns, so one such animal made the
+// whole tenant's list fail — the failure was not confined to the row that caused
+// it.
+//
+// The isolation table above found this by accident, because it happens to create
+// an animal without a breed. This says so on purpose, and covers the other two
+// optional references written the same way.
+func TestAnAnimalWithNoBreedOwnerOrFarmCanStillBeRead(t *testing.T) {
+	p := startPlatform(t)
+
+	created, err := svcclient.Call[createCattleReq, cattleResp](
+		context.Background(), p.cattle(), "cattle.v1.CattleService/CreateCattle",
+		createCattleReq{TenantID: p.tenant, TagNumber: newID("tag"),
+			Name: "unclassified", Gender: "F", Weight: 380, CreatedBy: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("an animal with no breed could not be created: %v", err)
+	}
+
+	// Read it back on its own.
+	got, err := svcclient.Call[struct {
+		ID       string `json:"id"`
+		TenantID string `json:"tenant_id"`
+	}, cattleResp](
+		context.Background(), p.cattle(), "cattle.v1.CattleService/GetCattle",
+		struct {
+			ID       string `json:"id"`
+			TenantID string `json:"tenant_id"`
+		}{ID: created.Cattle.ID, TenantID: p.tenant}, p.opts())
+	if err != nil {
+		t.Fatalf("an animal with no breed was created and cannot be read back: %v\n"+
+			"The row exists, holds its tag number, and every read of it fails", err)
+	}
+	if got.Cattle.ID != created.Cattle.ID {
+		t.Errorf("read back %s, want %s", got.Cattle.ID, created.Cattle.ID)
+	}
+
+	// And it does not break the list for everything beside it.
+	listed, err := svcclient.Call[listCattleReq, listCattleResp](
+		context.Background(), p.cattle(), "cattle.v1.CattleService/ListCattle",
+		listCattleReq{TenantID: p.tenant, Limit: 100}, p.opts())
+	if err != nil {
+		t.Fatalf("one animal with no breed made the whole tenant's list fail: %v", err)
+	}
+	if len(listed.Cattle) < 1 {
+		t.Errorf("the list came back with %d animals and one was just created",
+			len(listed.Cattle))
 	}
 }

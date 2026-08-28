@@ -17,6 +17,12 @@ import (
 	"github.com/ppusapati/gavya/services/order-service/internal/domain"
 )
 
+// testIDs supplies the identifiers audit entries carry. The chain does not care
+// what the id is, only that it is unique.
+type testIDs struct{}
+
+func (testIDs) New() string { return newTestID("AU") }
+
 // Money arithmetic is the thing this repository must not get wrong, and every
 // property below is a property of what PostgreSQL does with these statements.
 //
@@ -98,7 +104,7 @@ func newFixtureIn(t *testing.T, money Money, taxInclusive bool) *fixture {
 	t.Helper()
 	pool := testPool(t)
 	f := &fixture{
-		repo:    New(pool),
+		repo:    New(pool, testIDs{}),
 		tenant:  newTestID("tnt"),
 		order:   newTestID("ord"),
 		money:   money,

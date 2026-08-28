@@ -63,14 +63,20 @@ const saleCols = `id, tenant_id, listing_id, seller_id, buyer_id, cattle_id, sal
 const ownershipCols = `id, tenant_id, cattle_id, owner_id, acquired_at, released_at, acquisition_type, sale_id,
        created_at, updated_at, created_by, updated_by`
 
+// IDs supplies the identifier each audit entry carries.
+type IDs interface{ New() string }
+
 type repo struct {
-	db *pgxpool.Pool
+	db  *pgxpool.Pool
+	ids IDs
 }
 
 // New creates a new Repository backed by the given connection pool.
-func New(db *pgxpool.Pool) Repository {
-	return &repo{db: db}
+func New(db *pgxpool.Pool, ids IDs) Repository {
+	return &repo{db: db, ids: ids}
 }
+
+const serviceName = "cattle-market-service"
 
 // ─── CattleListing ────────────────────────────────────────────────────────────
 

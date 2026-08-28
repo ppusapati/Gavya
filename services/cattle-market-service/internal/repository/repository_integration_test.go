@@ -12,8 +12,29 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ppusapati/gavya/libs/integrity/tenantctx"
+	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
+
 	"github.com/ppusapati/gavya/services/cattle-market-service/internal/domain"
 )
+
+// acting is a context carrying who is doing this, which the audit trail needs.
+//
+// These tests call the repository directly rather than through the handler that
+// would normally set it, and the audit write refuses an entry it cannot
+// attribute — correctly, because a record of a change that cannot say who made
+// it is not a record anybody can use.
+func acting(tenant string) context.Context {
+	return tenantctx.WithActor(
+		tenantdb.WithTenant(context.Background(), tenant),
+		tenantctx.Actor{ID: "integration-test"})
+}
+
+// testIDs supplies the identifiers audit entries carry. The chain does not care
+// what the id is, only that it is unique.
+type testIDs struct{}
+
+func (testIDs) New() string { return newTestID("AU") }
 
 // Two things here can only be shown against a real database: that a query is
 // scoped to its tenant, and that two writes commit together or not at all.
@@ -53,12 +74,23 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 
-	schema, err := os.ReadFile(filepath.Join("..", "db", "schema.sql"))
-	if err != nil {
-		t.Fatalf("read schema: %v", err)
-	}
-	if _, err := pool.Exec(ctx, string(schema)); err != nil {
-		t.Fatalf("apply schema: %v", err)
+	// This service's own schema, and the audit trail's.
+	//
+	// The trail is written inside this service's transaction, so audit_logs has
+	// to be reachable from its connection. That is a real deployment constraint
+	// — the platform runs one database for all services — and applying it here
+	// is what makes this test reflect it rather than contradict it.
+	for _, rel := range [][]string{
+		{"..", "db", "schema.sql"},
+		{"..", "..", "..", "audit-service", "internal", "db", "schema.sql"},
+	} {
+		schema, err := os.ReadFile(filepath.Join(rel...))
+		if err != nil {
+			t.Fatalf("read %s: %v", filepath.Join(rel...), err)
+		}
+		if _, err := pool.Exec(ctx, string(schema)); err != nil {
+			t.Fatalf("apply %s: %v", filepath.Join(rel...), err)
+		}
 	}
 	return pool
 }
@@ -82,7 +114,7 @@ type market struct {
 
 func newMarket(t *testing.T) *market {
 	t.Helper()
-	return &market{repo: New(testPool(t)), tenant: newTestID("tnt")}
+	return &market{repo: New(testPool(t), testIDs{}), tenant: newTestID("tnt")}
 }
 
 func (m *market) listing(t *testing.T) *domain.CattleListing {
@@ -203,7 +235,7 @@ func TestAcceptingAnotherTenantsBidIsNotFound(t *testing.T) {
 	bid := seller.bid(t, listing.ID)
 
 	intruder := newTestID("tnt")
-	_, _, err := seller.repo.AcceptBidAndCloseListing(context.Background(), bid.ID, intruder, newTestID("usr"))
+	_, _, err := seller.repo.AcceptBidAndCloseListing(acting(intruder), bid.ID, intruder, newTestID("usr"))
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
@@ -229,7 +261,7 @@ func TestAcceptingABidClosesItsListing(t *testing.T) {
 	listing := m.listing(t)
 	bid := m.bid(t, listing.ID)
 
-	gotBid, gotListing, err := m.repo.AcceptBidAndCloseListing(context.Background(), bid.ID, m.tenant, newTestID("usr"))
+	gotBid, gotListing, err := m.repo.AcceptBidAndCloseListing(acting(m.tenant), bid.ID, m.tenant, newTestID("usr"))
 	if err != nil {
 		t.Fatalf("AcceptBidAndCloseListing: %v", err)
 	}
@@ -249,11 +281,11 @@ func TestASecondBidCannotBeAcceptedOnASoldListing(t *testing.T) {
 	first := m.bid(t, listing.ID)
 	second := m.bid(t, listing.ID)
 
-	if _, _, err := m.repo.AcceptBidAndCloseListing(context.Background(), first.ID, m.tenant, newTestID("usr")); err != nil {
+	if _, _, err := m.repo.AcceptBidAndCloseListing(acting(m.tenant), first.ID, m.tenant, newTestID("usr")); err != nil {
 		t.Fatal(err)
 	}
 
-	_, _, err := m.repo.AcceptBidAndCloseListing(context.Background(), second.ID, m.tenant, newTestID("usr"))
+	_, _, err := m.repo.AcceptBidAndCloseListing(acting(m.tenant), second.ID, m.tenant, newTestID("usr"))
 	if !errors.Is(err, ErrListingNotActive) {
 		t.Fatalf("err = %v, want ErrListingNotActive", err)
 	}
@@ -281,7 +313,7 @@ func TestASaleTransfersOwnershipAndClosesTheListing(t *testing.T) {
 	sale, ownership := m.sale(t, listing.ID, listing.CattleID, listing.SellerID)
 
 	gotSale, gotOwnership, err := m.repo.RecordSaleAndTransfer(
-		context.Background(), sale, ownership, "62000.00", rupees)
+		acting(m.tenant), sale, ownership, "62000.00", rupees)
 	if err != nil {
 		t.Fatalf("RecordSaleAndTransfer: %v", err)
 	}
@@ -306,12 +338,12 @@ func TestTheSameListingCannotBeSoldTwice(t *testing.T) {
 	listing := m.listing(t)
 
 	first, firstOwn := m.sale(t, listing.ID, listing.CattleID, listing.SellerID)
-	if _, _, err := m.repo.RecordSaleAndTransfer(context.Background(), first, firstOwn, "62000.00", rupees); err != nil {
+	if _, _, err := m.repo.RecordSaleAndTransfer(acting(m.tenant), first, firstOwn, "62000.00", rupees); err != nil {
 		t.Fatal(err)
 	}
 
 	second, secondOwn := m.sale(t, listing.ID, listing.CattleID, listing.SellerID)
-	_, _, err := m.repo.RecordSaleAndTransfer(context.Background(), second, secondOwn, "70000.00", rupees)
+	_, _, err := m.repo.RecordSaleAndTransfer(acting(m.tenant), second, secondOwn, "70000.00", rupees)
 	if !errors.Is(err, ErrListingNotActive) {
 		t.Fatalf("err = %v, want ErrListingNotActive — the animal was sold to two buyers", err)
 	}
@@ -337,7 +369,7 @@ func TestASaleThatCannotTransferOwnershipIsNotRecorded(t *testing.T) {
 	// sale row has already been written inside the transaction.
 	ownership.ID = "this-identifier-is-far-too-long-for-the-column-it-goes-in"
 
-	if _, _, err := m.repo.RecordSaleAndTransfer(context.Background(), sale, ownership, "62000.00", rupees); err == nil {
+	if _, _, err := m.repo.RecordSaleAndTransfer(acting(m.tenant), sale, ownership, "62000.00", rupees); err == nil {
 		t.Fatal("the sale was accepted with an unwritable ownership record")
 	}
 
@@ -359,14 +391,14 @@ func TestASaleInASecondCurrencyIsRefused(t *testing.T) {
 	m := newMarket(t)
 	listing := m.listing(t)
 	sale, ownership := m.sale(t, listing.ID, listing.CattleID, listing.SellerID)
-	if _, _, err := m.repo.RecordSaleAndTransfer(context.Background(), sale, ownership, "62000.00", rupees); err != nil {
+	if _, _, err := m.repo.RecordSaleAndTransfer(acting(m.tenant), sale, ownership, "62000.00", rupees); err != nil {
 		t.Fatal(err)
 	}
 
 	other := m.listing(t)
 	s2, o2 := m.sale(t, other.ID, other.CattleID, other.SellerID)
 	s2.Currency = "USD"
-	_, _, err := m.repo.RecordSaleAndTransfer(context.Background(), s2, o2, "800.00", Money{Code: "USD", Scale: 2})
+	_, _, err := m.repo.RecordSaleAndTransfer(acting(m.tenant), s2, o2, "800.00", Money{Code: "USD", Scale: 2})
 	if !errors.Is(err, ErrCurrencyMismatch) {
 		t.Fatalf("err = %v, want ErrCurrencyMismatch", err)
 	}

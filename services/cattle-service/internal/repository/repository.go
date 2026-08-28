@@ -43,8 +43,10 @@ INSERT INTO cattle
   (id, tenant_id, tag_number, name, breed_id, date_of_birth, gender, status,
    weight, color, owner_id, farm_id, created_by, updated_by)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-RETURNING id, tenant_id, tag_number, name, breed_id, date_of_birth, gender, status,
-          weight, color, owner_id, farm_id, created_at, updated_at, created_by, updated_by, deleted_at`
+RETURNING id, tenant_id, tag_number, COALESCE(name,''), COALESCE(breed_id,''),
+          date_of_birth, gender, status, weight, COALESCE(color,''),
+          COALESCE(owner_id,''), COALESCE(farm_id,''),
+          created_at, updated_at, created_by, updated_by, deleted_at`
 
 	row := r.db.QueryRow(ctx, q,
 		c.ID, c.TenantID, c.TagNumber, c.Name, nilIfEmpty(c.BreedID),
@@ -56,8 +58,10 @@ RETURNING id, tenant_id, tag_number, name, breed_id, date_of_birth, gender, stat
 
 func (r *repo) GetCattle(ctx context.Context, id, tenantID string) (*domain.Cattle, error) {
 	const q = `
-SELECT id, tenant_id, tag_number, name, breed_id, date_of_birth, gender, status,
-       weight, color, owner_id, farm_id, created_at, updated_at, created_by, updated_by, deleted_at
+SELECT id, tenant_id, tag_number, COALESCE(name,''), COALESCE(breed_id,''),
+       date_of_birth, gender, status, weight, COALESCE(color,''),
+       COALESCE(owner_id,''), COALESCE(farm_id,''),
+       created_at, updated_at, created_by, updated_by, deleted_at
 FROM cattle
 WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`
 
@@ -67,8 +71,10 @@ WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`
 
 func (r *repo) ListCattle(ctx context.Context, tenantID, status string, limit, offset int) ([]*domain.Cattle, error) {
 	const q = `
-SELECT id, tenant_id, tag_number, name, breed_id, date_of_birth, gender, status,
-       weight, color, owner_id, farm_id, created_at, updated_at, created_by, updated_by, deleted_at
+SELECT id, tenant_id, tag_number, COALESCE(name,''), COALESCE(breed_id,''),
+       date_of_birth, gender, status, weight, COALESCE(color,''),
+       COALESCE(owner_id,''), COALESCE(farm_id,''),
+       created_at, updated_at, created_by, updated_by, deleted_at
 FROM cattle
 WHERE tenant_id = $1 AND deleted_at IS NULL AND ($2 = '' OR status = $2)
 ORDER BY created_at DESC
@@ -96,8 +102,10 @@ func (r *repo) UpdateCattle(ctx context.Context, c *domain.Cattle) (*domain.Catt
 UPDATE cattle
 SET status = $3, weight = $4, updated_by = $5, updated_at = NOW()
 WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
-RETURNING id, tenant_id, tag_number, name, breed_id, date_of_birth, gender, status,
-          weight, color, owner_id, farm_id, created_at, updated_at, created_by, updated_by, deleted_at`
+RETURNING id, tenant_id, tag_number, COALESCE(name,''), COALESCE(breed_id,''),
+          date_of_birth, gender, status, weight, COALESCE(color,''),
+          COALESCE(owner_id,''), COALESCE(farm_id,''),
+          created_at, updated_at, created_by, updated_by, deleted_at`
 
 	row := r.db.QueryRow(ctx, q, c.ID, c.TenantID, c.Status, c.Weight, c.UpdatedBy)
 	return scanCattle(row)
@@ -225,6 +233,15 @@ func scanBreed(s scanner) (*domain.Breed, error) {
 	return b, nil
 }
 
+// nilIfEmpty writes an absent optional reference as NULL rather than as the
+// empty string, so the foreign key means what it says.
+//
+// The reverse of it is COALESCE in every SELECT above, and the pair has to stay
+// a pair. It did not: breed_id, owner_id and farm_id were written as NULL and
+// read into a plain string, which pgx cannot do. An animal recorded without a
+// breed — the ordinary case for a crossbred cow nobody has classified — could be
+// created and then never read back, and because ListCattle scans the same
+// columns, one such animal made the whole tenant's list fail.
 func nilIfEmpty(s string) *string {
 	if s == "" {
 		return nil

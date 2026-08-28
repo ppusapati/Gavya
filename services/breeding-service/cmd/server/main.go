@@ -14,10 +14,18 @@ import (
 	"github.com/ppusapati/gavya/services/breeding-service/internal/handler"
 	"github.com/ppusapati/gavya/services/breeding-service/internal/repository"
 	"github.com/ppusapati/gavya/services/breeding-service/internal/service"
+
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 	"p9e.in/samavaya/packages/p9log"
+	ulidpkg "p9e.in/samavaya/packages/ulid"
 )
+
+// ids supplies the identifier each audit entry carries. No prefix: every id
+// column in this platform is VARCHAR(26), which is exactly a ULID.
+type ids struct{}
+
+func (ids) New() string { return ulidpkg.New().String() }
 
 func main() {
 	cfg := config.Load()
@@ -28,7 +36,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer pool.Close()
-	repo := repository.New(pool)
+	repo := repository.New(pool, ids{})
 	svc := service.New(repo, log)
 	h := handler.New(svc)
 	mux := http.NewServeMux()

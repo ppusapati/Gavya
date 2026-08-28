@@ -7,6 +7,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/ppusapati/gavya/libs/integrity/audit"
+
 	"github.com/ppusapati/gavya/services/breeding-service/internal/domain"
 )
 
@@ -62,13 +64,19 @@ type Repository interface {
 	CreateCalvingRecord(ctx context.Context, c *domain.CalvingRecord) (*domain.CalvingRecord, error)
 }
 
+// IDs supplies the identifier each audit entry carries.
+type IDs interface{ New() string }
+
 type repo struct {
 	pool *pgxpool.Pool
+	ids  IDs
 }
 
-func New(pool *pgxpool.Pool) Repository {
-	return &repo{pool: pool}
+func New(pool *pgxpool.Pool, ids IDs) Repository {
+	return &repo{pool: pool, ids: ids}
 }
+
+const serviceName = "breeding-service"
 
 func (r *repo) CreateBreedingCycle(ctx context.Context, b *domain.BreedingCycle) (*domain.BreedingCycle, error) {
 	row := r.pool.QueryRow(ctx,
@@ -107,13 +115,51 @@ func (r *repo) ListCattleBreedingCycles(ctx context.Context, tenantID, cattleID 
 	return result, rows.Err()
 }
 
+// UpdateCycleStatus moves a breeding cycle between states and records what it was in.
+//
+// A breeding cycle's status is a judgement about an animal, and judgements get
+// revised. Which way it was revised is what somebody asks about later.
+//
+// The entry goes in the same transaction as the change, so a state that moved
+// and the record of it moving cannot come apart.
 func (r *repo) UpdateCycleStatus(ctx context.Context, id, tenantID, status, updatedBy string) (*domain.BreedingCycle, error) {
-	row := r.pool.QueryRow(ctx,
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	// Read under the lock the update will take, so a concurrent transition
+	// cannot land in between and be recorded as the state this one started from.
+	var before string
+	if err := tx.QueryRow(ctx,
+		`SELECT status FROM breeding_cycles WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL FOR UPDATE`,
+		id, tenantID).Scan(&before); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+
+	row := tx.QueryRow(ctx,
 		`UPDATE breeding_cycles SET status=$3,updated_by=$4,updated_at=NOW()
 		 WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL RETURNING `+breedingCycleCols,
 		id, tenantID, status, updatedBy,
 	)
-	return scanBreedingCycle(row)
+	out, err := scanBreedingCycle(row)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "update_cycle_status", ResourceType: "breeding_cycle", ResourceID: id,
+		Before:      map[string]any{"status": before},
+		After:       map[string]any{"status": status},
+		ServiceName: serviceName,
+	}); err != nil {
+		return nil, err
+	}
+	return out, tx.Commit(ctx)
 }
 
 func (r *repo) CreateInsemination(ctx context.Context, ins *domain.Insemination) (*domain.Insemination, error) {
@@ -152,13 +198,52 @@ func (r *repo) GetPregnancy(ctx context.Context, id, tenantID string) (*domain.P
 	return scanPregnancy(row)
 }
 
+// UpdatePregnancyStatus moves a pregnancy between states and records what it was in.
+//
+// A pregnancy confirmed and later recorded as lost, or the reverse, is a
+// correction to a record about an animal. Without the previous state there is
+// nothing to say a correction happened at all.
+//
+// The entry goes in the same transaction as the change, so a state that moved
+// and the record of it moving cannot come apart.
 func (r *repo) UpdatePregnancyStatus(ctx context.Context, id, tenantID, status, updatedBy string) (*domain.Pregnancy, error) {
-	row := r.pool.QueryRow(ctx,
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	// Read under the lock the update will take, so a concurrent transition
+	// cannot land in between and be recorded as the state this one started from.
+	var before string
+	if err := tx.QueryRow(ctx,
+		`SELECT status FROM pregnancies WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL FOR UPDATE`,
+		id, tenantID).Scan(&before); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+
+	row := tx.QueryRow(ctx,
 		`UPDATE pregnancies SET status=$3,updated_by=$4,updated_at=NOW()
 		 WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL RETURNING `+pregnancyCols,
 		id, tenantID, status, updatedBy,
 	)
-	return scanPregnancy(row)
+	out, err := scanPregnancy(row)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "update_pregnancy_status", ResourceType: "pregnancy", ResourceID: id,
+		Before:      map[string]any{"status": before},
+		After:       map[string]any{"status": status},
+		ServiceName: serviceName,
+	}); err != nil {
+		return nil, err
+	}
+	return out, tx.Commit(ctx)
 }
 
 func (r *repo) ListActivePregnancies(ctx context.Context, tenantID string) ([]*domain.Pregnancy, error) {
