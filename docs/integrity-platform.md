@@ -23,6 +23,15 @@ insufficient, and never let a model decide money.
 
 Everything here exists to hold one of these.
 
+**These are properties of the integrity layer, not of every service in the
+repository.** The distinction matters, because the older ERP services —
+`billing`, `order`, `product-catalog`, `cattle-market`, `inventory`, `feed`,
+`breeding`, `notification`, `health` — predate this work and hold to some of them
+and not others. What each row below actually covers is set out in
+[*Where these hold, and where they do not*](#where-these-hold-and-where-they-do-not)
+after the table. A guarantee stated without its scope is one a reader believes
+about code it was never true of.
+
 | Property | Where it is enforced |
 |---|---|
 | **Append-only history** | No `UPDATE` to a record's content anywhere. The only permitted write to an existing row is marking it superseded. |
@@ -31,6 +40,75 @@ Everything here exists to hold one of these.
 | **Deterministic money** | Fixed-point arithmetic with an explicit rounding mode and a recorded rounding trail. No floats touch a currency amount. |
 | **Replayable idempotent ingestion** | Device generation + capture session + sequence. Redelivering a record any number of times admits it exactly once. |
 | **Database-enforced tenant isolation** | `tenant_id` on every table and in every query, with constraints scoped per tenant. |
+
+## Where these hold, and where they do not
+
+Stated because the table above reads as absolute and is not. Three of its six
+rows are properties of the integrity layer that the older ERP services do not
+have, and each of the three is a deliberate difference rather than an oversight.
+
+| Property | Integrity layer | Older ERP services |
+|---|---|---|
+| **Append-only history** | Held. Every `UPDATE` in the spine is a supersession stamp or a lifecycle status, never a change to a record's content. | **Not held, and nothing stands in for it.** These are ordinary CRUD services: a price is updated in place and the previous one is gone. They carry `updated_by` and `updated_at`, so the last change has a name and a time against it — but no earlier value, and no record that a change happened at all. See *The audit trail is narrower than it looks* below. |
+| **Bitemporality** | Held on every authoritative record. | **Not held.** They record what is true now, not what was believed when. |
+| **Deterministic money** | Held. `libs/integrity/money`: scaled integers, explicit rounding mode, recorded rounding trail. | **Partly.** See below — this is the one worth reading. |
+| **Derivation provenance** | Held. | Not applicable: they capture, they do not import. |
+| **Replayable idempotent ingestion** | Held. | Not applicable: no device feed. |
+| **Database-enforced tenant isolation** | Held. | **Held.** Same RLS policies, same `gavya_app` role. Proven end to end for all seven in `e2e/erp_test.go`. |
+
+### The audit trail is narrower than it looks
+
+`libs/integrity/audit` writes a hash-chained, append-only record inside the
+caller's own transaction, so a change and its record land together or not at all,
+and `audit-service` verifies the chain. That mechanism is sound and tested.
+
+**Six of the twenty-nine services use it:** `procurement`, `settlement`,
+`material`, `laboratory`, `production` and `milk`. That is worth stating plainly,
+because "the platform has a hash-chained audit trail" is true of the mechanism
+and misleading about the coverage.
+
+The two groups that do not use it are not the same case:
+
+- **The integrity spine** — `ingestion`, `observation`, `canonical`, `pooling`,
+  `shadow-settlement`, `balance` — does not need it. Its records are append-only
+  and bitemporal: a correction is a new row, the old one stays and is marked
+  superseded, and every version carries when it was recorded. The history is the
+  data. A separate trail would restate what the rows already say.
+- **The older ERP services** do need it and do not have it. They update content
+  in place, so a price that changed leaves no trace of what it was. `updated_by`
+  names whoever touched it last and nothing preserves the figure they replaced or
+  says that a replacement happened. This is a real gap rather than a design
+  difference, and `docs/roadmap.md` carries it as open work.
+
+### Money in the older services
+
+They do not use `libs/integrity/money`, and the wire carries a JSON number rather
+than a decimal literal, so a currency amount reaches Go as a `float64`. That
+sounds worse than it is, and the detail is worth having because the obvious
+conclusion is the wrong one:
+
+- **No arithmetic happens in `float64`.** Every write goes through
+  `libs/integrity/exact`, which converts to the decimal literal the column stores
+  and *refuses* a value finer than that rather than letting PostgreSQL round it
+  silently. Comparisons are against zero. `order` and `billing` compute their
+  totals in SQL, in the column's own `NUMERIC` type, rounding once at the end.
+- **The read path is exact within a bound, and the bound is enforced.** Measured
+  rather than assumed: through `NUMERIC(18,4)`, 100,000 values below 10^11
+  round-tripped `float64 -> JSON -> float64` losing nothing; above 10^12, more
+  than three quarters lost a digit — 6791947779410.3551 comes back as
+  6791947779410.3555. The columns are `NUMERIC(18,4)` so one schema serves a yen
+  deployment and a dinar one, which means they could hold values the code cannot
+  carry. A `CHECK` on every such column now refuses those, and
+  `exact.MoneyPrecision` names the same ceiling in Go so the refusal is a
+  sentence rather than a constraint violation. A test compares the two.
+
+So the guarantee these services actually offer is narrower than the integrity
+layer's and is not nothing: *money is exact for every value the system will
+accept, and a value it cannot represent exactly is refused rather than
+silently changed.* Reading them as exact decimals throughout would remove the
+bound's relevance entirely; it is a breaking wire change across four services,
+and it buys robustness against a future widening rather than correcting anything
+wrong today. It has not been made, and `docs/roadmap.md` says so.
 
 ## Architecture
 

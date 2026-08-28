@@ -189,13 +189,22 @@ func (s *Service) ListProductSKUs(ctx context.Context, productID, tenantID strin
 }
 
 func (s *Service) UpdateSKUPrice(ctx context.Context, id, tenantID string, price float64, updatedBy string) (*domain.SKU, error) {
-	// The same column, reached by a different path. Validating only on create
-	// would leave a price that cannot be stored exactly one update away.
-	if _, err := exact.NonNegativeDecimal(price, 2, 12); err != nil {
-		return nil, invalid(exact.Field("price", err).Error())
-	}
 	if id == "" || tenantID == "" {
 		return nil, invalid("id and tenant_id are required")
+	}
+
+	// The same column, reached by a different path, and it has to be validated
+	// the same way. This checked scale 2 and precision 12 while CreateSKU checks
+	// the tenant's own currency scale — so a deployment recording dinars could
+	// create a SKU at 1.234 and then never change its price, because every
+	// update of it was refused for having a third decimal. A price you can set
+	// and cannot correct.
+	money, err := s.repo.TenantMoney(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := exact.NonNegativeDecimal(price, money.Scale, exact.MoneyPrecision); err != nil {
+		return nil, invalid(exact.Field("price", err).Error())
 	}
 	if price < 0 {
 		return nil, invalid("price must be non-negative")

@@ -7,6 +7,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/ppusapati/gavya/libs/integrity/audit"
+
 	"github.com/ppusapati/gavya/services/product-catalog-service/internal/domain"
 )
 
@@ -67,13 +70,19 @@ type Repository interface {
 	UpdateSKUPrice(ctx context.Context, id, tenantID string, price float64, updatedBy string) (*domain.SKU, error)
 }
 
+// IDs supplies the identifier each audit entry carries.
+type IDs interface{ New() string }
+
 type repo struct {
 	pool *pgxpool.Pool
+	ids  IDs
 }
 
-func New(pool *pgxpool.Pool) Repository {
-	return &repo{pool: pool}
+func New(pool *pgxpool.Pool, ids IDs) Repository {
+	return &repo{pool: pool, ids: ids}
 }
+
+const serviceName = "product-catalog-service"
 
 type scanner interface {
 	Scan(dest ...any) error
@@ -258,12 +267,57 @@ func (r *repo) ListProductSKUs(ctx context.Context, productID, tenantID string) 
 	return result, rows.Err()
 }
 
+// UpdateSKUPrice changes a price and records what it was.
+//
+// This is the one place in these older services where a money figure is
+// overwritten and nothing else holds it. An order total is derived from lines
+// that are inserted, so losing the total loses nothing; a SKU's price is the
+// primary fact, and an invoice raised before it moved cannot be reconciled
+// against a price that no longer exists anywhere.
+//
+// The audit entry goes in the same transaction as the change, so the two land
+// together or not at all. A trail written afterwards is one that is missing
+// exactly the changes that crashed halfway.
 func (r *repo) UpdateSKUPrice(ctx context.Context, id, tenantID string, price float64, updatedBy string) (*domain.SKU, error) {
-	row := r.pool.QueryRow(ctx,
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	// The old price, read under the lock the update will hold, so a concurrent
+	// change cannot land between the read and the write and be recorded as
+	// though it had not happened.
+	var before float64
+	var currencyCode string
+	if err := tx.QueryRow(ctx,
+		`SELECT price, COALESCE(currency,'') FROM skus
+		  WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL FOR UPDATE`,
+		id, tenantID).Scan(&before, &currencyCode); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+
+	row := tx.QueryRow(ctx,
 		`UPDATE skus SET price=$3,updated_by=$4,updated_at=NOW() WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL RETURNING `+skuCols,
 		id, tenantID, price, updatedBy,
 	)
-	return scanSKU(row)
+	sku, err := scanSKU(row)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "update_sku_price", ResourceType: "sku", ResourceID: id,
+		Before:      map[string]any{"price": before, "currency": currencyCode},
+		After:       map[string]any{"price": price, "currency": currencyCode},
+		ServiceName: serviceName,
+	}); err != nil {
+		return nil, err
+	}
+	return sku, tx.Commit(ctx)
 }
 
 func scanCategory(s scanner) (*domain.Category, error) {

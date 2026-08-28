@@ -96,7 +96,11 @@ off. See *Open work* below.
 - **Tenant isolation** in the database, not in every query. `tenant_id` on every
   table, RLS with FORCE, and a role that cannot bypass it.
 - **A hash-chained append-only audit** written inside the caller's transaction, so
-  a change and its record land together or not at all.
+  a change and its record land together or not at all — **used by six services**,
+  not all of them. `procurement`, `settlement`, `material`, `laboratory`,
+  `production` and `milk`. The integrity spine does not need it, because its
+  records are append-only and bitemporal and the history is the data. The older
+  ERP services do need it and do not have it: see open work below.
 - **Reference decisions.** Every reference-shaped column that carries no foreign
   key is decided by a person and recorded in
   `libs/integrity/isolation/references.sql`, with the reason. The deploy fails
@@ -314,6 +318,50 @@ would be inventing a requirement. Scoping needs to know whether a tenant is one
 plant or several, and nothing here says; derivation needs a plant that actually
 works that way. Neither is knowable from the code, and a wrong guess is a model
 somebody has to work around forever.
+
+### 6. The older ERP services change money in place — the acute case closed
+
+Found while making the properties table in `integrity-platform.md` truthful, and
+found the hard way: the first draft of that correction claimed these services
+carry the audit trail. They do not. Nine of them update content in place and
+write no audit entry at all.
+
+Narrowing it down mattered, because "nine services have no audit trail" and
+"one figure is destroyed" are different problems:
+
+- **Order and billing totals are derived.** They are recomputed in SQL from the
+  order lines, and the lines are inserted rather than updated. Losing a total
+  loses nothing that cannot be rebuilt from what is still there.
+- **A SKU's price is the primary fact.** `UpdateSKUPrice` overwrote it and
+  nothing else held it, so an invoice raised before a price moved could not be
+  reconciled against a price that no longer existed anywhere. That was the only
+  place in these services where a money figure was destroyed.
+
+That one is closed: the price change and an audit entry carrying the old and new
+figures now land in the same transaction, so if the price moved the record of it
+moving is there too.
+
+A second defect fell out of the same file. `CreateSKU` validated a price against
+the tenant's own currency scale — three decimals for a dinar deployment — and
+`UpdateSKUPrice` validated against a hardcoded two. A price of 1.234 was accepted
+on the way in and every attempt to correct it was refused, with a message about
+precision that gave no hint the two paths disagreed. **A price you could set and
+never change.** Both now use the tenant's scale and `exact.MoneyPrecision`.
+
+Checked while there and found nothing further: every other hardcoded scale in
+these services — unit sizes, kilograms, litres, fat and SNF percentages, tax
+rates — matches its column. That was verified against a migrated database rather
+than against the schema text, which matters: `billing`'s `tax_rate` reads as
+`NUMERIC(5,2)` in its `CREATE TABLE` and is widened to `(6,3)` by an `ALTER`
+further down the same file, so reading the text alone reports a disagreement that
+does not exist.
+
+**Still open:** the other eight services still update content in place with no
+audit entry. Nothing there destroys a money figure, so it is a record-keeping gap
+rather than an integrity one — but a status that changed, a stock level that was
+adjusted, a notification that was marked read all leave `updated_by` and no
+history. Adding `audit.Write` to their mutating paths is the proportionate fix
+and follows the pattern six services already use.
 
 ---
 

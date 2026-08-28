@@ -37,8 +37,11 @@ package e2e
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/ppusapati/gavya/libs/integrity/svcclient"
 )
@@ -599,5 +602,175 @@ func TestListingNotificationsWithNoFilterReturnsThemAll(t *testing.T) {
 	if len(none.Notifications) != 0 {
 		t.Errorf("filtering to a channel nothing was sent on returned %d notifications, so the "+
 			"filter is being ignored", len(none.Notifications))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// A price that changed, and what is left of the old one
+// ---------------------------------------------------------------------------
+
+type createProductReq struct {
+	TenantID    string `json:"tenant_id"`
+	CategoryID  string `json:"category_id"`
+	BrandID     string `json:"brand_id"`
+	Name        string `json:"name"`
+	Slug        string `json:"slug"`
+	Description string `json:"description"`
+	ProductType string `json:"product_type"`
+	Status      string `json:"status"`
+	CreatedBy   string `json:"created_by"`
+}
+
+type productResp struct {
+	Product *struct {
+		ID string `json:"id"`
+	} `json:"product"`
+}
+
+type createSKUReq struct {
+	TenantID  string  `json:"tenant_id"`
+	ProductID string  `json:"product_id"`
+	Code      string  `json:"code"`
+	Name      string  `json:"name"`
+	Price     float64 `json:"price"`
+	Currency  string  `json:"currency"`
+	Unit      string  `json:"unit"`
+	UnitSize  float64 `json:"unit_size"`
+	Status    string  `json:"status"`
+	CreatedBy string  `json:"created_by"`
+}
+
+type updateSKUPriceReq struct {
+	ID        string  `json:"id"`
+	TenantID  string  `json:"tenant_id"`
+	Price     float64 `json:"price"`
+	UpdatedBy string  `json:"updated_by"`
+}
+
+type skuResp struct {
+	SKU *struct {
+		ID       string  `json:"id"`
+		Price    float64 `json:"price"`
+		Currency string  `json:"currency"`
+	} `json:"sku"`
+}
+
+const catalogSvc = "productcatalog.v1.ProductCatalogService"
+
+// aSKU creates a product and one SKU under it, priced in the given currency.
+func aSKU(t *testing.T, p *platform, currency string, price float64) *skuResp {
+	t.Helper()
+	code := newID("sku")
+
+	cat, err := svcclient.Call[createCategoryReq, categoryResp](
+		context.Background(), p.catalog(), catalogSvc+"/CreateCategory",
+		createCategoryReq{TenantID: p.tenant, Name: code, Slug: code, CreatedBy: "e2e"},
+		p.opts())
+	if err != nil {
+		t.Fatalf("create category: %v", err)
+	}
+	prod, err := svcclient.Call[createProductReq, productResp](
+		context.Background(), p.catalog(), catalogSvc+"/CreateProduct",
+		createProductReq{TenantID: p.tenant, CategoryID: cat.Category.ID, Name: code,
+			Slug: code, ProductType: "simple", Status: "active", CreatedBy: "e2e"},
+		p.opts())
+	if err != nil {
+		t.Fatalf("create product: %v", err)
+	}
+	sku, err := svcclient.Call[createSKUReq, skuResp](
+		context.Background(), p.catalog(), catalogSvc+"/CreateSKU",
+		createSKUReq{TenantID: p.tenant, ProductID: prod.Product.ID, Code: code,
+			Name: code, Price: price, Currency: currency, Unit: "kg", UnitSize: 1,
+			Status: "active", CreatedBy: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("create SKU in %s at %v: %v", currency, price, err)
+	}
+	return sku
+}
+
+// A price you can set and cannot change.
+//
+// CreateSKU validated against the tenant's own currency scale — three decimals
+// for a dinar deployment — and UpdateSKUPrice validated against a hardcoded two.
+// So a price of 1.234 was accepted on the way in and every attempt to correct it
+// was refused, with a message about precision that gave no hint the two paths
+// disagreed.
+func TestAPriceCanBeCorrectedInTheCurrencyItWasSetIn(t *testing.T) {
+	p := startPlatform(t)
+
+	// A three-decimal currency. The scale comes from ISO 4217, not from us.
+	sku := aSKU(t, p, "BHD", 1.234)
+	if sku.SKU.Price != 1.234 {
+		t.Fatalf("a dinar SKU was created at %v, want 1.234", sku.SKU.Price)
+	}
+
+	updated, err := svcclient.Call[updateSKUPriceReq, skuResp](
+		context.Background(), p.catalog(), catalogSvc+"/UpdateSKUPrice",
+		updateSKUPriceReq{ID: sku.SKU.ID, TenantID: p.tenant, Price: 1.235,
+			UpdatedBy: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("a price set at three decimals could not be corrected to three decimals: %v\n"+
+			"CreateSKU and UpdateSKUPrice have to validate the same column the same way, or "+
+			"there are prices the platform will accept and never let anybody change", err)
+	}
+	if updated.SKU.Price != 1.235 {
+		t.Errorf("the price came back as %v, want 1.235", updated.SKU.Price)
+	}
+
+	// And a fourth decimal is still refused, in a currency that has three. The
+	// fix must not have been to stop checking.
+	if _, err := svcclient.Call[updateSKUPriceReq, skuResp](
+		context.Background(), p.catalog(), catalogSvc+"/UpdateSKUPrice",
+		updateSKUPriceReq{ID: sku.SKU.ID, TenantID: p.tenant, Price: 1.2345,
+			UpdatedBy: "e2e"}, p.opts()); err == nil {
+		t.Error("a four-decimal price was accepted for a three-decimal currency; the database " +
+			"would round it on the way in and nobody would be told")
+	}
+}
+
+// Changing a price records what it was.
+//
+// This is the one place in the older services where a money figure is
+// overwritten and nothing else holds it. An order total is derived from lines
+// that are inserted, so losing the total loses nothing reconstructible; a SKU's
+// price is the primary fact, and an invoice raised before it moved cannot be
+// reconciled against a price that no longer exists anywhere.
+func TestChangingASKUPriceRecordsWhatItWas(t *testing.T) {
+	p := startPlatform(t)
+	sku := aSKU(t, p, "INR", 42.50)
+
+	if _, err := svcclient.Call[updateSKUPriceReq, skuResp](
+		context.Background(), p.catalog(), catalogSvc+"/UpdateSKUPrice",
+		updateSKUPriceReq{ID: sku.SKU.ID, TenantID: p.tenant, Price: 47.75,
+			UpdatedBy: "e2e"}, p.opts()); err != nil {
+		t.Fatalf("update price: %v", err)
+	}
+
+	// The audit row is written in the same transaction as the change, so if the
+	// price moved the record of it moving is there too.
+	conn, err := pgx.Connect(context.Background(), dsn(t, "e2e_catalog"))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer conn.Close(context.Background())
+
+	var action string
+	var before, after []byte
+	err = conn.QueryRow(context.Background(), `
+		SELECT action, old_value, new_value
+		  FROM audit_logs
+		 WHERE tenant_id=$1 AND resource_id=$2 AND action='update_sku_price'`,
+		p.tenant, sku.SKU.ID).Scan(&action, &before, &after)
+	if err != nil {
+		t.Fatalf("no audit entry for a price change (%v); the price moved from 42.50 to 47.75 "+
+			"and nothing anywhere records that it did, or what it was", err)
+	}
+	if !strings.Contains(string(before), "42.5") {
+		t.Errorf("the audit entry's old_value is %s and does not carry the old price; a "+
+			"record that a change happened without the value it replaced cannot reconcile an "+
+			"invoice raised before it", before)
+	}
+	if !strings.Contains(string(after), "47.75") {
+		t.Errorf("the audit entry's new_value is %s and does not carry the new price", after)
 	}
 }

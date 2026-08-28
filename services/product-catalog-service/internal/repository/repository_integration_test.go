@@ -61,8 +61,14 @@ func testRepo(t *testing.T) Repository {
 	if _, err := pool.Exec(ctx, string(schema)); err != nil {
 		t.Fatalf("apply schema: %v", err)
 	}
-	return New(pool)
+	return New(pool, testIDs{})
 }
+
+// testIDs supplies the identifiers audit entries carry. The sequence is enough
+// here: the audit chain does not care what the id is, only that it is unique.
+type testIDs struct{}
+
+func (testIDs) New() string { return newTestID("AU") }
 
 var idSeq atomic.Int64
 
