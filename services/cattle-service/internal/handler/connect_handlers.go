@@ -220,7 +220,7 @@ func (h *Handler) DeleteCattle(
 	req *connect.Request[DeleteCattleRequest],
 ) (*connect.Response[DeleteCattleResponse], error) {
 	msg := req.Msg
-	if err := h.svc.DeleteCattle(ctx, msg.ID, msg.TenantID); err != nil {
+	if err := h.svc.DeleteCattle(ctx, msg.ID, msg.TenantID, msg.DeletedBy); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	return connect.NewResponse(&DeleteCattleResponse{Success: true}), nil

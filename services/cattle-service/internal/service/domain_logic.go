@@ -88,11 +88,20 @@ func (s *Service) UpdateCattle(ctx context.Context, c *domain.Cattle) (*domain.C
 }
 
 // DeleteCattle soft-deletes a cattle record.
-func (s *Service) DeleteCattle(ctx context.Context, id, tenantID string) error {
+// DeleteCattle marks an animal deleted.
+//
+// deletedBy is required. The row it writes is the only account of an animal
+// disappearing from every list, and one that cannot say who did it is an account
+// nobody can act on.
+func (s *Service) DeleteCattle(ctx context.Context, id, tenantID, deletedBy string) error {
 	if id == "" || tenantID == "" {
 		return fmt.Errorf("id and tenant_id are required")
 	}
-	if err := s.repo.SoftDeleteCattle(ctx, id, tenantID); err != nil {
+	if deletedBy == "" {
+		return fmt.Errorf("deleted_by is required: an animal that vanished from every list " +
+			"with nobody's name against it is not something anybody can follow up")
+	}
+	if err := s.repo.SoftDeleteCattle(ctx, id, tenantID, deletedBy); err != nil {
 		s.log.Errorf("DeleteCattle: %v", err)
 		return fmt.Errorf("delete cattle: %w", err)
 	}

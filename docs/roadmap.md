@@ -404,10 +404,31 @@ deployment constraint the e2e harness already documents: the trail is written
 inside the caller's transaction, so `audit_logs` has to be reachable from the
 caller's connection.
 
-**Still open:** the create paths in these services write no audit entry either. A
-row that was created and never changed has its own `created_by` and `created_at`,
-so the gap is narrower than it was — but a row that was created and then deleted
-leaves nothing at all.
+**Creates and deletes, checked — and the claim above was wrong.**
+
+The previous version of this section said a row created and then deleted "leaves
+nothing at all". It does not. All three delete paths in these services are soft —
+`billing`, `order` and the rest have none, and `cattle`, `file` and `reporting`
+set `deleted_at` — so the row survives with every value on it. Creates need no
+separate entry either: the row carries its own `created_by` and `created_at`, and
+the record is the row.
+
+Checking it turned up one real defect, sharper than the thing I had claimed.
+**`cattle-service` deleted an animal and named the wrong person.** The wire
+request carried a `deleted_by`, the handler dropped it, and the repository took
+no actor at all — so the update stamped `updated_at` to the moment of deletion
+and left `updated_by` holding whoever had last edited the row. Those two fields
+are meant to be read as a pair. The record did not merely omit who deleted the
+animal; it attributed the deletion to somebody who had not made it, and the
+caller who supplied the right name had every reason to believe it had been kept.
+
+Fixed through the whole chain, with the deletion refused outright when no name is
+given, and an audit entry carrying the tag number — which is what somebody
+searches for when an animal has gone missing from a list. Verified by mutation:
+make the handler drop the field again and the test fails.
+
+Checked whether any other handler discards a declared request field, by comparing
+each `*Request` type's fields against what the handler actually reads. None does.
 
 ---
 

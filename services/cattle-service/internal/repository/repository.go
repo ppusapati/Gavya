@@ -7,6 +7,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ppusapati/gavya/libs/integrity/audit"
+
 	"github.com/ppusapati/gavya/services/cattle-service/internal/domain"
 )
 
@@ -16,7 +18,7 @@ type Repository interface {
 	GetCattle(ctx context.Context, id, tenantID string) (*domain.Cattle, error)
 	ListCattle(ctx context.Context, tenantID, status string, limit, offset int) ([]*domain.Cattle, error)
 	UpdateCattle(ctx context.Context, c *domain.Cattle) (*domain.Cattle, error)
-	SoftDeleteCattle(ctx context.Context, id, tenantID string) error
+	SoftDeleteCattle(ctx context.Context, id, tenantID, deletedBy string) error
 
 	CreateBreed(ctx context.Context, b *domain.Breed) (*domain.Breed, error)
 	GetBreed(ctx context.Context, id, tenantID string) (*domain.Breed, error)
@@ -26,13 +28,19 @@ type Repository interface {
 	GetCattleLineage(ctx context.Context, cattleID, tenantID string) (*domain.CattleLineage, error)
 }
 
+// IDs supplies the identifier each audit entry carries.
+type IDs interface{ New() string }
+
 type repo struct {
-	db *pgxpool.Pool
+	db  *pgxpool.Pool
+	ids IDs
 }
 
+const serviceName = "cattle-service"
+
 // New creates a new Repository backed by the given connection pool.
-func New(db *pgxpool.Pool) Repository {
-	return &repo{db: db}
+func New(db *pgxpool.Pool, ids IDs) Repository {
+	return &repo{db: db, ids: ids}
 }
 
 // ─── Cattle ──────────────────────────────────────────────────────────────────
@@ -111,10 +119,49 @@ RETURNING id, tenant_id, tag_number, COALESCE(name,''), COALESCE(breed_id,''),
 	return scanCattle(row)
 }
 
-func (r *repo) SoftDeleteCattle(ctx context.Context, id, tenantID string) error {
-	const q = `UPDATE cattle SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`
-	_, err := r.db.Exec(ctx, q, id, tenantID)
-	return err
+// SoftDeleteCattle marks an animal deleted and records who did it.
+//
+// It took no actor at all, and that was worse than recording nothing: the update
+// stamped `updated_at` to the moment of deletion and left `updated_by` holding
+// whoever had last edited the row. A reader pairing those two fields — which is
+// what they are for — concluded that person had deleted the animal. The record
+// did not merely omit who; it named the wrong person.
+//
+// The wire request carried a `deleted_by` all along and the handler dropped it,
+// so a caller supplying it had every reason to believe it had been kept.
+func (r *repo) SoftDeleteCattle(ctx context.Context, id, tenantID, deletedBy string) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	// One statement, so the update and the read of what it deleted cannot
+	// disagree. RETURNING also answers whether there was anything to delete:
+	// `deleted_at IS NULL` means a second delete of the same animal returns no
+	// row rather than silently succeeding and writing a second audit entry.
+	//
+	// The tag number goes into the trail because that is what somebody searches
+	// for when an animal has gone missing from a list. The row itself survives —
+	// this is a soft delete — so the entry does not have to carry the rest of it.
+	var tag string
+	if err := tx.QueryRow(ctx,
+		`UPDATE cattle SET deleted_at = NOW(), updated_at = NOW(), updated_by = $3
+		  WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+		  RETURNING tag_number`,
+		id, tenantID, deletedBy).Scan(&tag); err != nil {
+		return fmt.Errorf("delete cattle %s: %w", id, err)
+	}
+
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "delete_cattle", ResourceType: "cattle", ResourceID: id,
+		Before:      map[string]any{"tag_number": tag, "deleted": false},
+		After:       map[string]any{"tag_number": tag, "deleted": true, "deleted_by": deletedBy},
+		ServiceName: serviceName,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // ─── Breed ────────────────────────────────────────────────────────────────────

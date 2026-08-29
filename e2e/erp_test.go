@@ -1114,3 +1114,99 @@ func TestAnAnimalWithNoBreedOwnerOrFarmCanStillBeRead(t *testing.T) {
 			len(listed.Cattle))
 	}
 }
+
+// Deleting an animal records who deleted it.
+//
+// The request carried a `deleted_by` all along, the handler dropped it, and the
+// repository took no actor at all. What the row then said was worse than
+// nothing: the update stamped `updated_at` to the moment of deletion and left
+// `updated_by` holding whoever had last edited the animal. Those two fields are
+// meant to be read as a pair, so the record did not merely omit who deleted it —
+// it named the wrong person, and the caller who supplied the right one had every
+// reason to believe it had been kept.
+func TestDeletingAnAnimalRecordsWhoDidIt(t *testing.T) {
+	p := startPlatform(t)
+
+	created, err := svcclient.Call[createCattleReq, cattleResp](
+		context.Background(), p.cattle(), "cattle.v1.CattleService/CreateCattle",
+		createCattleReq{TenantID: p.tenant, TagNumber: newID("tag"),
+			Name: "doomed", Gender: "F", Weight: 400, CreatedBy: "the.clerk"}, p.opts())
+	if err != nil {
+		t.Fatalf("create cattle: %v", err)
+	}
+
+	if _, err := svcclient.Call[deleteCattleReq, deleteCattleResp](
+		context.Background(), p.cattle(), "cattle.v1.CattleService/DeleteCattle",
+		deleteCattleReq{ID: created.Cattle.ID, TenantID: p.tenant,
+			DeletedBy: "the.supervisor"}, p.opts()); err != nil {
+		t.Fatalf("delete cattle: %v", err)
+	}
+
+	conn, err := pgx.Connect(context.Background(), dsn(t, "e2e_cattle"))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer conn.Close(context.Background())
+
+	// The row survives — this is a soft delete — and now says who ended it.
+	var updatedBy string
+	var deletedAt *time.Time
+	if err := conn.QueryRow(context.Background(),
+		`SELECT updated_by, deleted_at FROM cattle WHERE id=$1 AND tenant_id=$2`,
+		created.Cattle.ID, p.tenant).Scan(&updatedBy, &deletedAt); err != nil {
+		t.Fatalf("read the deleted row: %v", err)
+	}
+	if deletedAt == nil {
+		t.Fatal("the animal was not marked deleted")
+	}
+	if updatedBy != "the.supervisor" {
+		t.Errorf("the row says %q made the last change and %q deleted it; `updated_at` moved "+
+			"to the deletion and `updated_by` did not, so the two together name the wrong "+
+			"person", updatedBy, "the.supervisor")
+	}
+
+	// And the audit trail carries it too, so the deletion is findable by the tag
+	// number somebody searches for when an animal is missing from a list.
+	var before, after []byte
+	if err := conn.QueryRow(context.Background(), `
+		SELECT old_value, new_value FROM audit_logs
+		 WHERE tenant_id=$1 AND resource_id=$2 AND action='delete_cattle'`,
+		p.tenant, created.Cattle.ID).Scan(&before, &after); err != nil {
+		t.Fatalf("an animal was deleted and nothing records it: %v", err)
+	}
+	if !strings.Contains(string(after), "the.supervisor") {
+		t.Errorf("the audit entry is %s and does not name who deleted the animal", after)
+	}
+}
+
+// And a deletion with nobody's name against it is refused.
+//
+// The row it writes is the only account of an animal disappearing from every
+// list, and one that cannot say who did it is an account nobody can follow up.
+func TestDeletingAnAnimalWithNoNameAgainstItIsRefused(t *testing.T) {
+	p := startPlatform(t)
+
+	created, err := svcclient.Call[createCattleReq, cattleResp](
+		context.Background(), p.cattle(), "cattle.v1.CattleService/CreateCattle",
+		createCattleReq{TenantID: p.tenant, TagNumber: newID("tag"),
+			Name: "safe", Gender: "F", Weight: 400, CreatedBy: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("create cattle: %v", err)
+	}
+
+	if _, err := svcclient.Call[deleteCattleReq, deleteCattleResp](
+		context.Background(), p.cattle(), "cattle.v1.CattleService/DeleteCattle",
+		deleteCattleReq{ID: created.Cattle.ID, TenantID: p.tenant}, p.opts()); err == nil {
+		t.Error("an animal was deleted with no name against it")
+	}
+}
+
+type deleteCattleReq struct {
+	ID        string `json:"id"`
+	TenantID  string `json:"tenant_id"`
+	DeletedBy string `json:"deleted_by"`
+}
+
+type deleteCattleResp struct {
+	Success bool `json:"success"`
+}
