@@ -111,7 +111,21 @@ BEGIN
         WHERE table_schema = current_schema()
           AND data_type = 'numeric'
           AND numeric_scale = 2
-          AND table_name IN ('orders','order_items','order_invoices')
+          -- Named explicitly rather than "every numeric column", because
+          -- order_items.quantity is a quantity in litres or kilos and has
+          -- nothing to do with a currency's minor unit.
+          --
+          -- This list said 'order_invoices', which is not a table in this
+          -- schema — it is 'invoices' — and it omitted 'returns' altogether.
+          -- So a deployment recording a three-decimal currency could place an
+          -- order at 1.234 and have the invoice raised from it silently rounded
+          -- to 1.23 by a NUMERIC(12,2) column, with the invoice then
+          -- disagreeing with the order it came from and nothing saying why.
+          -- The loop matched nothing for a name that does not exist and
+          -- reported success, which is what a control that does nothing looks
+          -- like. Found by listing the columns of a live database rather than
+          -- reading this file.
+          AND table_name IN ('orders','order_items','invoices','returns')
     LOOP
         EXECUTE format('ALTER TABLE %I ALTER COLUMN %I TYPE NUMERIC(18,4)',
                        col.table_name, col.column_name);

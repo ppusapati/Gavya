@@ -8,7 +8,7 @@ import (
 	ulidpkg "p9e.in/samavaya/packages/ulid"
 
 	"github.com/ppusapati/gavya/libs/integrity/currency"
-	"github.com/ppusapati/gavya/libs/integrity/exact"
+	"github.com/ppusapati/gavya/libs/integrity/money"
 	"github.com/ppusapati/gavya/services/cattle-market-service/internal/domain"
 	"github.com/ppusapati/gavya/services/cattle-market-service/internal/repository"
 )
@@ -16,7 +16,14 @@ import (
 // ─── CattleListing ────────────────────────────────────────────────────────────
 
 // CreateListing validates input, assigns a ULID, and persists a new listing.
-func (s *Service) CreateListing(ctx context.Context, l *domain.CattleListing) (*domain.CattleListing, error) {
+// CreateListing takes the asking price as the decimal literal the caller wrote,
+// together with the currency it is in, rather than as a parsed amount.
+//
+// The two have to arrive together and be resolved here, because the scale a
+// price is held to is a fact about its currency — three decimals for a dinar,
+// none for a yen — and it is this function that decides which currency the
+// tenant records in.
+func (s *Service) CreateListing(ctx context.Context, l *domain.CattleListing, askingPrice, currencyCode string) (*domain.CattleListing, error) {
 	if l.TenantID == "" {
 		return nil, invalid("tenant_id is required")
 	}
@@ -29,9 +36,6 @@ func (s *Service) CreateListing(ctx context.Context, l *domain.CattleListing) (*
 	if l.Title == "" {
 		return nil, invalid("title is required")
 	}
-	if l.AskingPrice <= 0 {
-		return nil, invalid("asking_price must be greater than zero")
-	}
 	if l.ListingType != "fixed" && l.ListingType != "auction" && l.ListingType != "negotiable" {
 		return nil, invalid("listing_type must be fixed, auction, or negotiable")
 	}
@@ -42,7 +46,7 @@ func (s *Service) CreateListing(ctx context.Context, l *domain.CattleListing) (*
 	// The currency is stated, not assumed. There is no default: a price silently
 	// recorded in rupees outside India is a price nobody can act on. The first
 	// amount a tenant records fixes the currency it records in.
-	code, err := currency.Normalise(l.Currency)
+	code, err := currency.Normalise(currencyCode)
 	if err != nil {
 		return nil, invalid("currency: %s", err)
 	}
@@ -53,12 +57,18 @@ func (s *Service) CreateListing(ctx context.Context, l *domain.CattleListing) (*
 	if err := s.repo.PinTenantMoney(ctx, l.TenantID, repository.Money{Code: code, Scale: scale}); err != nil {
 		return nil, err
 	}
-	l.Currency = code
 	// Amounts are held to that currency's own precision: a yen price has no
-	// decimals, a dinar price has three.
-	if _, err := exact.NonNegativeDecimal(l.AskingPrice, scale, exact.MoneyPrecision); err != nil {
-		return nil, invalid("%s", exact.Field("asking_price", err))
+	// decimals, a dinar price has three. Parse refuses a literal finer than the
+	// currency rather than rounding it, so a price that cannot be charged is
+	// reported instead of quietly becoming one that can.
+	price, err := money.Parse(askingPrice, scale, code)
+	if err != nil {
+		return nil, invalid("asking_price: %s", err)
 	}
+	if price.Value <= 0 {
+		return nil, invalid("asking_price must be greater than zero")
+	}
+	l.AskingPrice = price
 
 	l.ID = ulidpkg.New().String()
 	if l.Status == "" {
@@ -105,7 +115,17 @@ func (s *Service) ListActiveListings(ctx context.Context, tenantID string, limit
 // ─── CattleBid ────────────────────────────────────────────────────────────────
 
 // PlaceBid validates the listing is active, validates bid amount, and persists a bid.
-func (s *Service) PlaceBid(ctx context.Context, b *domain.CattleBid) (*domain.CattleBid, error) {
+// PlaceBid takes the amount as a decimal literal and no currency at all.
+//
+// A bid is in the listing's currency by definition: one that were not could not
+// be compared against the asking price, and ranking it against other bids would
+// be ranking two different kinds of money. Taking it from the listing rather
+// than the request removes the case where the two disagree.
+//
+// The request never carried a currency, and the service required one, so this
+// endpoint returned "a currency code is three letters" for every call ever made
+// to it. Nothing noticed because nothing tested it end to end.
+func (s *Service) PlaceBid(ctx context.Context, b *domain.CattleBid, bidAmount string) (*domain.CattleBid, error) {
 	if b.TenantID == "" {
 		return nil, invalid("tenant_id is required")
 	}
@@ -114,9 +134,6 @@ func (s *Service) PlaceBid(ctx context.Context, b *domain.CattleBid) (*domain.Ca
 	}
 	if b.BidderID == "" {
 		return nil, invalid("bidder_id is required")
-	}
-	if b.BidAmount <= 0 {
-		return nil, invalid("bid_amount must be greater than zero")
 	}
 	if b.CreatedBy == "" {
 		return nil, invalid("created_by is required")
@@ -133,10 +150,7 @@ func (s *Service) PlaceBid(ctx context.Context, b *domain.CattleBid) (*domain.Ca
 	// The currency is stated, not assumed. There is no default: a price silently
 	// recorded in rupees outside India is a price nobody can act on. The first
 	// amount a tenant records fixes the currency it records in.
-	code, err := currency.Normalise(b.Currency)
-	if err != nil {
-		return nil, invalid("currency: %s", err)
-	}
+	code := listing.AskingPrice.Currency
 	scale, err := currency.Scale(code)
 	if err != nil {
 		return nil, invalid("currency: %s", err)
@@ -144,19 +158,16 @@ func (s *Service) PlaceBid(ctx context.Context, b *domain.CattleBid) (*domain.Ca
 	if err := s.repo.PinTenantMoney(ctx, b.TenantID, repository.Money{Code: code, Scale: scale}); err != nil {
 		return nil, err
 	}
-	b.Currency = code
-	// A bid in a different currency from the listing cannot be compared against
-	// the asking price, and ranking it against other bids would be ranking two
-	// different kinds of money.
-	if listing.Currency != code {
-		return nil, invalid("this listing is priced in %s; a bid in %s cannot be compared with it",
-			listing.Currency, code)
-	}
 	// Amounts are held to that currency's own precision: a yen price has no
 	// decimals, a dinar price has three.
-	if _, err := exact.NonNegativeDecimal(b.BidAmount, scale, exact.MoneyPrecision); err != nil {
-		return nil, invalid("%s", exact.Field("bid_amount", err))
+	amount, err := money.Parse(bidAmount, scale, code)
+	if err != nil {
+		return nil, invalid("bid_amount: %s", err)
 	}
+	if amount.Value <= 0 {
+		return nil, invalid("bid_amount must be greater than zero")
+	}
+	b.BidAmount = amount
 
 	b.ID = ulidpkg.New().String()
 	if b.Status == "" {
@@ -221,7 +232,13 @@ func (s *Service) ListListingBids(ctx context.Context, listingID, tenantID strin
 // ─── CattleSale ───────────────────────────────────────────────────────────────
 
 // RecordSale validates the listing exists, creates a sale record, and creates an ownership transfer.
-func (s *Service) RecordSale(ctx context.Context, sale *domain.CattleSale, newOwnerID string) (*domain.CattleSale, *domain.CattleOwnership, error) {
+// RecordSale takes the price as a decimal literal and, like PlaceBid, no
+// currency: a sale settles a listing, so it is in the listing's currency.
+//
+// The request never carried one either, so this endpoint has also failed on
+// every call. The listing is already read below to find the animal and the
+// seller; it says what the money is in too.
+func (s *Service) RecordSale(ctx context.Context, sale *domain.CattleSale, newOwnerID, salePrice string) (*domain.CattleSale, *domain.CattleOwnership, error) {
 	if sale.TenantID == "" {
 		return nil, nil, invalid("tenant_id is required")
 	}
@@ -230,9 +247,6 @@ func (s *Service) RecordSale(ctx context.Context, sale *domain.CattleSale, newOw
 	}
 	if sale.BuyerID == "" {
 		return nil, nil, invalid("buyer_id is required")
-	}
-	if sale.SalePrice <= 0 {
-		return nil, nil, invalid("sale_price must be greater than zero")
 	}
 	if sale.CreatedBy == "" {
 		return nil, nil, invalid("created_by is required")
@@ -249,10 +263,7 @@ func (s *Service) RecordSale(ctx context.Context, sale *domain.CattleSale, newOw
 	// The currency is stated, not assumed. There is no default: a price silently
 	// recorded in rupees outside India is a price nobody can act on. The first
 	// amount a tenant records fixes the currency it records in.
-	code, err := currency.Normalise(sale.Currency)
-	if err != nil {
-		return nil, nil, invalid("currency: %s", err)
-	}
+	code := listing.AskingPrice.Currency
 	scale, err := currency.Scale(code)
 	if err != nil {
 		return nil, nil, invalid("currency: %s", err)
@@ -260,13 +271,16 @@ func (s *Service) RecordSale(ctx context.Context, sale *domain.CattleSale, newOw
 	if err := s.repo.PinTenantMoney(ctx, sale.TenantID, repository.Money{Code: code, Scale: scale}); err != nil {
 		return nil, nil, err
 	}
-	sale.Currency = code
 	// Amounts are held to that currency's own precision: a yen price has no
 	// decimals, a dinar price has three.
-	priceLiteral, err := exact.NonNegativeDecimal(sale.SalePrice, scale, exact.MoneyPrecision)
+	price, err := money.Parse(salePrice, scale, code)
 	if err != nil {
-		return nil, nil, invalid("%s", exact.Field("sale_price", err))
+		return nil, nil, invalid("sale_price: %s", err)
 	}
+	if price.Value <= 0 {
+		return nil, nil, invalid("sale_price must be greater than zero")
+	}
+	sale.SalePrice = price
 
 	sale.ID = ulidpkg.New().String()
 	sale.CattleID = listing.CattleID
@@ -295,7 +309,7 @@ func (s *Service) RecordSale(ctx context.Context, sale *domain.CattleSale, newOw
 	// The sale and the transfer of ownership commit together. When they were two
 	// calls and the second failed, the money was accounted for and the animal
 	// still belonged to the seller — and retrying sold it twice.
-	return s.repo.RecordSaleAndTransfer(ctx, sale, ownership, priceLiteral,
+	return s.repo.RecordSaleAndTransfer(ctx, sale, ownership, price.String(),
 		repository.Money{Code: code, Scale: scale})
 }
 

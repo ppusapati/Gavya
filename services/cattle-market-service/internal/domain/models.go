@@ -1,6 +1,10 @@
 package domain
 
-import "time"
+import (
+	"time"
+
+	"github.com/ppusapati/gavya/libs/integrity/money"
+)
 
 type CattleListing struct {
 	ID          string
@@ -9,8 +13,11 @@ type CattleListing struct {
 	SellerID    string
 	Title       string
 	Description string
-	AskingPrice float64
-	Currency    string
+	// AskingPrice is exact and carries its own currency. It was a float64 read
+	// out of a NUMERIC(18,4) column, which meant the schema had to refuse
+	// anything above 10^11 because that is where float64 stops carrying four
+	// decimals faithfully. See libs/integrity/money.ParseStored.
+	AskingPrice money.Money
 	ListingType string // fixed/auction/negotiable
 	Status      string // active/sold/expired/cancelled
 	ExpiresAt   *time.Time
@@ -26,8 +33,7 @@ type CattleBid struct {
 	TenantID  string
 	ListingID string
 	BidderID  string
-	BidAmount float64
-	Currency  string
+	BidAmount money.Money
 	Status    string // pending/accepted/rejected/withdrawn
 	Message   string
 	CreatedAt time.Time
@@ -44,8 +50,7 @@ type CattleSale struct {
 	SellerID     string
 	BuyerID      string
 	CattleID     string
-	SalePrice    float64
-	Currency     string
+	SalePrice    money.Money
 	SaleDate     time.Time
 	TransferDate *time.Time
 	Status       string // pending/completed/cancelled

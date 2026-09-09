@@ -84,7 +84,7 @@ func (r *repo) AcceptBidAndCloseListing(ctx context.Context, bidID, tenantID, up
 		Before: map[string]any{"status": status},
 		After: map[string]any{
 			"status": domain.ListingSold, "accepted_bid_id": bidID,
-			"bid_amount": bid.BidAmount, "currency": bid.Currency,
+			"bid_amount": bid.BidAmount.String(), "currency": bid.BidAmount.Currency,
 		},
 		ServiceName: serviceName,
 	}); err != nil {
@@ -113,7 +113,9 @@ func (r *repo) RecordSaleAndTransfer(
 	sale *domain.CattleSale,
 	o *domain.CattleOwnership,
 	price string,
-	money Money,
+	// denom is the currency the price is in and how many decimals it has. It is
+	// not named "money" because that is the package the amounts are held in.
+	denom Money,
 ) (*domain.CattleSale, *domain.CattleOwnership, error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
@@ -138,7 +140,7 @@ func (r *repo) RecordSaleAndTransfer(
 		return nil, nil, fmt.Errorf("%w: it has already been sold", ErrListingNotActive)
 	}
 
-	if err := pinCurrencyTx(ctx, tx, sale.TenantID, money.Code, money.Scale); err != nil {
+	if err := pinCurrencyTx(ctx, tx, sale.TenantID, denom.Code, denom.Scale); err != nil {
 		return nil, nil, err
 	}
 
@@ -147,7 +149,7 @@ func (r *repo) RecordSaleAndTransfer(
 		 VALUES ($1,$2,$3,$4,$5,$6,$7::numeric,$8,$9,$10,$11,$12)
 		 RETURNING `+saleCols,
 		sale.ID, sale.TenantID, sale.ListingID, sale.SellerID, sale.BuyerID, sale.CattleID,
-		price, sale.Currency, sale.SaleDate, sale.Status, sale.CreatedBy, sale.UpdatedBy))
+		price, denom.Code, sale.SaleDate, sale.Status, sale.CreatedBy, sale.UpdatedBy))
 	if err != nil {
 		return nil, nil, fmt.Errorf("record sale: %w", err)
 	}
@@ -180,7 +182,7 @@ func (r *repo) RecordSaleAndTransfer(
 		Before: map[string]any{"status": status},
 		After: map[string]any{
 			"status": domain.ListingSold, "sale_id": created.ID,
-			"sale_price": price, "currency": sale.Currency,
+			"sale_price": price, "currency": denom.Code,
 		},
 		ServiceName: serviceName,
 	}); err != nil {

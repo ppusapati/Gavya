@@ -16,15 +16,18 @@ import (
 // ── Request / Response types (mirror proto messages) ──────────────────────────
 
 type CreateListingRequest struct {
-	TenantID    string  `json:"tenant_id"`
-	CattleID    string  `json:"cattle_id"`
-	SellerID    string  `json:"seller_id"`
-	Title       string  `json:"title"`
-	Description string  `json:"description"`
-	AskingPrice float64 `json:"asking_price"`
-	Currency    string  `json:"currency"`
-	ListingType string  `json:"listing_type"`
-	CreatedBy   string  `json:"created_by"`
+	TenantID    string `json:"tenant_id"`
+	CattleID    string `json:"cattle_id"`
+	SellerID    string `json:"seller_id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	// A decimal literal — "85000.00", not 85000 — because a JSON number is a
+	// float64 by the time Go has read it, and a price that has been through a
+	// float is one nobody can prove was not changed on the way.
+	AskingPrice string `json:"asking_price"`
+	Currency    string `json:"currency"`
+	ListingType string `json:"listing_type"`
+	CreatedBy   string `json:"created_by"`
 }
 type CreateListingResponse struct {
 	Listing *ListingProto `json:"listing"`
@@ -45,12 +48,15 @@ type ListActiveResponse struct {
 	Listings []*ListingProto `json:"listings"`
 }
 type PlaceBidRequest struct {
-	TenantID  string  `json:"tenant_id"`
-	ListingID string  `json:"listing_id"`
-	BidderID  string  `json:"bidder_id"`
-	BidAmount float64 `json:"bid_amount"`
-	Message   string  `json:"message"`
-	CreatedBy string  `json:"created_by"`
+	TenantID  string `json:"tenant_id"`
+	ListingID string `json:"listing_id"`
+	BidderID  string `json:"bidder_id"`
+	// A decimal literal. There is no currency field: a bid is in the listing's
+	// currency, and a request that could name a different one is a request that
+	// could disagree with the thing it is bidding on.
+	BidAmount string `json:"bid_amount"`
+	Message   string `json:"message"`
+	CreatedBy string `json:"created_by"`
 }
 type PlaceBidResponse struct {
 	Bid *BidProto `json:"bid"`
@@ -64,13 +70,14 @@ type BidActionResponse struct {
 	Bid *BidProto `json:"bid"`
 }
 type RecordSaleRequest struct {
-	TenantID  string  `json:"tenant_id"`
-	ListingID string  `json:"listing_id"`
-	SellerID  string  `json:"seller_id"`
-	BuyerID   string  `json:"buyer_id"`
-	CattleID  string  `json:"cattle_id"`
-	SalePrice float64 `json:"sale_price"`
-	CreatedBy string  `json:"created_by"`
+	TenantID  string `json:"tenant_id"`
+	ListingID string `json:"listing_id"`
+	SellerID  string `json:"seller_id"`
+	BuyerID   string `json:"buyer_id"`
+	CattleID  string `json:"cattle_id"`
+	// A decimal literal, in the listing's currency, for the same reason.
+	SalePrice string `json:"sale_price"`
+	CreatedBy string `json:"created_by"`
 }
 type RecordSaleResponse struct {
 	Sale *SaleProto `json:"sale"`
@@ -84,28 +91,31 @@ type OwnershipResponse struct {
 }
 
 type ListingProto struct {
-	ID          string  `json:"id"`
-	TenantID    string  `json:"tenant_id"`
-	CattleID    string  `json:"cattle_id"`
-	Title       string  `json:"title"`
-	AskingPrice float64 `json:"asking_price"`
-	ListingType string  `json:"listing_type"`
-	Status      string  `json:"status"`
+	ID          string `json:"id"`
+	TenantID    string `json:"tenant_id"`
+	CattleID    string `json:"cattle_id"`
+	Title       string `json:"title"`
+	AskingPrice string `json:"asking_price"`
+	Currency    string `json:"currency"`
+	ListingType string `json:"listing_type"`
+	Status      string `json:"status"`
 }
 type BidProto struct {
-	ID        string  `json:"id"`
-	TenantID  string  `json:"tenant_id"`
-	ListingID string  `json:"listing_id"`
-	BidderID  string  `json:"bidder_id"`
-	BidAmount float64 `json:"bid_amount"`
-	Status    string  `json:"status"`
+	ID        string `json:"id"`
+	TenantID  string `json:"tenant_id"`
+	ListingID string `json:"listing_id"`
+	BidderID  string `json:"bidder_id"`
+	BidAmount string `json:"bid_amount"`
+	Currency  string `json:"currency"`
+	Status    string `json:"status"`
 }
 type SaleProto struct {
-	ID        string  `json:"id"`
-	TenantID  string  `json:"tenant_id"`
-	ListingID string  `json:"listing_id"`
-	SalePrice float64 `json:"sale_price"`
-	Status    string  `json:"status"`
+	ID        string `json:"id"`
+	TenantID  string `json:"tenant_id"`
+	ListingID string `json:"listing_id"`
+	SalePrice string `json:"sale_price"`
+	Currency  string `json:"currency"`
+	Status    string `json:"status"`
 }
 type OwnershipProto struct {
 	ID              string `json:"id"`
@@ -164,7 +174,7 @@ func classify(err error) error {
 
 func (h *Handler) CreateListing(ctx context.Context, req *connect.Request[CreateListingRequest]) (*connect.Response[CreateListingResponse], error) {
 	m := req.Msg
-	l, err := h.svc.CreateListing(ctx, &domain.CattleListing{TenantID: m.TenantID, CattleID: m.CattleID, SellerID: m.SellerID, Title: m.Title, Description: m.Description, AskingPrice: m.AskingPrice, Currency: m.Currency, ListingType: m.ListingType, CreatedBy: m.CreatedBy})
+	l, err := h.svc.CreateListing(ctx, &domain.CattleListing{TenantID: m.TenantID, CattleID: m.CattleID, SellerID: m.SellerID, Title: m.Title, Description: m.Description, ListingType: m.ListingType, CreatedBy: m.CreatedBy}, m.AskingPrice, m.Currency)
 	if err != nil {
 		return nil, classify(err)
 	}
@@ -193,7 +203,7 @@ func (h *Handler) ListActiveListings(ctx context.Context, req *connect.Request[L
 
 func (h *Handler) PlaceBid(ctx context.Context, req *connect.Request[PlaceBidRequest]) (*connect.Response[PlaceBidResponse], error) {
 	m := req.Msg
-	b, err := h.svc.PlaceBid(ctx, &domain.CattleBid{TenantID: m.TenantID, ListingID: m.ListingID, BidderID: m.BidderID, BidAmount: m.BidAmount, Message: m.Message, CreatedBy: m.CreatedBy})
+	b, err := h.svc.PlaceBid(ctx, &domain.CattleBid{TenantID: m.TenantID, ListingID: m.ListingID, BidderID: m.BidderID, Message: m.Message, CreatedBy: m.CreatedBy}, m.BidAmount)
 	if err != nil {
 		return nil, classify(err)
 	}
@@ -226,9 +236,8 @@ func (h *Handler) RecordSale(ctx context.Context, req *connect.Request[RecordSal
 		SellerID:  m.SellerID,
 		BuyerID:   m.BuyerID,
 		CattleID:  m.CattleID,
-		SalePrice: m.SalePrice,
 		CreatedBy: m.CreatedBy,
-	}, m.BuyerID)
+	}, m.BuyerID, m.SalePrice)
 	if err != nil {
 		return nil, classify(err)
 	}
@@ -248,13 +257,13 @@ func (h *Handler) GetOwnershipHistory(ctx context.Context, req *connect.Request[
 }
 
 func toListingProto(l *domain.CattleListing) *ListingProto {
-	return &ListingProto{ID: l.ID, TenantID: l.TenantID, CattleID: l.CattleID, Title: l.Title, AskingPrice: l.AskingPrice, ListingType: l.ListingType, Status: l.Status}
+	return &ListingProto{ID: l.ID, TenantID: l.TenantID, CattleID: l.CattleID, Title: l.Title, AskingPrice: l.AskingPrice.String(), Currency: l.AskingPrice.Currency, ListingType: l.ListingType, Status: l.Status}
 }
 func toBidProto(b *domain.CattleBid) *BidProto {
-	return &BidProto{ID: b.ID, TenantID: b.TenantID, ListingID: b.ListingID, BidderID: b.BidderID, BidAmount: b.BidAmount, Status: b.Status}
+	return &BidProto{ID: b.ID, TenantID: b.TenantID, ListingID: b.ListingID, BidderID: b.BidderID, BidAmount: b.BidAmount.String(), Currency: b.BidAmount.Currency, Status: b.Status}
 }
 func toSaleProto(s *domain.CattleSale) *SaleProto {
-	return &SaleProto{ID: s.ID, TenantID: s.TenantID, ListingID: s.ListingID, SalePrice: s.SalePrice, Status: s.Status}
+	return &SaleProto{ID: s.ID, TenantID: s.TenantID, ListingID: s.ListingID, SalePrice: s.SalePrice.String(), Currency: s.SalePrice.Currency, Status: s.Status}
 }
 func toOwnershipProto(o *domain.CattleOwnership) *OwnershipProto {
 	return &OwnershipProto{ID: o.ID, TenantID: o.TenantID, CattleID: o.CattleID, OwnerID: o.OwnerID, AcquisitionType: o.AcquisitionType}

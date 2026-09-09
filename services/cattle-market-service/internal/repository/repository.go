@@ -9,8 +9,37 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ppusapati/gavya/libs/integrity/currency"
+	"github.com/ppusapati/gavya/libs/integrity/money"
+
 	"github.com/ppusapati/gavya/services/cattle-market-service/internal/domain"
 )
+
+// moneyColumnScale is how many decimals the money columns hold.
+//
+// They are NUMERIC(18,4) so that one schema serves a yen deployment and a dinar
+// one: four is the most any ISO 4217 currency has. It is not how many decimals
+// any particular amount has — a rupee price stored there reads back as
+// "85000.0000", and those trailing zeros are the column's padding.
+const moneyColumnScale int32 = 4
+
+// parseAmount turns a stored decimal literal into money at its currency's scale.
+//
+// A row whose currency is unreadable is an error rather than a zero: an amount
+// with no currency is not an amount, and returning one as though it were is how
+// a rupee figure ends up being read as dollars. money.ParseStored is what
+// separates the column's padding from the amount's real precision.
+func parseAmount(literal, code string) (money.Money, error) {
+	normalised, err := currency.Normalise(code)
+	if err != nil {
+		return money.Money{}, fmt.Errorf("currency %q: %w", code, err)
+	}
+	scale, err := currency.Scale(normalised)
+	if err != nil {
+		return money.Money{}, fmt.Errorf("currency %q: %w", code, err)
+	}
+	return money.ParseStored(literal, moneyColumnScale, scale, normalised)
+}
 
 // ErrNotFound lets a caller tell a missing record from a failed query. Without
 // it every outcome reaches the handler as an opaque error and is reported as
@@ -85,13 +114,13 @@ func (r *repo) CreateListing(ctx context.Context, l *domain.CattleListing) (*dom
 INSERT INTO cattle_listings
   (id, tenant_id, cattle_id, seller_id, title, description, asking_price, currency,
    listing_type, status, expires_at, created_by, updated_by)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+VALUES ($1,$2,$3,$4,$5,$6,$7::numeric,$8,$9,$10,$11,$12,$13)
 RETURNING id, tenant_id, cattle_id, seller_id, title, description, asking_price, currency,
           listing_type, status, expires_at, created_at, updated_at, created_by, updated_by, deleted_at`
 
 	row := r.db.QueryRow(ctx, q,
 		l.ID, l.TenantID, l.CattleID, l.SellerID, l.Title, l.Description,
-		l.AskingPrice, l.Currency, l.ListingType, l.Status, l.ExpiresAt,
+		l.AskingPrice.String(), l.AskingPrice.Currency, l.ListingType, l.Status, l.ExpiresAt,
 		l.CreatedBy, l.UpdatedBy,
 	)
 	return scanListing(row)
@@ -152,12 +181,12 @@ func (r *repo) CreateBid(ctx context.Context, b *domain.CattleBid) (*domain.Catt
 	const q = `
 INSERT INTO cattle_bids
   (id, tenant_id, listing_id, bidder_id, bid_amount, currency, status, message, created_by, updated_by)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+VALUES ($1,$2,$3,$4,$5::numeric,$6,$7,$8,$9,$10)
 RETURNING id, tenant_id, listing_id, bidder_id, bid_amount, currency, status, message,
           created_at, updated_at, created_by, updated_by, deleted_at`
 
 	row := r.db.QueryRow(ctx, q,
-		b.ID, b.TenantID, b.ListingID, b.BidderID, b.BidAmount, b.Currency,
+		b.ID, b.TenantID, b.ListingID, b.BidderID, b.BidAmount.String(), b.BidAmount.Currency,
 		b.Status, b.Message, b.CreatedBy, b.UpdatedBy,
 	)
 	return scanBid(row)
@@ -206,13 +235,13 @@ func (r *repo) CreateSale(ctx context.Context, s *domain.CattleSale) (*domain.Ca
 	const q = `
 INSERT INTO cattle_sales
   (id, tenant_id, listing_id, seller_id, buyer_id, cattle_id, sale_price, currency, sale_date, status, created_by, updated_by)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+VALUES ($1,$2,$3,$4,$5,$6,$7::numeric,$8,$9,$10,$11,$12)
 RETURNING id, tenant_id, listing_id, seller_id, buyer_id, cattle_id, sale_price, currency,
           sale_date, transfer_date, status, created_at, updated_at, created_by, updated_by, deleted_at`
 
 	row := r.db.QueryRow(ctx, q,
 		s.ID, s.TenantID, s.ListingID, s.SellerID, s.BuyerID, s.CattleID,
-		s.SalePrice, s.Currency, s.SaleDate, s.Status, s.CreatedBy, s.UpdatedBy,
+		s.SalePrice.String(), s.SalePrice.Currency, s.SaleDate, s.Status, s.CreatedBy, s.UpdatedBy,
 	)
 	return scanSale(row)
 }
@@ -278,9 +307,10 @@ type scanner interface {
 
 func scanListing(s scanner) (*domain.CattleListing, error) {
 	l := &domain.CattleListing{}
+	var price, code string
 	err := s.Scan(
 		&l.ID, &l.TenantID, &l.CattleID, &l.SellerID, &l.Title, &l.Description,
-		&l.AskingPrice, &l.Currency, &l.ListingType, &l.Status, &l.ExpiresAt,
+		&price, &code, &l.ListingType, &l.Status, &l.ExpiresAt,
 		&l.CreatedAt, &l.UpdatedAt, &l.CreatedBy, &l.UpdatedBy, &l.DeletedAt,
 	)
 	if err != nil {
@@ -289,13 +319,17 @@ func scanListing(s scanner) (*domain.CattleListing, error) {
 		}
 		return nil, fmt.Errorf("scan listing: %w", err)
 	}
+	if l.AskingPrice, err = parseAmount(price, code); err != nil {
+		return nil, fmt.Errorf("listing %s: %w", l.ID, err)
+	}
 	return l, nil
 }
 
 func scanBid(s scanner) (*domain.CattleBid, error) {
 	b := &domain.CattleBid{}
+	var amount, code string
 	err := s.Scan(
-		&b.ID, &b.TenantID, &b.ListingID, &b.BidderID, &b.BidAmount, &b.Currency,
+		&b.ID, &b.TenantID, &b.ListingID, &b.BidderID, &amount, &code,
 		&b.Status, &b.Message, &b.CreatedAt, &b.UpdatedAt, &b.CreatedBy, &b.UpdatedBy, &b.DeletedAt,
 	)
 	if err != nil {
@@ -304,14 +338,18 @@ func scanBid(s scanner) (*domain.CattleBid, error) {
 		}
 		return nil, fmt.Errorf("scan bid: %w", err)
 	}
+	if b.BidAmount, err = parseAmount(amount, code); err != nil {
+		return nil, fmt.Errorf("bid %s: %w", b.ID, err)
+	}
 	return b, nil
 }
 
 func scanSale(s scanner) (*domain.CattleSale, error) {
 	sale := &domain.CattleSale{}
+	var price, code string
 	err := s.Scan(
 		&sale.ID, &sale.TenantID, &sale.ListingID, &sale.SellerID, &sale.BuyerID, &sale.CattleID,
-		&sale.SalePrice, &sale.Currency, &sale.SaleDate, &sale.TransferDate, &sale.Status,
+		&price, &code, &sale.SaleDate, &sale.TransferDate, &sale.Status,
 		&sale.CreatedAt, &sale.UpdatedAt, &sale.CreatedBy, &sale.UpdatedBy, &sale.DeletedAt,
 	)
 	if err != nil {
@@ -319,6 +357,9 @@ func scanSale(s scanner) (*domain.CattleSale, error) {
 			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("scan sale: %w", err)
+	}
+	if sale.SalePrice, err = parseAmount(price, code); err != nil {
+		return nil, fmt.Errorf("sale %s: %w", sale.ID, err)
 	}
 	return sale, nil
 }

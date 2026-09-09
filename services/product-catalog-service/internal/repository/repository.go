@@ -423,21 +423,12 @@ const moneyColumnScale int32 = 4
 
 // parsePrice turns a stored decimal literal into money at its currency's scale.
 //
-// Two steps, deliberately. The literal is read at the column's scale, because
-// that is what PostgreSQL renders; then it is brought down to the currency's,
-// because that is how many decimals the amount actually has. The second step
-// must throw nothing away — a rupee price with a non-zero third decimal is a
-// figure the currency cannot express, and something has gone wrong upstream if
-// one is there. Reporting it beats rounding it away, which would make the
-// service quietly disagree with its own database.
-//
-// The rounding mode is named but never used: the call is refused unless it
-// discarded nothing, so no rounding decision is being made here. It is a
-// decomposition of the column's padding, not a choice about money.
-//
 // A row whose currency is unreadable is an error rather than a zero: a price
 // with no currency is not a price, and returning one as though it were is how a
 // rupee figure ends up being read as dollars.
+//
+// money.ParseStored is what separates the column's padding from the amount's
+// real precision, and why that is not the same as rounding.
 func parsePrice(literal, code string) (money.Money, error) {
 	normalised, err := currency.Normalise(code)
 	if err != nil {
@@ -447,20 +438,9 @@ func parsePrice(literal, code string) (money.Money, error) {
 	if err != nil {
 		return money.Money{}, fmt.Errorf("currency %q: %w", code, err)
 	}
-	stored, err := money.Parse(literal, moneyColumnScale, normalised)
+	m, err := money.ParseStored(literal, moneyColumnScale, scale, normalised)
 	if err != nil {
-		return money.Money{}, fmt.Errorf("price %q: %w", literal, err)
-	}
-	m, step, err := money.Rescale(stored, scale, money.RoundTowardZero)
-	if err != nil {
-		return money.Money{}, fmt.Errorf("price %q: %w", literal, err)
-	}
-	if step.Discarded != 0 {
-		return money.Money{}, fmt.Errorf(
-			"price %q is stored with more precision than %s has: %d beyond %d decimals would "+
-				"have to be dropped to read it, and dropping it silently would make this "+
-				"service disagree with its own database",
-			literal, normalised, step.Discarded, scale)
+		return money.Money{}, err
 	}
 	return m, nil
 }

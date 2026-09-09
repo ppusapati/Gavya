@@ -178,22 +178,61 @@ type listInvoicesResp struct {
 // ---------------------------------------------------------------------------
 
 type createListingReq struct {
-	TenantID    string  `json:"tenant_id"`
-	CattleID    string  `json:"cattle_id"`
-	SellerID    string  `json:"seller_id"`
-	Title       string  `json:"title"`
-	Description string  `json:"description"`
-	AskingPrice float64 `json:"asking_price"`
-	Currency    string  `json:"currency"`
-	ListingType string  `json:"listing_type"`
-	CreatedBy   string  `json:"created_by"`
+	TenantID    string `json:"tenant_id"`
+	CattleID    string `json:"cattle_id"`
+	SellerID    string `json:"seller_id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	AskingPrice string `json:"asking_price"`
+	Currency    string `json:"currency"`
+	ListingType string `json:"listing_type"`
+	CreatedBy   string `json:"created_by"`
 }
 
 type listingResp struct {
 	Listing *struct {
-		ID          string  `json:"id"`
-		AskingPrice float64 `json:"asking_price"`
+		ID          string `json:"id"`
+		AskingPrice string `json:"asking_price"`
+		Currency    string `json:"currency"`
 	} `json:"listing"`
+}
+
+// A bid carries no currency: it is in the listing's, by definition.
+type placeBidReq struct {
+	TenantID  string `json:"tenant_id"`
+	ListingID string `json:"listing_id"`
+	BidderID  string `json:"bidder_id"`
+	BidAmount string `json:"bid_amount"`
+	Message   string `json:"message"`
+	CreatedBy string `json:"created_by"`
+}
+
+type bidResp struct {
+	Bid *struct {
+		ID        string `json:"id"`
+		BidAmount string `json:"bid_amount"`
+		Currency  string `json:"currency"`
+		Status    string `json:"status"`
+	} `json:"bid"`
+}
+
+type recordSaleReq struct {
+	TenantID  string `json:"tenant_id"`
+	ListingID string `json:"listing_id"`
+	SellerID  string `json:"seller_id"`
+	BuyerID   string `json:"buyer_id"`
+	CattleID  string `json:"cattle_id"`
+	SalePrice string `json:"sale_price"`
+	CreatedBy string `json:"created_by"`
+}
+
+type saleResp struct {
+	Sale *struct {
+		ID        string `json:"id"`
+		SalePrice string `json:"sale_price"`
+		Currency  string `json:"currency"`
+		Status    string `json:"status"`
+	} `json:"sale"`
 }
 
 type listListingsResp struct {
@@ -462,7 +501,7 @@ func erpCases() []isolationCase {
 					context.Background(), p.cattleMarket(),
 					"cattlemarket.v1.CattleMarketService/CreateListing",
 					createListingReq{TenantID: p.tenant, CattleID: newID("cow"),
-						SellerID: newID("sel"), Title: "e2e", AskingPrice: 85000,
+						SellerID: newID("sel"), Title: "e2e", AskingPrice: "85000.00",
 						Currency: "INR", ListingType: "fixed", CreatedBy: "e2e"}, p.opts())
 				if err != nil {
 					t.Fatalf("create listing: %v", err)
@@ -660,47 +699,141 @@ func TestEveryServiceInThePlatformAnswersHealth(t *testing.T) {
 // Money these services cannot carry
 // ---------------------------------------------------------------------------
 
-// A price the read path would mangle is refused rather than stored.
+// A price beyond what float64 carries survives the round trip.
 //
 // These columns are NUMERIC(18,4) so one schema serves a yen deployment and a
-// dinar one, and the services read them into float64. float64 carries a
+// dinar one, and this service used to read them into float64. float64 carries a
 // four-decimal value exactly only up to about 10^11 — measured, not assumed:
 // 200,000 values below that round-tripped through
 // NUMERIC(18,4) -> float64 -> JSON -> float64 losing nothing, and above 10^12
 // more than three quarters of them lost a digit. 6791947779410.3551 came back
 // as 6791947779410.3555.
 //
-// So the column could hold values the code cannot carry, and nothing said so.
-// The database now refuses them. Refusing beats rounding on the way out, where
-// both ends believe they agree.
-func TestAPriceTooLargeToCarryIsRefusedRatherThanMangled(t *testing.T) {
+// So the column could hold values the code could not carry, and the schema
+// refused them with a CHECK at 10^11 — a limit of the Go read path written into
+// the database. The read path is exact now, the CHECK is gone, and this is what
+// says so.
+func TestAListingPriceBeyondFloat64PrecisionSurvivesTheRoundTrip(t *testing.T) {
 	p := startPlatform(t)
 
-	_, err := svcclient.Call[createListingReq, listingResp](
-		context.Background(), p.cattleMarket(),
-		"cattlemarket.v1.CattleMarketService/CreateListing",
-		createListingReq{TenantID: p.tenant, CattleID: newID("cow"), SellerID: newID("sel"),
-			Title: "e2e", AskingPrice: 6791947779410.3551,
-			Currency: "INR", ListingType: "fixed", CreatedBy: "e2e"}, p.opts())
-	if err == nil {
-		t.Error("a price of 6791947779410.3551 was accepted; it comes back out of float64 as " +
-			"6791947779410.3555, and both ends would believe they agreed on it")
-	}
-
-	// And a price any dairy might actually write is accepted and comes back
-	// unchanged. Without this the refusal above could be a service that rejects
-	// everything.
+	// A four-decimal currency, so all four digits are meaningful.
+	const big = "6791947779410.3551"
 	resp, err := svcclient.Call[createListingReq, listingResp](
 		context.Background(), p.cattleMarket(),
 		"cattlemarket.v1.CattleMarketService/CreateListing",
 		createListingReq{TenantID: p.tenant, CattleID: newID("cow"), SellerID: newID("sel"),
-			Title: "e2e", AskingPrice: 85432.75,
-			Currency: "INR", ListingType: "fixed", CreatedBy: "e2e"}, p.opts())
+			Title: "e2e", AskingPrice: big,
+			Currency: "CLF", ListingType: "fixed", CreatedBy: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("a price of %s was refused: %v", big, err)
+	}
+	if resp.Listing.AskingPrice != big {
+		t.Errorf("a price of %s came back as %s; the value changed between the column and "+
+			"the reply, which is the failure the old ceiling existed to prevent",
+			big, resp.Listing.AskingPrice)
+	}
+
+	// And an ordinary price in an ordinary currency, so the test above cannot
+	// pass by the service accepting everything and storing nothing.
+	ordinary, err := svcclient.Call[createListingReq, listingResp](
+		context.Background(), p.cattleMarket(),
+		"cattlemarket.v1.CattleMarketService/CreateListing",
+		createListingReq{TenantID: p.tenant, CattleID: newID("cow"), SellerID: newID("sel"),
+			Title: "e2e", AskingPrice: "85432.75",
+			Currency: "CLF", ListingType: "fixed", CreatedBy: "e2e"}, p.opts())
 	if err != nil {
 		t.Fatalf("an ordinary price was refused: %v", err)
 	}
-	if resp.Listing.AskingPrice != 85432.75 {
-		t.Errorf("a price of 85432.75 came back as %v", resp.Listing.AskingPrice)
+	if ordinary.Listing.AskingPrice != "85432.7500" {
+		t.Errorf("a price of 85432.75 came back as %s, want 85432.7500 — a four-decimal "+
+			"currency records four decimals", ordinary.Listing.AskingPrice)
+	}
+}
+
+// Bidding on a listing, and selling it.
+//
+// Neither endpoint had ever worked. Both required a currency, neither request
+// type carried one, and currency.Normalise("") refuses an empty code — so every
+// call to PlaceBid and RecordSale ever made returned "a currency code is three
+// letters, as in INR or JPY". Nothing noticed because nothing tested them: this
+// file covered CreateListing and nothing past it.
+//
+// The currency now comes from the listing rather than the request, which is
+// where it was always going to have to come from. A bid in a different currency
+// cannot be compared against the asking price, and one that could name its own
+// is one that could disagree with what it is bidding on.
+func TestABidAndASaleTakeTheListingsCurrency(t *testing.T) {
+	p := startPlatform(t)
+
+	cattle, seller, buyer := newID("cow"), newID("sel"), newID("byr")
+	listing, err := svcclient.Call[createListingReq, listingResp](
+		context.Background(), p.cattleMarket(),
+		"cattlemarket.v1.CattleMarketService/CreateListing",
+		createListingReq{TenantID: p.tenant, CattleID: cattle, SellerID: seller,
+			Title: "Murrah buffalo, third lactation", AskingPrice: "85000.00",
+			Currency: "INR", ListingType: "fixed", CreatedBy: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("create listing: %v", err)
+	}
+
+	bid, err := svcclient.Call[placeBidReq, bidResp](
+		context.Background(), p.cattleMarket(),
+		"cattlemarket.v1.CattleMarketService/PlaceBid",
+		placeBidReq{TenantID: p.tenant, ListingID: listing.Listing.ID, BidderID: buyer,
+			BidAmount: "82500.50", Message: "e2e", CreatedBy: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("place bid: %v\nthis endpoint required a currency the request could not "+
+			"carry, so it failed for every caller", err)
+	}
+	if bid.Bid.BidAmount != "82500.50" || bid.Bid.Currency != "INR" {
+		t.Errorf("bid came back as %s %s, want 82500.50 INR — the amount is exact and the "+
+			"currency is the listing's", bid.Bid.BidAmount, bid.Bid.Currency)
+	}
+
+	sale, err := svcclient.Call[recordSaleReq, saleResp](
+		context.Background(), p.cattleMarket(),
+		"cattlemarket.v1.CattleMarketService/RecordSale",
+		recordSaleReq{TenantID: p.tenant, ListingID: listing.Listing.ID, SellerID: seller,
+			BuyerID: buyer, CattleID: cattle, SalePrice: "82500.50", CreatedBy: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("record sale: %v\nsame cause as the bid above", err)
+	}
+	if sale.Sale.SalePrice != "82500.50" || sale.Sale.Currency != "INR" {
+		t.Errorf("sale came back as %s %s, want 82500.50 INR",
+			sale.Sale.SalePrice, sale.Sale.Currency)
+	}
+
+	// The listing closed with the sale, so the same animal cannot be sold twice
+	// through it. Without this the two calls above could both be writing rows
+	// nothing ever reads.
+	if _, err := svcclient.Call[recordSaleReq, saleResp](
+		context.Background(), p.cattleMarket(),
+		"cattlemarket.v1.CattleMarketService/RecordSale",
+		recordSaleReq{TenantID: p.tenant, ListingID: listing.Listing.ID, SellerID: seller,
+			BuyerID: newID("byr"), CattleID: cattle, SalePrice: "90000.00",
+			CreatedBy: "e2e"}, p.opts()); err == nil {
+		t.Error("the same listing was sold twice; the animal now has two owners and two " +
+			"sale records, each of which looks correct on its own")
+	}
+}
+
+// A rupee amount with a third decimal is refused rather than rounded.
+//
+// The columns hold four decimals so one schema serves every currency. A rupee
+// has two. The difference is the column's padding, and reading it back has to
+// tell padding from precision — but on the way in, a third decimal is a figure
+// the currency cannot express and nobody can be charged.
+func TestAnAmountFinerThanItsCurrencyIsRefused(t *testing.T) {
+	p := startPlatform(t)
+
+	if _, err := svcclient.Call[createListingReq, listingResp](
+		context.Background(), p.cattleMarket(),
+		"cattlemarket.v1.CattleMarketService/CreateListing",
+		createListingReq{TenantID: p.tenant, CattleID: newID("cow"), SellerID: newID("sel"),
+			Title: "e2e", AskingPrice: "85000.005",
+			Currency: "INR", ListingType: "fixed", CreatedBy: "e2e"}, p.opts()); err == nil {
+		t.Error("a three-decimal price was accepted in rupees; the database would round it " +
+			"on the way in and nobody would be told")
 	}
 }
 

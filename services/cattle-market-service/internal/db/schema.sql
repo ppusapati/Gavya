@@ -107,43 +107,32 @@ BEGIN
                        col.table_name, col.column_name);
     END LOOP;
 
-    -- Bound every money column to what the Go read path can carry exactly.
+    -- The ceiling on money columns is gone, because the reason for it is.
     --
     -- These columns are NUMERIC(18,4) so one schema serves a yen deployment and
-    -- a dinar one. The services read them into float64, and float64 carries a
-    -- four-decimal value exactly only up to about 10^11 — measured, not
-    -- assumed: 200,000 values below 10^11 round-tripped through
+    -- a dinar one. This service used to read them into float64, and float64
+    -- carries a four-decimal value exactly only up to about 10^11 — measured,
+    -- not assumed: 200,000 values below 10^11 round-tripped through
     -- NUMERIC(18,4) -> float64 -> JSON -> float64 without losing a digit, and
-    -- above 10^12 more than three quarters of them did.
+    -- above 10^12 more than three quarters of them did. A price of
+    -- 6791947779410.3551 came back as 6791947779410.3555.
     --
-    -- So the column can hold values the code cannot carry, and nothing said so.
-    -- A price of 6791947779410.3551 came back as 6791947779410.3555.
+    -- So the column could hold values the code could not carry, and a CHECK
+    -- refused them here rather than let the service mangle them on the way out.
+    -- That was a limit of the read path written into the database, which is the
+    -- wrong place for it: it made a fact about Go look like a fact about money.
     --
-    -- Refused here rather than rounded on the way out. A figure silently
-    -- changed between the database and the reply is the worst version of this:
-    -- both ends believe they agree. The ceiling is far above any real price —
-    -- a hundred billion of any currency — so this refuses nothing a dairy does
-    -- and catches the case the type quietly permits.
+    -- The read path now takes these out as decimal literals and holds them in
+    -- libs/integrity/money, which is exact to the full width of the column, so
+    -- the ceiling would refuse figures the service handles correctly.
     --
-    -- The real fix is to read these as exact decimals, as the integrity
-    -- services do with libs/integrity/money. Until then the database refuses
-    -- what the code would mangle.
-    FOR col IN
-        SELECT c.table_name, c.column_name
-        FROM information_schema.columns c
-        WHERE c.table_schema = current_schema()
-          AND c.data_type = 'numeric'
-          AND c.numeric_scale = 4
-          AND NOT EXISTS (
-              SELECT 1 FROM pg_constraint k
-              WHERE k.conname = c.table_name || '_' || c.column_name || '_carriable'
-          )
-    LOOP
-        EXECUTE format(
-            'ALTER TABLE %I ADD CONSTRAINT %I CHECK (%I IS NULL OR abs(%I) < 100000000000)',
-            col.table_name, col.table_name || '_' || col.column_name || '_carriable',
-            col.column_name, col.column_name);
-    END LOOP;
+    -- Named, not looped. information_schema.columns lists views as well as
+    -- tables, and ALTER TABLE ... DROP CONSTRAINT on a view aborts everything
+    -- after it in this file — which is how e2e/migration_test.go caught the
+    -- first attempt at this in product-catalog-service.
+    ALTER TABLE cattle_listings DROP CONSTRAINT IF EXISTS cattle_listings_asking_price_carriable;
+    ALTER TABLE cattle_bids     DROP CONSTRAINT IF EXISTS cattle_bids_bid_amount_carriable;
+    ALTER TABLE cattle_sales    DROP CONSTRAINT IF EXISTS cattle_sales_sale_price_carriable;
 END
 $$;
 

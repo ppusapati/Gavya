@@ -15,6 +15,7 @@ import (
 	"github.com/ppusapati/gavya/libs/integrity/tenantctx"
 	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
 
+	"github.com/ppusapati/gavya/libs/integrity/money"
 	"github.com/ppusapati/gavya/services/cattle-market-service/internal/domain"
 )
 
@@ -126,8 +127,7 @@ func (m *market) listing(t *testing.T) *domain.CattleListing {
 		CattleID:    newTestID("cow"),
 		SellerID:    newTestID("slr"),
 		Title:       "Murrah buffalo, third lactation",
-		AskingPrice: 65000,
-		Currency:    "INR",
+		AskingPrice: money.Money{Value: 6500000, Scale: 2, Currency: "INR"},
 		ListingType: "fixed",
 		Status:      domain.ListingActive,
 		CreatedBy:   actor,
@@ -147,8 +147,7 @@ func (m *market) bid(t *testing.T, listingID string) *domain.CattleBid {
 		TenantID:  m.tenant,
 		ListingID: listingID,
 		BidderID:  newTestID("byr"),
-		BidAmount: 60000,
-		Currency:  "INR",
+		BidAmount: money.Money{Value: 6000000, Scale: 2, Currency: "INR"},
 		Status:    domain.BidPending,
 		CreatedBy: actor,
 		UpdatedBy: actor,
@@ -170,8 +169,7 @@ func (m *market) sale(t *testing.T, listingID, cattleID, sellerID string) (*doma
 			SellerID:  sellerID,
 			BuyerID:   newTestID("byr"),
 			CattleID:  cattleID,
-			SalePrice: 62000,
-			Currency:  "INR",
+			SalePrice: money.Money{Value: 6200000, Scale: 2, Currency: "INR"},
 			SaleDate:  now,
 			Status:    "pending",
 			CreatedBy: actor,
@@ -397,7 +395,7 @@ func TestASaleInASecondCurrencyIsRefused(t *testing.T) {
 
 	other := m.listing(t)
 	s2, o2 := m.sale(t, other.ID, other.CattleID, other.SellerID)
-	s2.Currency = "USD"
+	s2.SalePrice = money.Money{Value: 80000, Scale: 2, Currency: "USD"}
 	_, _, err := m.repo.RecordSaleAndTransfer(acting(m.tenant), s2, o2, "800.00", Money{Code: "USD", Scale: 2})
 	if !errors.Is(err, ErrCurrencyMismatch) {
 		t.Fatalf("err = %v, want ErrCurrencyMismatch", err)
