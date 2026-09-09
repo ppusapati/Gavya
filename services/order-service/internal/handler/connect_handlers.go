@@ -85,12 +85,17 @@ type IDTenantRequest struct {
 }
 
 type AddOrderItemRequest struct {
-	TenantID  string  `json:"tenant_id"`
-	OrderID   string  `json:"order_id"`
-	SKUID     string  `json:"sku_id"`
-	ProductID string  `json:"product_id"`
-	Quantity  float64 `json:"quantity"`
-	UnitPrice float64 `json:"unit_price"`
+	TenantID  string `json:"tenant_id"`
+	OrderID   string `json:"order_id"`
+	SKUID     string `json:"sku_id"`
+	ProductID string `json:"product_id"`
+	// Quantity counts litres or kilos and stays a JSON number: its column is
+	// NUMERIC(10,3) and the boundary is guarded by libs/integrity/exact.
+	Quantity float64 `json:"quantity"`
+	// UnitPrice is a decimal literal — "42.50", not 42.5 — because a JSON number
+	// is a float64 by the time Go has read it, and a price that has been through
+	// a float is one nobody can prove was not changed on the way.
+	UnitPrice string `json:"unit_price"`
 	// TaxRate is a percentage for this line: 0 for an exempt good, 12 for one
 	// rated at twelve per cent.
 	TaxRate   float64 `json:"tax_rate"`
@@ -109,20 +114,126 @@ type GenerateInvoiceRequest struct {
 	CreatedBy string `json:"created_by"`
 }
 
+// OrderView is what an order looks like on the wire.
+//
+// The domain model used to be serialised directly, which sent its totals out as
+// JSON numbers. This exists so they go out as decimal literals at the currency's
+// scale, and so a change to the stored shape is not automatically a change to
+// the published one.
+type OrderView struct {
+	ID              string     `json:"id"`
+	TenantID        string     `json:"tenant_id"`
+	CustomerID      string     `json:"customer_id"`
+	OrderNumber     string     `json:"order_number"`
+	Status          string     `json:"status"`
+	SubTotal        string     `json:"sub_total"`
+	TaxAmount       string     `json:"tax_amount"`
+	TotalAmount     string     `json:"total_amount"`
+	Currency        string     `json:"currency"`
+	TaxInclusive    bool       `json:"tax_inclusive"`
+	ShippingAddress string     `json:"shipping_address"`
+	Notes           string     `json:"notes"`
+	OrderedAt       time.Time  `json:"ordered_at"`
+	DeliveredAt     *time.Time `json:"delivered_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	CreatedBy       string     `json:"created_by"`
+	UpdatedBy       string     `json:"updated_by"`
+}
+
+func viewOrder(o *domain.Order) *OrderView {
+	if o == nil {
+		return nil
+	}
+	return &OrderView{
+		ID: o.ID, TenantID: o.TenantID, CustomerID: o.CustomerID,
+		OrderNumber: o.OrderNumber, Status: o.Status,
+		SubTotal: o.SubTotal.String(), TaxAmount: o.TaxAmount.String(),
+		TotalAmount: o.TotalAmount.String(), Currency: o.TotalAmount.Currency,
+		TaxInclusive: o.TaxInclusive, ShippingAddress: o.ShippingAddress, Notes: o.Notes,
+		OrderedAt: o.OrderedAt, DeliveredAt: o.DeliveredAt,
+		CreatedAt: o.CreatedAt, UpdatedAt: o.UpdatedAt,
+		CreatedBy: o.CreatedBy, UpdatedBy: o.UpdatedBy,
+	}
+}
+
+type OrderItemView struct {
+	ID         string    `json:"id"`
+	TenantID   string    `json:"tenant_id"`
+	OrderID    string    `json:"order_id"`
+	SKUID      string    `json:"sku_id"`
+	ProductID  string    `json:"product_id"`
+	Quantity   float64   `json:"quantity"`
+	UnitPrice  string    `json:"unit_price"`
+	TotalPrice string    `json:"total_price"`
+	Currency   string    `json:"currency"`
+	TaxRate    float64   `json:"tax_rate"`
+	Status     string    `json:"status"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+	CreatedBy  string    `json:"created_by"`
+	UpdatedBy  string    `json:"updated_by"`
+}
+
+func viewOrderItem(i *domain.OrderItem) *OrderItemView {
+	if i == nil {
+		return nil
+	}
+	return &OrderItemView{
+		ID: i.ID, TenantID: i.TenantID, OrderID: i.OrderID, SKUID: i.SKUID,
+		ProductID: i.ProductID, Quantity: i.Quantity,
+		UnitPrice: i.UnitPrice.String(), TotalPrice: i.TotalPrice.String(),
+		Currency: i.TotalPrice.Currency, TaxRate: i.TaxRate, Status: i.Status,
+		CreatedAt: i.CreatedAt, UpdatedAt: i.UpdatedAt,
+		CreatedBy: i.CreatedBy, UpdatedBy: i.UpdatedBy,
+	}
+}
+
+type InvoiceView struct {
+	ID            string     `json:"id"`
+	TenantID      string     `json:"tenant_id"`
+	OrderID       string     `json:"order_id"`
+	InvoiceNumber string     `json:"invoice_number"`
+	Status        string     `json:"status"`
+	SubTotal      string     `json:"sub_total"`
+	TaxAmount     string     `json:"tax_amount"`
+	TotalAmount   string     `json:"total_amount"`
+	Currency      string     `json:"currency"`
+	IssuedAt      time.Time  `json:"issued_at"`
+	DueAt         time.Time  `json:"due_at"`
+	PaidAt        *time.Time `json:"paid_at,omitempty"`
+	CreatedBy     string     `json:"created_by"`
+	UpdatedBy     string     `json:"updated_by"`
+}
+
+func viewInvoice(i *domain.Invoice) *InvoiceView {
+	if i == nil {
+		return nil
+	}
+	return &InvoiceView{
+		ID: i.ID, TenantID: i.TenantID, OrderID: i.OrderID,
+		InvoiceNumber: i.InvoiceNumber, Status: i.Status,
+		SubTotal: i.SubTotal.String(), TaxAmount: i.TaxAmount.String(),
+		TotalAmount: i.TotalAmount.String(), Currency: i.TotalAmount.Currency,
+		IssuedAt: i.IssuedAt, DueAt: i.DueAt, PaidAt: i.PaidAt,
+		CreatedBy: i.CreatedBy, UpdatedBy: i.UpdatedBy,
+	}
+}
+
 type OrderResponse struct {
-	Order *domain.Order `json:"order"`
+	Order *OrderView `json:"order"`
 }
 
 type OrderItemResponse struct {
-	Item *domain.OrderItem `json:"item"`
+	Item *OrderItemView `json:"item"`
 	// Order is returned with the item because adding a line changes the order's
 	// totals, and a caller that fetched them separately could be handed figures
 	// a concurrent line had already moved on from.
-	Order *domain.Order `json:"order,omitempty"`
+	Order *OrderView `json:"order,omitempty"`
 }
 
 type InvoiceResponse struct {
-	Invoice *domain.Invoice `json:"invoice"`
+	Invoice *InvoiceView `json:"invoice"`
 }
 
 func (h *Handler) CreateOrder(ctx context.Context, req *connect.Request[CreateOrderRequest]) (*connect.Response[OrderResponse], error) {
@@ -130,17 +241,16 @@ func (h *Handler) CreateOrder(ctx context.Context, req *connect.Request[CreateOr
 	out, err := h.svc.CreateOrder(ctx, &domain.Order{
 		TenantID:        m.TenantID,
 		CustomerID:      m.CustomerID,
-		Currency:        m.Currency,
 		TaxInclusive:    m.TaxInclusive,
 		ShippingAddress: m.ShippingAddress,
 		Notes:           m.Notes,
 		OrderedAt:       m.OrderedAt,
 		CreatedBy:       m.CreatedBy,
-	})
+	}, m.Currency)
 	if err != nil {
 		return nil, classify(err)
 	}
-	return connect.NewResponse(&OrderResponse{Order: out}), nil
+	return connect.NewResponse(&OrderResponse{Order: viewOrder(out)}), nil
 }
 
 func (h *Handler) GetOrder(ctx context.Context, req *connect.Request[IDTenantRequest]) (*connect.Response[OrderResponse], error) {
@@ -148,7 +258,7 @@ func (h *Handler) GetOrder(ctx context.Context, req *connect.Request[IDTenantReq
 	if err != nil {
 		return nil, classify(err)
 	}
-	return connect.NewResponse(&OrderResponse{Order: out}), nil
+	return connect.NewResponse(&OrderResponse{Order: viewOrder(out)}), nil
 }
 
 func (h *Handler) AddOrderItem(ctx context.Context, req *connect.Request[AddOrderItemRequest]) (*connect.Response[OrderItemResponse], error) {
@@ -159,14 +269,13 @@ func (h *Handler) AddOrderItem(ctx context.Context, req *connect.Request[AddOrde
 		SKUID:     m.SKUID,
 		ProductID: m.ProductID,
 		Quantity:  m.Quantity,
-		UnitPrice: m.UnitPrice,
 		TaxRate:   m.TaxRate,
 		CreatedBy: m.CreatedBy,
-	})
+	}, m.UnitPrice)
 	if err != nil {
 		return nil, classify(err)
 	}
-	return connect.NewResponse(&OrderItemResponse{Item: out.Item, Order: out.Order}), nil
+	return connect.NewResponse(&OrderItemResponse{Item: viewOrderItem(out.Item), Order: viewOrder(out.Order)}), nil
 }
 
 func (h *Handler) ConfirmOrder(ctx context.Context, req *connect.Request[OrderActionRequest]) (*connect.Response[OrderResponse], error) {
@@ -175,7 +284,7 @@ func (h *Handler) ConfirmOrder(ctx context.Context, req *connect.Request[OrderAc
 	if err != nil {
 		return nil, classify(err)
 	}
-	return connect.NewResponse(&OrderResponse{Order: out}), nil
+	return connect.NewResponse(&OrderResponse{Order: viewOrder(out)}), nil
 }
 
 func (h *Handler) CancelOrder(ctx context.Context, req *connect.Request[OrderActionRequest]) (*connect.Response[OrderResponse], error) {
@@ -184,7 +293,7 @@ func (h *Handler) CancelOrder(ctx context.Context, req *connect.Request[OrderAct
 	if err != nil {
 		return nil, classify(err)
 	}
-	return connect.NewResponse(&OrderResponse{Order: out}), nil
+	return connect.NewResponse(&OrderResponse{Order: viewOrder(out)}), nil
 }
 
 func (h *Handler) GenerateInvoice(ctx context.Context, req *connect.Request[GenerateInvoiceRequest]) (*connect.Response[InvoiceResponse], error) {
@@ -193,5 +302,5 @@ func (h *Handler) GenerateInvoice(ctx context.Context, req *connect.Request[Gene
 	if err != nil {
 		return nil, classify(err)
 	}
-	return connect.NewResponse(&InvoiceResponse{Invoice: out}), nil
+	return connect.NewResponse(&InvoiceResponse{Invoice: viewInvoice(out)}), nil
 }

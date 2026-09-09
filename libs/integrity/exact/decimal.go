@@ -117,38 +117,30 @@ func Render(v float64, scale int32) string {
 	return s
 }
 
-// MoneyScale and MoneyPrecision are what a money column in this platform's
-// non-integrity services holds, and what a float64 can carry back out of it.
+// The money constants that used to live here are gone.
 //
-// Those columns are NUMERIC(18,4): four decimals, the most any ISO 4217 currency
-// has, so one schema serves a yen deployment and a dinar one. The services read
-// them into float64, and that is exact only up to a point — measured rather than
-// assumed:
+// MoneyScale, MoneyPrecision and MoneyCeiling named the largest four-decimal
+// value a float64 carries exactly — about 10^11, measured rather than assumed:
+// through NUMERIC(18,4), 200,000 values below 10^11 round-tripped
+// float64 -> JSON -> float64 losing nothing, and above 10^12 more than three
+// quarters lost a digit, with 6791947779410.3551 coming back as
+// 6791947779410.3555. Every money column in the platform carried a CHECK at that
+// figure so a value the code would mangle was refused rather than stored, and
+// these constants named the same limit in Go so the refusal was a sentence
+// rather than a constraint violation.
 //
-//	NUMERIC(18,4) -> float64 -> JSON -> float64
-//	  100,000 values below 10^11 : none lost a digit
-//	  200,000 values below 10^14 : 96% lost a digit
+// All five of those services now read money as exact decimals through
+// libs/integrity/money, which is exact to the full width of the column, and
+// their CHECKs are dropped — a limit of the Go read path does not belong in the
+// database. So the constants named a limit that no longer exists, and were kept
+// alive only by tests comparing them with each other. That is a control that
+// reports success while doing nothing, and deleting it is more honest than
+// leaving it to be read as a live rule.
 //
-// 6791947779410.3551 comes back as 6791947779410.3555. So the column's own
-// eighteen digits are more than the code can carry, and a value between the two
-// is stored, read back changed, and agreed upon by both ends.
+// The measurement itself is recorded in docs/integrity-platform.md and in the
+// comment on each schema's drop statement, where it explains why the CHECK was
+// there and why it is not any more.
 //
-// MoneyPrecision is therefore 15 — eleven integer digits and four decimals,
-// giving a ceiling of 99999999999.9999, just under the 10^11 where float64
-// stops being exact at this scale. That is a hundred billion of any currency, so
-// it refuses nothing a dairy does.
-//
-// The database enforces the same ceiling with a CHECK constraint per column. The
-// two are meant to agree, and a test asserts they do: without this constant the
-// Go layer accepted eighteen digits and let the database refuse them, so a price
-// somebody typed came back as a constraint violation instead of a sentence
-// saying what was wrong with it.
-const (
-	MoneyScale     int32 = 4
-	MoneyPrecision int32 = 15
-)
-
-// MoneyCeiling is the first value a money column will not hold, as the SQL
-// CHECK constraints express it. Kept beside the precision it is derived from so
-// the two cannot drift apart silently.
-const MoneyCeiling = 100000000000.0
+// NonNegativeDecimal below is still used, for quantities and tax rates: they
+// cross the wire as JSON numbers, their columns are NUMERIC(_,3), and refusing
+// a value finer than the column beats letting PostgreSQL round it in silence.

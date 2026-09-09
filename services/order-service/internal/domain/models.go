@@ -1,6 +1,10 @@
 package domain
 
-import "time"
+import (
+	"time"
+
+	"github.com/ppusapati/gavya/libs/integrity/money"
+)
 
 type Order struct {
 	ID          string
@@ -8,10 +12,12 @@ type Order struct {
 	CustomerID  string
 	OrderNumber string
 	Status      string // draft/confirmed/processing/shipped/delivered/cancelled/returned
-	SubTotal    float64
-	TaxAmount   float64
-	TotalAmount float64
-	Currency    string
+	// The totals are exact and each carries its own currency. They were float64
+	// read out of NUMERIC(18,4) columns, which carry four decimals faithfully
+	// only below about 10^11. See libs/integrity/money.ParseStored.
+	SubTotal    money.Money
+	TaxAmount   money.Money
+	TotalAmount money.Money
 	// TaxInclusive says whether the line prices already contain the tax. Europe,
 	// the UK and Indian retail generally quote inclusive; the United States
 	// quotes exclusive. Getting it backwards mis-charges every line.
@@ -28,16 +34,21 @@ type Order struct {
 }
 
 type OrderItem struct {
-	ID         string
-	TenantID   string
-	OrderID    string
-	SKUID      string
-	ProductID  string
+	ID        string
+	TenantID  string
+	OrderID   string
+	SKUID     string
+	ProductID string
+	// Quantity counts litres or kilos, not money, and is still a float64. Its
+	// column is NUMERIC(10,3), nowhere near where float64 loses a digit, and the
+	// boundary is guarded by libs/integrity/exact. libs/integrity/quantity is
+	// where it would go; that is a separate change from this one.
 	Quantity   float64
-	UnitPrice  float64
-	TotalPrice float64
+	UnitPrice  money.Money
+	TotalPrice money.Money
 	// TaxRate is a percentage, per line. A catalogue that mixes exempt and rated
-	// goods cannot be taxed at one rate, and a dairy catalogue mixes them.
+	// goods cannot be taxed at one rate, and a dairy catalogue mixes them. It is
+	// a rate rather than an amount, held to three decimals by its own column.
 	TaxRate   float64
 	Status    string // pending/confirmed/shipped/delivered/returned
 	CreatedAt time.Time
@@ -52,10 +63,9 @@ type Invoice struct {
 	OrderID       string
 	InvoiceNumber string
 	Status        string // draft/sent/paid/overdue/cancelled
-	SubTotal      float64
-	TaxAmount     float64
-	TotalAmount   float64
-	Currency      string
+	SubTotal      money.Money
+	TaxAmount     money.Money
+	TotalAmount   money.Money
 	IssuedAt      time.Time
 	DueAt         time.Time
 	PaidAt        *time.Time
@@ -72,8 +82,7 @@ type Return struct {
 	OrderID      string
 	Reason       string
 	Status       string // requested/approved/rejected/completed
-	RefundAmount float64
-	Currency     string
+	RefundAmount money.Money
 	RequestedAt  time.Time
 	ProcessedAt  *time.Time
 	CreatedAt    time.Time

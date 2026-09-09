@@ -249,6 +249,12 @@ func buildAndStart() (*platform, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Recorded so TestMain can delete it. These directories hold a compiled
+	// binary for every service in the platform — about half a gigabyte — and
+	// nothing was removing them. Seventeen accumulated in one session's /tmp
+	// before a build failed with "no space left on device", which is a failure
+	// that reads as a broken service rather than as a full disk.
+	sharedBinDirs = append(sharedBinDirs, binDir)
 
 	p := &platform{clients: map[string]*svcclient.Client{}}
 	// Where each service ended up, so one that calls another can be told.
@@ -319,13 +325,31 @@ func buildAndStart() (*platform, error) {
 	return p, nil
 }
 
-// TestMain stops the shared services once every test has finished.
+// sharedBinDirs is every temporary directory the harness built binaries into.
+var sharedBinDirs []string
+
+// TestMain stops the shared services once every test has finished, and removes
+// what they were built from.
+//
+// The directories are deleted after the processes are killed, not before: a
+// running binary whose file has been unlinked keeps running on Linux, but the
+// test that notices it has gone is harder to read than one that does not need
+// to. An interrupted run still leaves them behind — Go gives a test binary no
+// chance to clean up after SIGKILL — so the message on a full disk names them.
 func TestMain(m *testing.M) {
 	code := m.Run()
 	stopMLPlatform()
 	for _, cmd := range sharedProcs {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
+	}
+	for _, dir := range sharedBinDirs {
+		if err := os.RemoveAll(dir); err != nil {
+			fmt.Fprintf(os.Stderr, "could not remove %s: %v\n"+
+				"It holds one binary per service. Left behind by enough runs these "+
+				"fill the disk, and the next build fails with a message about space "+
+				"rather than about them.\n", dir, err)
+		}
 	}
 	os.Exit(code)
 }

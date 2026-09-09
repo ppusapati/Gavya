@@ -175,6 +175,9 @@ func buildAndStartML() (*mlPlatform, error, string) {
 	if err != nil {
 		return nil, err, ""
 	}
+	// Deleted by TestMain along with the main platform's, for the same reason:
+	// a directory of service binaries per run adds up faster than it looks.
+	sharedBinDirs = append(sharedBinDirs, binDir)
 	for _, name := range mlCallers {
 		svc, found := serviceByName(name)
 		if !found {

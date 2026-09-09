@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/ppusapati/gavya/libs/integrity/currency"
-	"github.com/ppusapati/gavya/libs/integrity/exact"
+	"github.com/ppusapati/gavya/libs/integrity/money"
 	"github.com/ppusapati/gavya/services/health-service/internal/domain"
 	"github.com/ppusapati/gavya/services/health-service/internal/repository"
 	ulidpkg "p9e.in/samavaya/packages/ulid"
@@ -93,7 +93,14 @@ func (s *Service) GetTreatmentHistory(ctx context.Context, tenantID, cattleID st
 	return s.repo.ListTreatmentHistory(ctx, tenantID, cattleID)
 }
 
-func (s *Service) ScheduleVetVisit(ctx context.Context, v *domain.VetVisit) (*domain.VetVisit, error) {
+// ScheduleVetVisit takes the cost as the decimal literal the caller wrote,
+// together with the currency it is in, rather than as a parsed amount.
+//
+// The two have to arrive together and be resolved here, because the scale a cost
+// is held to is a fact about its currency — three decimals for a dinar, none for
+// a yen — and it is this function that decides which currency the tenant records
+// in.
+func (s *Service) ScheduleVetVisit(ctx context.Context, v *domain.VetVisit, costLiteral, currencyCode string) (*domain.VetVisit, error) {
 	if v.TenantID == "" {
 		return nil, invalid("tenant_id is required")
 	}
@@ -105,7 +112,7 @@ func (s *Service) ScheduleVetVisit(ctx context.Context, v *domain.VetVisit) (*do
 	}
 	// The currency is stated, not assumed, and the first amount a tenant records
 	// fixes what it records in.
-	code, err := currency.Normalise(v.Currency)
+	code, err := currency.Normalise(currencyCode)
 	if err != nil {
 		return nil, invalid("currency: " + err.Error())
 	}
@@ -116,12 +123,16 @@ func (s *Service) ScheduleVetVisit(ctx context.Context, v *domain.VetVisit) (*do
 	if err := s.repo.PinTenantMoney(ctx, v.TenantID, repository.Money{Code: code, Scale: scale}); err != nil {
 		return nil, err
 	}
-	v.Currency = code
 	// A cost finer than the currency records would be rounded into the column
-	// without anyone being told, so it is refused instead.
-	if _, err := exact.NonNegativeDecimal(v.Cost, scale, exact.MoneyPrecision); err != nil {
-		return nil, invalid(exact.Field("cost", err).Error())
+	// without anyone being told, so Parse refuses it instead.
+	cost, err := money.Parse(costLiteral, scale, code)
+	if err != nil {
+		return nil, invalid("cost: " + err.Error())
 	}
+	if cost.Value < 0 {
+		return nil, invalid("cost must be non-negative")
+	}
+	v.Cost = cost
 
 	v.ID = ulidpkg.New().String()
 	if v.VisitDate.IsZero() {

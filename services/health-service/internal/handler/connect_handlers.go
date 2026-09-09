@@ -106,14 +106,53 @@ type ScheduleVetVisitRequest struct {
 	VisitDate      time.Time `json:"visit_date"`
 	Purpose        string    `json:"purpose"`
 	Notes          string    `json:"notes"`
-	Cost           float64   `json:"cost"`
-	CreatedBy      string    `json:"created_by"`
+	// Cost is a decimal literal — "450.00", not 450 — because a JSON number is a
+	// float64 by the time Go has read it, and a figure that has been through a
+	// float is one nobody can prove was not changed on the way.
+	Cost      string `json:"cost"`
+	CreatedBy string `json:"created_by"`
 	// Currency is required: a cost that does not say what it is in is a number.
 	Currency string `json:"currency"`
 }
 
+// VetVisitView is what a vet visit looks like on the wire.
+//
+// The domain model used to be serialised directly, which sent the cost out as a
+// JSON number. This exists so it goes out as a decimal literal at its currency's
+// scale.
+type VetVisitView struct {
+	ID             string     `json:"id"`
+	TenantID       string     `json:"tenant_id"`
+	CattleID       string     `json:"cattle_id"`
+	VeterinarianID string     `json:"veterinarian_id"`
+	VisitDate      time.Time  `json:"visit_date"`
+	Purpose        string     `json:"purpose"`
+	Notes          string     `json:"notes"`
+	Cost           string     `json:"cost"`
+	Currency       string     `json:"currency"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	CreatedBy      string     `json:"created_by"`
+	UpdatedBy      string     `json:"updated_by"`
+	DeletedAt      *time.Time `json:"deleted_at,omitempty"`
+}
+
+func viewVetVisit(v *domain.VetVisit) *VetVisitView {
+	if v == nil {
+		return nil
+	}
+	return &VetVisitView{
+		ID: v.ID, TenantID: v.TenantID, CattleID: v.CattleID,
+		VeterinarianID: v.VeterinarianID, VisitDate: v.VisitDate,
+		Purpose: v.Purpose, Notes: v.Notes,
+		Cost: v.Cost.String(), Currency: v.Cost.Currency,
+		CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt,
+		CreatedBy: v.CreatedBy, UpdatedBy: v.UpdatedBy, DeletedAt: v.DeletedAt,
+	}
+}
+
 type VetVisitResponse struct {
-	VetVisit *domain.VetVisit `json:"vet_visit"`
+	VetVisit *VetVisitView `json:"vet_visit"`
 }
 
 type HistoryRequest struct {
@@ -190,13 +229,12 @@ func (h *Handler) ScheduleVetVisit(ctx context.Context, req *connect.Request[Sch
 		VisitDate:      m.VisitDate,
 		Purpose:        m.Purpose,
 		Notes:          m.Notes,
-		Cost:           m.Cost,
 		CreatedBy:      m.CreatedBy,
-		Currency:       m.Currency})
+	}, m.Cost, m.Currency)
 	if err != nil {
 		return nil, classify(err)
 	}
-	return connect.NewResponse(&VetVisitResponse{VetVisit: out}), nil
+	return connect.NewResponse(&VetVisitResponse{VetVisit: viewVetVisit(out)}), nil
 }
 
 func (h *Handler) ListUpcomingVaccinations(ctx context.Context, req *connect.Request[TenantRequest]) (*connect.Response[ListVaccinationsResponse], error) {

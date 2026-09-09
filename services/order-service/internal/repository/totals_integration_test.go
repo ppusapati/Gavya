@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ppusapati/gavya/libs/integrity/exact"
+	"github.com/ppusapati/gavya/libs/integrity/money"
 	"github.com/ppusapati/gavya/services/order-service/internal/domain"
 )
 
@@ -165,8 +166,8 @@ func TestALineTotalIsTheProductOfItsQuantityAndPrice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
-	if out.Item.TotalPrice != 59.97 {
-		t.Errorf("line total = %v, want 59.97", out.Item.TotalPrice)
+	if out.Item.TotalPrice.String() != "59.97" {
+		t.Errorf("line total = %s, want 59.97", out.Item.TotalPrice)
 	}
 }
 
@@ -180,8 +181,8 @@ func TestALineTotalRoundsOnceAtTheEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
-	if out.Item.TotalPrice != 104.77 {
-		t.Errorf("line total = %v, want 104.77 (2.3 * 45.55 = 104.765, rounded once)", out.Item.TotalPrice)
+	if out.Item.TotalPrice.String() != "104.77" {
+		t.Errorf("line total = %s, want 104.77 (2.3 * 45.55 = 104.765, rounded once)", out.Item.TotalPrice)
 	}
 }
 
@@ -191,15 +192,22 @@ func TestTheOrderTotalAlwaysEqualsTheSumOfItsLines(t *testing.T) {
 	f := newFixture(t)
 
 	lines := []struct{ q, p float64 }{{1, 10.10}, {2, 5.05}, {3.5, 2.20}, {0.25, 99.99}}
-	var want float64
+	// The running total is accumulated in money rather than float64. It used to
+	// be a float64, which meant the test's own expectation drifted from the
+	// database's exact sum — the assertion happened to hold at these four lines
+	// and would not have at others.
+	want := money.Zero(f.money.Scale, f.money.Code)
 	for _, l := range lines {
 		out, err := f.add(t, l.q, l.p)
 		if err != nil {
 			t.Fatalf("add %v x %v: %v", l.q, l.p, err)
 		}
-		want += out.Item.TotalPrice
-		if out.Order.SubTotal != want {
-			t.Fatalf("sub total = %v, want %v (the sum of the lines so far)", out.Order.SubTotal, want)
+		if want, err = money.Add(want, out.Item.TotalPrice); err != nil {
+			t.Fatalf("accumulate: %v", err)
+		}
+		if out.Order.SubTotal.String() != want.String() {
+			t.Fatalf("sub total = %s, want %s (the sum of the lines so far)",
+				out.Order.SubTotal, want)
 		}
 	}
 }
@@ -211,14 +219,14 @@ func TestTaxAndTotalFollowTheSubTotal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
-	if out.Order.SubTotal != 100 {
-		t.Fatalf("sub total = %v, want 100", out.Order.SubTotal)
+	if out.Order.SubTotal.String() != "100.00" {
+		t.Fatalf("sub total = %s, want 100.00", out.Order.SubTotal)
 	}
-	if out.Order.TaxAmount != 18 {
-		t.Errorf("tax = %v, want 18", out.Order.TaxAmount)
+	if out.Order.TaxAmount.String() != "18.00" {
+		t.Errorf("tax = %s, want 18.00", out.Order.TaxAmount)
 	}
-	if out.Order.TotalAmount != 118 {
-		t.Errorf("total = %v, want 118", out.Order.TotalAmount)
+	if out.Order.TotalAmount.String() != "118.00" {
+		t.Errorf("total = %s, want 118.00", out.Order.TotalAmount)
 	}
 }
 
@@ -237,8 +245,8 @@ func TestManySmallLinesSumExactly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Order.SubTotal != 10.10 {
-		t.Errorf("sub total = %.17g, want exactly 10.10", out.Order.SubTotal)
+	if out.Order.SubTotal.String() != "10.10" {
+		t.Errorf("sub total = %s, want exactly 10.10", out.Order.SubTotal)
 	}
 }
 
@@ -292,9 +300,17 @@ func TestConcurrentLinesAreAllCounted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := 2.50 * (lines + 1)
-	if out.Order.SubTotal != want {
-		t.Errorf("sub total = %v, want %v — lines were lost", out.Order.SubTotal, want)
+	// Worked out in money rather than by multiplying floats, so the expectation
+	// is exact for any line count rather than only for ones where the product
+	// happens to be representable.
+	want, _, err := money.Rescale(
+		money.Money{Value: 250 * (lines + 1), Scale: 2, Currency: f.money.Code},
+		f.money.Scale, money.RoundTowardZero)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Order.SubTotal.String() != want.String() {
+		t.Errorf("sub total = %s, want %s — lines were lost", out.Order.SubTotal, want)
 	}
 }
 
@@ -327,8 +343,8 @@ func TestAFailedLineLeavesTheOrderUntouched(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Order.SubTotal != 55 {
-		t.Errorf("sub total = %v, want 55 — the failed line changed the order", out.Order.SubTotal)
+	if out.Order.SubTotal.String() != "55.00" {
+		t.Errorf("sub total = %s, want 55.00 — the failed line changed the order", out.Order.SubTotal)
 	}
 }
 
@@ -341,11 +357,11 @@ func TestAYenOrderRoundsToWholeYen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
-	if out.Item.TotalPrice != 3750 {
-		t.Errorf("line total = %v, want 3750", out.Item.TotalPrice)
+	if out.Item.TotalPrice.String() != "3750" {
+		t.Errorf("line total = %s, want 3750", out.Item.TotalPrice)
 	}
-	if out.Order.TotalAmount != 4425 {
-		t.Errorf("total = %v, want 4425", out.Order.TotalAmount)
+	if out.Order.TotalAmount.String() != "4425" {
+		t.Errorf("total = %s, want 4425", out.Order.TotalAmount)
 	}
 }
 
@@ -358,8 +374,8 @@ func TestADinarOrderLineRoundsAtThreeDecimals(t *testing.T) {
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
-	if out.Item.TotalPrice != 1.005 {
-		t.Errorf("line total = %v, want 1.005", out.Item.TotalPrice)
+	if out.Item.TotalPrice.String() != "1.005" {
+		t.Errorf("line total = %s, want 1.005", out.Item.TotalPrice)
 	}
 }
 
@@ -386,11 +402,11 @@ func TestEachOrderLineIsTaxedAtItsOwnRate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if out.Order.SubTotal != 200 {
-		t.Errorf("sub total = %v, want 200", out.Order.SubTotal)
+	if out.Order.SubTotal.String() != "200.00" {
+		t.Errorf("sub total = %s, want 200.00", out.Order.SubTotal)
 	}
-	if out.Order.TaxAmount != 12 {
-		t.Errorf("tax = %v, want 12 — only the rated line should be taxed", out.Order.TaxAmount)
+	if out.Order.TaxAmount.String() != "12.00" {
+		t.Errorf("tax = %s, want 12.00 — only the rated line should be taxed", out.Order.TaxAmount)
 	}
 }
 
@@ -401,13 +417,13 @@ func TestTaxInclusiveOrdersExtractRatherThanAdd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Order.TotalAmount != 120 {
-		t.Errorf("total = %v, want 120 — the quoted price is what is charged", out.Order.TotalAmount)
+	if out.Order.TotalAmount.String() != "120.00" {
+		t.Errorf("total = %s, want 120.00 — the quoted price is what is charged", out.Order.TotalAmount)
 	}
-	if out.Order.TaxAmount != 20 {
-		t.Errorf("tax = %v, want 20", out.Order.TaxAmount)
+	if out.Order.TaxAmount.String() != "20.00" {
+		t.Errorf("tax = %s, want 20.00", out.Order.TaxAmount)
 	}
-	if out.Order.SubTotal != 100 {
-		t.Errorf("net = %v, want 100", out.Order.SubTotal)
+	if out.Order.SubTotal.String() != "100.00" {
+		t.Errorf("net = %s, want 100.00", out.Order.SubTotal)
 	}
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/ppusapati/gavya/libs/integrity/currency"
 	"github.com/ppusapati/gavya/libs/integrity/exact"
+	"github.com/ppusapati/gavya/libs/integrity/money"
 	"github.com/ppusapati/gavya/services/order-service/internal/domain"
 	"github.com/ppusapati/gavya/services/order-service/internal/repository"
 	ulidpkg "p9e.in/samavaya/packages/ulid"
@@ -29,7 +30,11 @@ func (e *invalidArgument) Is(target error) bool { return target == ErrInvalidArg
 
 func invalid(msg string) error { return &invalidArgument{reason: msg} }
 
-func (s *Service) CreateOrder(ctx context.Context, o *domain.Order) (*domain.Order, error) {
+// CreateOrder takes the currency as an argument rather than a field on the
+// order, because an order's amounts each carry their own currency now and there
+// is nothing to put it in until they exist. A new order's totals are zero, and
+// zero of what is the question this answers.
+func (s *Service) CreateOrder(ctx context.Context, o *domain.Order, currencyCode string) (*domain.Order, error) {
 	if o.TenantID == "" {
 		return nil, invalid("tenant_id is required")
 	}
@@ -39,13 +44,10 @@ func (s *Service) CreateOrder(ctx context.Context, o *domain.Order) (*domain.Ord
 	o.ID = ulidpkg.New().String()
 	o.OrderNumber = "ORD-" + ulidpkg.New().String()
 	o.Status = "draft"
-	o.SubTotal = 0
-	o.TaxAmount = 0
-	o.TotalAmount = 0
 	// An order states the currency it is in, and the first one for a tenant
 	// fixes it. There is no default: an order silently priced in rupees outside
 	// India is an order nobody can fulfil.
-	code, err := currency.Normalise(o.Currency)
+	code, err := currency.Normalise(currencyCode)
 	if err != nil {
 		return nil, invalid("currency: " + err.Error())
 	}
@@ -56,7 +58,12 @@ func (s *Service) CreateOrder(ctx context.Context, o *domain.Order) (*domain.Ord
 	if err := s.repo.PinTenantMoney(ctx, o.TenantID, repository.Money{Code: code, Scale: scale}); err != nil {
 		return nil, err
 	}
-	o.Currency = code
+	// A new order has no lines, so its totals are zero — but zero rupees, not a
+	// bare zero. The currency has to be on them from the start, or the first
+	// line added would be adding to an amount that is not in any currency.
+	o.SubTotal = money.Zero(scale, code)
+	o.TaxAmount = money.Zero(scale, code)
+	o.TotalAmount = money.Zero(scale, code)
 	if o.OrderedAt.IsZero() {
 		o.OrderedAt = time.Now()
 	}
@@ -80,12 +87,12 @@ func (s *Service) GetOrder(ctx context.Context, id, tenantID string) (*domain.Or
 // and is read locally rather than from tenant-service, so adding a line does
 // not stop working when another service is unreachable.
 func (s *Service) moneyFor(ctx context.Context, tenantID string) (repository.Money, error) {
-	money, err := s.repo.TenantMoney(ctx, tenantID)
+	denom, err := s.repo.TenantMoney(ctx, tenantID)
 	if errors.Is(err, repository.ErrNotFound) {
 		return repository.Money{}, invalid(
 			"this tenant has not recorded any money yet; its first order must state a currency")
 	}
-	return money, err
+	return denom, err
 }
 
 // AddOrderItem adds a line and brings the order's totals back in step with its
@@ -96,7 +103,9 @@ func (s *Service) moneyFor(ctx context.Context, tenantID string) (repository.Mon
 // column writes a rounded version of a number that was already inexact, and
 // this is money. The repository does the arithmetic in the database, in the
 // column's own type, inside the transaction that writes it.
-func (s *Service) AddOrderItem(ctx context.Context, item *domain.OrderItem) (*repository.ItemOutcome, error) {
+// unitPrice arrives as a decimal literal rather than on the item, because the
+// scale it is held to comes from the tenant's currency, which is read below.
+func (s *Service) AddOrderItem(ctx context.Context, item *domain.OrderItem, unitPriceLiteral string) (*repository.ItemOutcome, error) {
 	if item.OrderID == "" || item.TenantID == "" {
 		return nil, invalid("order_id and tenant_id are required")
 	}
@@ -104,24 +113,32 @@ func (s *Service) AddOrderItem(ctx context.Context, item *domain.OrderItem) (*re
 		return nil, invalid("quantity must be more than zero")
 	}
 
-	// The wire carries these as JSON numbers, so they arrive as float64. They are
-	// converted to the exact decimals the columns hold, and a value finer than
-	// that is refused rather than rounded on the way in without telling anyone.
-	money, err := s.moneyFor(ctx, item.TenantID)
+	denom, err := s.moneyFor(ctx, item.TenantID)
 	if err != nil {
 		return nil, err
 	}
 
+	// The quantity and the tax rate still cross the wire as JSON numbers, so
+	// they arrive as float64. That is survivable here and checked: both columns
+	// are NUMERIC(_,3) holding values far below where float64 loses a digit, and
+	// exact.NonNegativeDecimal refuses anything finer than the column rather
+	// than letting PostgreSQL round it in silence. The price is the one that
+	// could not be, and it is a literal now.
 	quantity, err := exact.NonNegativeDecimal(item.Quantity, 3, 10)
 	if err != nil {
 		return nil, invalid(exact.Field("quantity", err).Error())
 	}
 	// Prices are held to the currency's own precision: a yen price has no
-	// decimals, a dinar price has three.
-	unitPrice, err := exact.NonNegativeDecimal(item.UnitPrice, money.Scale, 18)
+	// decimals, a dinar price has three. Parse refuses a finer literal rather
+	// than rounding it.
+	price, err := money.Parse(unitPriceLiteral, denom.Scale, denom.Code)
 	if err != nil {
-		return nil, invalid(exact.Field("unit_price", err).Error())
+		return nil, invalid("unit_price: " + err.Error())
 	}
+	if price.Value < 0 {
+		return nil, invalid("unit_price must not be negative")
+	}
+	item.UnitPrice = price
 	taxRate, err := exact.NonNegativeDecimal(item.TaxRate, 3, 6)
 	if err != nil {
 		return nil, invalid(exact.Field("tax_rate", err).Error())
@@ -139,7 +156,7 @@ func (s *Service) AddOrderItem(ctx context.Context, item *domain.OrderItem) (*re
 	}
 	item.UpdatedBy = item.CreatedBy
 
-	return s.repo.AddItemAndRetotal(ctx, item, quantity, unitPrice, taxRate, money)
+	return s.repo.AddItemAndRetotal(ctx, item, quantity, price.String(), taxRate, denom)
 }
 
 func (s *Service) ConfirmOrder(ctx context.Context, id, tenantID, updatedBy string) (*domain.Order, error) {
@@ -188,7 +205,6 @@ func (s *Service) GenerateInvoice(ctx context.Context, orderID, tenantID, create
 		SubTotal:      order.SubTotal,
 		TaxAmount:     order.TaxAmount,
 		TotalAmount:   order.TotalAmount,
-		Currency:      order.Currency,
 		IssuedAt:      now,
 		DueAt:         now.AddDate(0, 0, 30),
 		CreatedBy:     createdBy,

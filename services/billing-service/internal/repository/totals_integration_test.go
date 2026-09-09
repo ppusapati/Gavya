@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ppusapati/gavya/libs/integrity/exact"
+	"github.com/ppusapati/gavya/libs/integrity/money"
 	"github.com/ppusapati/gavya/services/billing-service/internal/domain"
 )
 
@@ -163,8 +164,8 @@ func TestAnInvoiceLineIsTheProductOfItsQuantityAndPrice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
-	if out.Item.TotalPrice != 59.97 {
-		t.Errorf("line total = %v, want 59.97", out.Item.TotalPrice)
+	if !is(t, out.Item.TotalPrice, "59.97") {
+		t.Errorf("line total = %s, want 59.97", out.Item.TotalPrice)
 	}
 }
 
@@ -178,8 +179,8 @@ func TestAnInvoiceLineRoundsOnceAtTheEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
-	if out.Item.TotalPrice != 104.77 {
-		t.Errorf("line total = %v, want 104.77 (2.3 * 45.55 = 104.765, rounded once)", out.Item.TotalPrice)
+	if !is(t, out.Item.TotalPrice, "104.77") {
+		t.Errorf("line total = %s, want 104.77 (2.3 * 45.55 = 104.765, rounded once)", out.Item.TotalPrice)
 	}
 }
 
@@ -189,15 +190,21 @@ func TestTheInvoiceTotalAlwaysEqualsTheSumOfItsLines(t *testing.T) {
 	f := newFixture(t)
 
 	lines := []struct{ q, p float64 }{{1, 10.10}, {2, 5.05}, {3.5, 2.20}, {0.25, 99.99}}
-	var want float64
+	// The running total is accumulated in money rather than float64. It used to
+	// be a float64, which meant the test's own expectation drifted from the
+	// database's exact sum.
+	want := money.Zero(f.money.Scale, f.money.Code)
 	for _, l := range lines {
 		out, err := f.add(t, l.q, l.p)
 		if err != nil {
 			t.Fatalf("add %v x %v: %v", l.q, l.p, err)
 		}
-		want += out.Item.TotalPrice
-		if out.Invoice.SubTotal != want {
-			t.Fatalf("sub total = %v, want %v (the sum of the lines so far)", out.Invoice.SubTotal, want)
+		if want, err = money.Add(want, out.Item.TotalPrice); err != nil {
+			t.Fatalf("accumulate: %v", err)
+		}
+		if out.Invoice.SubTotal.String() != want.String() {
+			t.Fatalf("sub total = %s, want %s (the sum of the lines so far)",
+				out.Invoice.SubTotal, want)
 		}
 	}
 }
@@ -209,14 +216,14 @@ func TestTaxAndTotalFollowTheSubTotal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
-	if out.Invoice.SubTotal != 100 {
-		t.Fatalf("sub total = %v, want 100", out.Invoice.SubTotal)
+	if !is(t, out.Invoice.SubTotal, "100") {
+		t.Fatalf("sub total = %s, want 100", out.Invoice.SubTotal)
 	}
-	if out.Invoice.TaxAmount != 18 {
-		t.Errorf("tax = %v, want 18", out.Invoice.TaxAmount)
+	if !is(t, out.Invoice.TaxAmount, "18") {
+		t.Errorf("tax = %s, want 18", out.Invoice.TaxAmount)
 	}
-	if out.Invoice.TotalAmount != 118 {
-		t.Errorf("total = %v, want 118", out.Invoice.TotalAmount)
+	if !is(t, out.Invoice.TotalAmount, "118") {
+		t.Errorf("total = %s, want 118", out.Invoice.TotalAmount)
 	}
 }
 
@@ -235,8 +242,8 @@ func TestManySmallLinesSumExactly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Invoice.SubTotal != 10.10 {
-		t.Errorf("sub total = %.17g, want exactly 10.10", out.Invoice.SubTotal)
+	if !is(t, out.Invoice.SubTotal, "10.10") {
+		t.Errorf("sub total = %s, want exactly 10.10", out.Invoice.SubTotal)
 	}
 }
 
@@ -250,7 +257,7 @@ func TestASentInvoiceTakesNoMoreLines(t *testing.T) {
 	f.setStatus(t, domain.InvoiceSent)
 
 	if _, err := f.add(t, 1, 10); !errors.Is(err, ErrNotDraft) {
-		t.Fatalf("err = %v, want ErrNotDraft", err)
+		t.Fatalf("err = %s, want ErrNotDraft", err)
 	}
 }
 
@@ -259,7 +266,7 @@ func TestAddingToAnInvoiceThatDoesNotExistIsNotFound(t *testing.T) {
 	f.invoice = newTestID("gone")
 
 	if _, err := f.add(t, 1, 10); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("err = %v, want ErrNotFound", err)
+		t.Fatalf("err = %s, want ErrNotFound", err)
 	}
 }
 
@@ -290,9 +297,16 @@ func TestConcurrentLinesAreAllCounted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := 2.50 * (lines + 1)
-	if out.Invoice.SubTotal != want {
-		t.Errorf("sub total = %v, want %v — lines were lost", out.Invoice.SubTotal, want)
+	// Worked out in money rather than by multiplying floats, so the expectation
+	// is exact for any line count.
+	want, _, err := money.Rescale(
+		money.Money{Value: 250 * (lines + 1), Scale: 2, Currency: f.money.Code},
+		f.money.Scale, money.RoundTowardZero)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Invoice.SubTotal.String() != want.String() {
+		t.Errorf("sub total = %s, want %s — lines were lost", out.Invoice.SubTotal, want)
 	}
 }
 
@@ -323,8 +337,8 @@ func TestAFailedLineLeavesTheInvoiceUntouched(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Invoice.SubTotal != 55 {
-		t.Errorf("sub total = %v, want 55 — the failed line changed the order", out.Invoice.SubTotal)
+	if !is(t, out.Invoice.SubTotal, "55") {
+		t.Errorf("sub total = %s, want 55 — the failed line changed the order", out.Invoice.SubTotal)
 	}
 }
 
@@ -339,7 +353,6 @@ func (f *fixture) pay(t *testing.T, amount float64) (*PaymentOutcome, error) {
 		ID:            newTestID("pay"),
 		TenantID:      f.tenant,
 		InvoiceID:     f.invoice,
-		Currency:      "INR",
 		PaymentMethod: "upi",
 		PaidAt:        time.Now(),
 		CreatedBy:     actor,
@@ -456,15 +469,15 @@ func TestAYenInvoiceRoundsToWholeYen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
-	if out.Item.TotalPrice != 3750 {
-		t.Errorf("line total = %v, want 3750", out.Item.TotalPrice)
+	if !is(t, out.Item.TotalPrice, "3750") {
+		t.Errorf("line total = %s, want 3750", out.Item.TotalPrice)
 	}
 	// 3750 × 18% = 675 exactly, with no minor unit to round into.
-	if out.Invoice.TaxAmount != 675 {
-		t.Errorf("tax = %v, want 675", out.Invoice.TaxAmount)
+	if !is(t, out.Invoice.TaxAmount, "675") {
+		t.Errorf("tax = %s, want 675", out.Invoice.TaxAmount)
 	}
-	if out.Invoice.TotalAmount != 4425 {
-		t.Errorf("total = %v, want 4425", out.Invoice.TotalAmount)
+	if !is(t, out.Invoice.TotalAmount, "4425") {
+		t.Errorf("total = %s, want 4425", out.Invoice.TotalAmount)
 	}
 }
 
@@ -476,13 +489,13 @@ func TestADinarInvoiceKeepsItsThirdDecimal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
-	if out.Item.TotalPrice != 2.750 {
-		t.Errorf("line total = %v, want 2.750", out.Item.TotalPrice)
+	if !is(t, out.Item.TotalPrice, "2.750") {
+		t.Errorf("line total = %s, want 2.750", out.Item.TotalPrice)
 	}
 	// 2.750 × 18% = 0.495 exactly — a figure that rounding to two decimals
 	// would have turned into 0.50 and quietly overcharged by five fils.
-	if out.Invoice.TaxAmount != 0.495 {
-		t.Errorf("tax = %v, want 0.495", out.Invoice.TaxAmount)
+	if !is(t, out.Invoice.TaxAmount, "0.495") {
+		t.Errorf("tax = %s, want 0.495", out.Invoice.TaxAmount)
 	}
 }
 
@@ -497,7 +510,7 @@ func TestATenantCannotRecordASecondCurrency(t *testing.T) {
 
 	f.money = Money{Code: "USD", Scale: 2}
 	if _, err := f.add(t, 1, 100); !errors.Is(err, ErrCurrencyMismatch) {
-		t.Fatalf("err = %v, want ErrCurrencyMismatch", err)
+		t.Fatalf("err = %s, want ErrCurrencyMismatch", err)
 	}
 }
 
@@ -511,7 +524,7 @@ func TestACurrencyAtTheWrongScaleIsRefused(t *testing.T) {
 
 	f.money = Money{Code: "INR", Scale: 3}
 	if _, err := f.add(t, 1, 100); !errors.Is(err, ErrCurrencyMismatch) {
-		t.Fatalf("err = %v, want ErrCurrencyMismatch", err)
+		t.Fatalf("err = %s, want ErrCurrencyMismatch", err)
 	}
 }
 
@@ -523,7 +536,7 @@ func TestAPaymentInADifferentCurrencyFromItsInvoiceIsRefused(t *testing.T) {
 
 	f.money = Money{Code: "EUR", Scale: 2}
 	if _, err := f.pay(t, 118); !errors.Is(err, ErrCurrencyMismatch) {
-		t.Fatalf("err = %v, want ErrCurrencyMismatch", err)
+		t.Fatalf("err = %s, want ErrCurrencyMismatch", err)
 	}
 }
 
@@ -542,14 +555,14 @@ func TestEachLineIsTaxedAtItsOwnRate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if out.Invoice.SubTotal != 200 {
-		t.Errorf("sub total = %v, want 200", out.Invoice.SubTotal)
+	if !is(t, out.Invoice.SubTotal, "200") {
+		t.Errorf("sub total = %s, want 200", out.Invoice.SubTotal)
 	}
-	if out.Invoice.TaxAmount != 12 {
-		t.Errorf("tax = %v, want 12 — only the rated line should be taxed", out.Invoice.TaxAmount)
+	if !is(t, out.Invoice.TaxAmount, "12") {
+		t.Errorf("tax = %s, want 12 — only the rated line should be taxed", out.Invoice.TaxAmount)
 	}
-	if out.Invoice.TotalAmount != 212 {
-		t.Errorf("total = %v, want 212", out.Invoice.TotalAmount)
+	if !is(t, out.Invoice.TotalAmount, "212") {
+		t.Errorf("total = %s, want 212", out.Invoice.TotalAmount)
 	}
 }
 
@@ -565,14 +578,14 @@ func TestTaxInclusivePricingExtractsRatherThanAdds(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if out.Invoice.TotalAmount != 120 {
-		t.Errorf("total = %v, want 120 — the quoted price is what is charged", out.Invoice.TotalAmount)
+	if !is(t, out.Invoice.TotalAmount, "120") {
+		t.Errorf("total = %s, want 120 — the quoted price is what is charged", out.Invoice.TotalAmount)
 	}
-	if out.Invoice.TaxAmount != 20 {
-		t.Errorf("tax = %v, want 20", out.Invoice.TaxAmount)
+	if !is(t, out.Invoice.TaxAmount, "20") {
+		t.Errorf("tax = %s, want 20", out.Invoice.TaxAmount)
 	}
-	if out.Invoice.SubTotal != 100 {
-		t.Errorf("net = %v, want 100", out.Invoice.SubTotal)
+	if !is(t, out.Invoice.SubTotal, "100") {
+		t.Errorf("net = %s, want 100", out.Invoice.SubTotal)
 	}
 }
 
@@ -585,14 +598,14 @@ func TestTaxExclusivePricingAddsRatherThanExtracts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if out.Invoice.SubTotal != 120 {
-		t.Errorf("net = %v, want 120", out.Invoice.SubTotal)
+	if !is(t, out.Invoice.SubTotal, "120") {
+		t.Errorf("net = %s, want 120", out.Invoice.SubTotal)
 	}
-	if out.Invoice.TaxAmount != 24 {
-		t.Errorf("tax = %v, want 24", out.Invoice.TaxAmount)
+	if !is(t, out.Invoice.TaxAmount, "24") {
+		t.Errorf("tax = %s, want 24", out.Invoice.TaxAmount)
 	}
-	if out.Invoice.TotalAmount != 144 {
-		t.Errorf("total = %v, want 144", out.Invoice.TotalAmount)
+	if !is(t, out.Invoice.TotalAmount, "144") {
+		t.Errorf("total = %s, want 144", out.Invoice.TotalAmount)
 	}
 }
 
@@ -603,8 +616,8 @@ func TestAZeroRatedInvoiceCarriesNoTax(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Invoice.TaxAmount != 0 {
-		t.Errorf("tax = %v, want 0", out.Invoice.TaxAmount)
+	if !is(t, out.Invoice.TaxAmount, "0") {
+		t.Errorf("tax = %s, want 0", out.Invoice.TaxAmount)
 	}
 	if out.Invoice.TotalAmount != out.Invoice.SubTotal {
 		t.Errorf("total %v differs from net %v with no tax", out.Invoice.TotalAmount, out.Invoice.SubTotal)
@@ -621,7 +634,24 @@ func TestADinarLineTotalRoundsAtThreeDecimals(t *testing.T) {
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
-	if out.Item.TotalPrice != 1.005 {
-		t.Errorf("line total = %v, want 1.005 (3 × 0.335, rounded at three decimals)", out.Item.TotalPrice)
+	if !is(t, out.Item.TotalPrice, "1.005") {
+		t.Errorf("line total = %s, want 1.005 (3 × 0.335, rounded at three decimals)", out.Item.TotalPrice)
 	}
+}
+
+// is reports whether m is exactly the amount written as want.
+//
+// The expectation is parsed at m's own scale rather than compared as a string,
+// so a test can write "59.97" without knowing whether the fixture's currency
+// records two decimals or three. Parse pads a short literal and refuses a long
+// one, so "59.97" against a three-decimal currency means 59.970 and "59.975"
+// against a two-decimal one fails the test rather than quietly matching.
+func is(t *testing.T, m money.Money, want string) bool {
+	t.Helper()
+	w, err := money.Parse(want, m.Scale, m.Currency)
+	if err != nil {
+		t.Fatalf("the expectation %q is not a valid amount in %s at scale %d: %v",
+			want, m.Currency, m.Scale, err)
+	}
+	return m == w
 }

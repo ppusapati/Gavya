@@ -3,15 +3,44 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ppusapati/gavya/libs/integrity/audit"
+	"github.com/ppusapati/gavya/libs/integrity/currency"
+	"github.com/ppusapati/gavya/libs/integrity/money"
 
 	"github.com/ppusapati/gavya/services/billing-service/internal/domain"
 )
+
+// moneyColumnScale is how many decimals the money columns hold.
+//
+// They are NUMERIC(18,4) so that one schema serves a yen deployment and a dinar
+// one: four is the most any ISO 4217 currency has. It is not how many decimals
+// any particular amount has — a rupee total stored there reads back as
+// "1250.0000", and those trailing zeros are the column's padding.
+const moneyColumnScale int32 = 4
+
+// parseAmount turns a stored decimal literal into money at its currency's scale.
+//
+// A row whose currency is unreadable is an error rather than a zero: an amount
+// with no currency is not an amount, and returning one as though it were is how
+// a rupee figure ends up being read as dollars. money.ParseStored is what
+// separates the column's padding from the amount's real precision.
+func parseAmount(literal, code string) (money.Money, error) {
+	normalised, err := currency.Normalise(code)
+	if err != nil {
+		return money.Money{}, fmt.Errorf("currency %q: %w", code, err)
+	}
+	scale, err := currency.Scale(normalised)
+	if err != nil {
+		return money.Money{}, fmt.Errorf("currency %q: %w", code, err)
+	}
+	return money.ParseStored(literal, moneyColumnScale, scale, normalised)
+}
 
 // ErrNotFound lets a caller tell a missing record from a failed query. Without
 // it every outcome reaches the handler as an opaque error and is reported as
@@ -31,8 +60,14 @@ const invoiceCols = `id,tenant_id,customer_id,invoice_number,COALESCE(reference_
 	`sub_total,tax_amount,total_amount,currency,tax_inclusive,issued_at,due_at,COALESCE(paid_at,'0001-01-01 00:00:00+00'::timestamptz),COALESCE(notes,''),created_at,` +
 	`updated_at,created_by,updated_by,deleted_at`
 
+// An invoice line has no currency column of its own: its currency is the
+// invoice's, and a second copy on the line is a second thing that can disagree
+// with the first. The subquery works in a RETURNING clause as well as a SELECT,
+// so the insert path and the read path get it the same way rather than one of
+// them being handed it by a caller who might be wrong.
 const invoiceItemCols = `id,tenant_id,invoice_id,description,quantity,unit_price,total_price,` +
-	`tax_rate,created_at,updated_at,created_by,updated_by`
+	`tax_rate,created_at,updated_at,created_by,updated_by,` +
+	`(SELECT currency FROM invoices WHERE invoices.id = invoice_items.invoice_id)`
 
 const paymentCols = `id,tenant_id,invoice_id,amount,currency,payment_method,COALESCE(reference_no,''),paid_at,` +
 	`COALESCE(notes,''),created_at,updated_at,created_by,updated_by`
@@ -76,9 +111,10 @@ type scanner interface {
 func (r *repo) CreateInvoice(ctx context.Context, inv *domain.Invoice) (*domain.Invoice, error) {
 	row := r.pool.QueryRow(ctx,
 		`INSERT INTO invoices (id,tenant_id,customer_id,invoice_number,reference_id,reference_type,status,sub_total,tax_amount,total_amount,currency,tax_inclusive,issued_at,due_at,notes,created_by,updated_by)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING `+invoiceCols,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8::numeric,$9::numeric,$10::numeric,$11,$12,$13,$14,$15,$16,$17) RETURNING `+invoiceCols,
 		inv.ID, inv.TenantID, inv.CustomerID, inv.InvoiceNumber, inv.ReferenceID, inv.ReferenceType,
-		inv.Status, inv.SubTotal, inv.TaxAmount, inv.TotalAmount, inv.Currency, inv.TaxInclusive,
+		inv.Status, inv.SubTotal.String(), inv.TaxAmount.String(), inv.TotalAmount.String(),
+		inv.TotalAmount.Currency, inv.TaxInclusive,
 		inv.IssuedAt, inv.DueAt, inv.Notes, inv.CreatedBy, inv.UpdatedBy,
 	)
 	out, err := scanInvoice(row)
@@ -116,12 +152,11 @@ func (r *repo) UpdateInvoiceStatus(ctx context.Context, id, tenantID, status, up
 	// Read under the lock the update will take, so a concurrent transition
 	// cannot land between the read and the write and be recorded as the state
 	// this change started from.
-	var before string
-	var total float64
+	var before, total, code string
 	if err := tx.QueryRow(ctx,
-		`SELECT status, total_amount FROM invoices
+		`SELECT status, total_amount, currency FROM invoices
 		  WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL FOR UPDATE`,
-		id, tenantID).Scan(&before, &total); err != nil {
+		id, tenantID).Scan(&before, &total, &code); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -192,8 +227,9 @@ func (r *repo) ListInvoiceItems(ctx context.Context, invoiceID, tenantID string)
 
 func scanInvoice(s scanner) (*domain.Invoice, error) {
 	inv := &domain.Invoice{}
+	var sub, tax, total, code string
 	err := s.Scan(&inv.ID, &inv.TenantID, &inv.CustomerID, &inv.InvoiceNumber, &inv.ReferenceID,
-		&inv.ReferenceType, &inv.Status, &inv.SubTotal, &inv.TaxAmount, &inv.TotalAmount, &inv.Currency, &inv.TaxInclusive,
+		&inv.ReferenceType, &inv.Status, &sub, &tax, &total, &code, &inv.TaxInclusive,
 		&inv.IssuedAt, &inv.DueAt, &inv.PaidAt, &inv.Notes,
 		&inv.CreatedAt, &inv.UpdatedAt, &inv.CreatedBy, &inv.UpdatedBy, &inv.DeletedAt)
 	if err != nil {
@@ -202,32 +238,56 @@ func scanInvoice(s scanner) (*domain.Invoice, error) {
 		}
 		return nil, err
 	}
+	for _, f := range []struct {
+		name string
+		in   string
+		out  *money.Money
+	}{
+		{"sub_total", sub, &inv.SubTotal},
+		{"tax_amount", tax, &inv.TaxAmount},
+		{"total_amount", total, &inv.TotalAmount},
+	} {
+		if *f.out, err = parseAmount(f.in, code); err != nil {
+			return nil, fmt.Errorf("invoice %s %s: %w", inv.ID, f.name, err)
+		}
+	}
 	return inv, nil
 }
 
 func scanInvoiceItem(s scanner) (*domain.InvoiceItem, error) {
 	item := &domain.InvoiceItem{}
+	var unit, total, code string
 	err := s.Scan(&item.ID, &item.TenantID, &item.InvoiceID, &item.Description,
-		&item.Quantity, &item.UnitPrice, &item.TotalPrice, &item.TaxRate,
-		&item.CreatedAt, &item.UpdatedAt, &item.CreatedBy, &item.UpdatedBy)
+		&item.Quantity, &unit, &total, &item.TaxRate,
+		&item.CreatedAt, &item.UpdatedAt, &item.CreatedBy, &item.UpdatedBy, &code)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
+	if item.UnitPrice, err = parseAmount(unit, code); err != nil {
+		return nil, fmt.Errorf("invoice item %s unit_price: %w", item.ID, err)
+	}
+	if item.TotalPrice, err = parseAmount(total, code); err != nil {
+		return nil, fmt.Errorf("invoice item %s total_price: %w", item.ID, err)
+	}
 	return item, nil
 }
 
 func scanPayment(s scanner) (*domain.Payment, error) {
 	p := &domain.Payment{}
-	err := s.Scan(&p.ID, &p.TenantID, &p.InvoiceID, &p.Amount, &p.Currency, &p.PaymentMethod,
+	var amount, code string
+	err := s.Scan(&p.ID, &p.TenantID, &p.InvoiceID, &amount, &code, &p.PaymentMethod,
 		&p.ReferenceNo, &p.PaidAt, &p.Notes, &p.CreatedAt, &p.UpdatedAt, &p.CreatedBy, &p.UpdatedBy)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
+	}
+	if p.Amount, err = parseAmount(amount, code); err != nil {
+		return nil, fmt.Errorf("payment %s: %w", p.ID, err)
 	}
 	return p, nil
 }

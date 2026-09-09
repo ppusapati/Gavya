@@ -151,7 +151,10 @@ type PaymentOutcome struct {
 //   - The comparison ran on two float64 values read out of NUMERIC columns.
 //     Whether a payment covers an invoice is now decided by the database, in
 //     the columns' own type.
-func (r *repo) RecordPaymentAndSettle(ctx context.Context, p *domain.Payment, amount string, money Money) (*PaymentOutcome, error) {
+//
+// denom is the currency the payment is in and how many decimals it has. It is
+// not named "money" because that is the package the amounts are held in.
+func (r *repo) RecordPaymentAndSettle(ctx context.Context, p *domain.Payment, amount string, denom Money) (*PaymentOutcome, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin: %w", err)
@@ -172,21 +175,21 @@ func (r *repo) RecordPaymentAndSettle(ctx context.Context, p *domain.Payment, am
 	if status == InvoiceCancelledStatus {
 		return nil, fmt.Errorf("%w: this one is cancelled", ErrNotPayable)
 	}
-	if err := pinCurrency(ctx, tx, p.TenantID, money.Code, money.Scale); err != nil {
+	if err := pinCurrency(ctx, tx, p.TenantID, denom.Code, denom.Scale); err != nil {
 		return nil, err
 	}
 	// A payment in a different currency from its invoice cannot be compared
 	// against the amount owed, and adding it to the total paid would be adding
 	// two different kinds of money together.
-	if invoiceCurrency != money.Code {
+	if invoiceCurrency != denom.Code {
 		return nil, fmt.Errorf("%w: this invoice is in %s, the payment is in %s",
-			ErrCurrencyMismatch, invoiceCurrency, money.Code)
+			ErrCurrencyMismatch, invoiceCurrency, denom.Code)
 	}
 
 	payment, err := scanPayment(tx.QueryRow(ctx,
 		`INSERT INTO payments (id,tenant_id,invoice_id,amount,currency,payment_method,reference_no,paid_at,notes,created_by,updated_by)
 		 VALUES ($1,$2,$3,$4::numeric,$5,$6,$7,$8,$9,$10,$11) RETURNING `+paymentCols,
-		p.ID, p.TenantID, p.InvoiceID, amount, p.Currency, p.PaymentMethod,
+		p.ID, p.TenantID, p.InvoiceID, amount, denom.Code, p.PaymentMethod,
 		p.ReferenceNo, p.PaidAt, p.Notes, p.CreatedBy, p.UpdatedBy))
 	if err != nil {
 		return nil, fmt.Errorf("record payment: %w", err)

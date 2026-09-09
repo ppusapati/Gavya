@@ -7,6 +7,7 @@ import (
 
 	"github.com/ppusapati/gavya/libs/integrity/currency"
 	"github.com/ppusapati/gavya/libs/integrity/exact"
+	"github.com/ppusapati/gavya/libs/integrity/money"
 	"github.com/ppusapati/gavya/services/billing-service/internal/domain"
 	"github.com/ppusapati/gavya/services/billing-service/internal/repository"
 	ulidpkg "p9e.in/samavaya/packages/ulid"
@@ -29,7 +30,11 @@ func (e *invalidArgument) Is(target error) bool { return target == ErrInvalidArg
 
 func invalid(msg string) error { return &invalidArgument{reason: msg} }
 
-func (s *Service) CreateInvoice(ctx context.Context, inv *domain.Invoice) (*domain.Invoice, error) {
+// CreateInvoice takes the currency as an argument rather than a field on the
+// invoice, because an invoice's amounts each carry their own currency now and
+// there is nothing to put it in until they exist. A new invoice's totals are
+// zero, and zero of what is the question this answers.
+func (s *Service) CreateInvoice(ctx context.Context, inv *domain.Invoice, currencyCode string) (*domain.Invoice, error) {
 	if inv.TenantID == "" {
 		return nil, invalid("tenant_id is required")
 	}
@@ -39,7 +44,7 @@ func (s *Service) CreateInvoice(ctx context.Context, inv *domain.Invoice) (*doma
 	// An invoice states the currency it is in, and the first one for a tenant
 	// fixes it. There is no default: a deployment outside India that silently
 	// billed in rupees would produce invoices nobody could pay.
-	code, err := currency.Normalise(inv.Currency)
+	code, err := currency.Normalise(currencyCode)
 	if err != nil {
 		return nil, invalid("currency: " + err.Error())
 	}
@@ -50,7 +55,12 @@ func (s *Service) CreateInvoice(ctx context.Context, inv *domain.Invoice) (*doma
 	if err := s.repo.PinTenantMoney(ctx, inv.TenantID, repository.Money{Code: code, Scale: scale}); err != nil {
 		return nil, err
 	}
-	inv.Currency = code
+	// A new invoice has no lines, so its totals are zero — but zero rupees, not
+	// a bare zero. The currency has to be on them from the start, or the first
+	// line added would be adding to an amount that is not in any currency.
+	inv.SubTotal = money.Zero(scale, code)
+	inv.TaxAmount = money.Zero(scale, code)
+	inv.TotalAmount = money.Zero(scale, code)
 
 	inv.ID = ulidpkg.New().String()
 	inv.InvoiceNumber = "INV-" + ulidpkg.New().String()
@@ -84,15 +94,15 @@ func (s *Service) CreateInvoice(ctx context.Context, inv *domain.Invoice) (*doma
 // read locally rather than from tenant-service, so billing does not stop
 // working when tenant-service is unreachable.
 func (s *Service) moneyFor(ctx context.Context, tenantID string) (repository.Money, error) {
-	money, err := s.repo.TenantMoney(ctx, tenantID)
+	denom, err := s.repo.TenantMoney(ctx, tenantID)
 	if errors.Is(err, repository.ErrNotFound) {
 		return repository.Money{}, invalid(
 			"this tenant has not recorded any money yet; its first invoice must state a currency")
 	}
-	return money, err
+	return denom, err
 }
 
-func (s *Service) AddInvoiceItem(ctx context.Context, item *domain.InvoiceItem) (*repository.ItemOutcome, error) {
+func (s *Service) AddInvoiceItem(ctx context.Context, item *domain.InvoiceItem, unitPriceLiteral string) (*repository.ItemOutcome, error) {
 	if item.InvoiceID == "" || item.TenantID == "" {
 		return nil, invalid("invoice_id and tenant_id are required")
 	}
@@ -100,11 +110,17 @@ func (s *Service) AddInvoiceItem(ctx context.Context, item *domain.InvoiceItem) 
 		return nil, invalid("quantity must be more than zero")
 	}
 
-	money, err := s.moneyFor(ctx, item.TenantID)
+	denom, err := s.moneyFor(ctx, item.TenantID)
 	if err != nil {
 		return nil, err
 	}
 
+	// The quantity and the tax rate still cross the wire as JSON numbers, so
+	// they arrive as float64. That is survivable here and checked: both columns
+	// are NUMERIC(_,3) holding values far below where float64 loses a digit, and
+	// exact.NonNegativeDecimal refuses anything finer than the column rather
+	// than letting PostgreSQL round it in silence. The price is the one that
+	// could not be, and it is a literal now.
 	quantity, err := exact.NonNegativeDecimal(item.Quantity, 3, 10)
 	if err != nil {
 		return nil, invalid(exact.Field("quantity", err).Error())
@@ -112,10 +128,14 @@ func (s *Service) AddInvoiceItem(ctx context.Context, item *domain.InvoiceItem) 
 	// Prices are held to the currency's own precision: a yen price has no
 	// decimals, a dinar price has three. Validating everything at two would
 	// accept a yen price of 100.50 and refuse a legitimate dinar price.
-	unitPrice, err := exact.NonNegativeDecimal(item.UnitPrice, money.Scale, 18)
+	price, err := money.Parse(unitPriceLiteral, denom.Scale, denom.Code)
 	if err != nil {
-		return nil, invalid(exact.Field("unit_price", err).Error())
+		return nil, invalid("unit_price: " + err.Error())
 	}
+	if price.Value < 0 {
+		return nil, invalid("unit_price must not be negative")
+	}
+	item.UnitPrice = price
 	// A tax rate is a percentage, not money, so its precision is its own.
 	taxRate, err := exact.NonNegativeDecimal(item.TaxRate, 3, 6)
 	if err != nil {
@@ -131,7 +151,7 @@ func (s *Service) AddInvoiceItem(ctx context.Context, item *domain.InvoiceItem) 
 	}
 	item.UpdatedBy = item.CreatedBy
 
-	return s.repo.AddItemAndRetotal(ctx, item, quantity, unitPrice, taxRate, money)
+	return s.repo.AddItemAndRetotal(ctx, item, quantity, price.String(), taxRate, denom)
 }
 
 func (s *Service) SendInvoice(ctx context.Context, id, tenantID, updatedBy string) (*domain.Invoice, error) {
@@ -154,24 +174,24 @@ func (s *Service) SendInvoice(ctx context.Context, id, tenantID, updatedBy strin
 // is paid by comparing two float64 values read out of NUMERIC columns, in a
 // separate call from the one that wrote the payment, left an invoice's state
 // able to disagree with the money against it.
-func (s *Service) RecordPayment(ctx context.Context, p *domain.Payment) (*repository.PaymentOutcome, error) {
+func (s *Service) RecordPayment(ctx context.Context, p *domain.Payment, amountLiteral string) (*repository.PaymentOutcome, error) {
 	if p.InvoiceID == "" || p.TenantID == "" {
 		return nil, invalid("invoice_id and tenant_id are required")
 	}
-	if p.Amount <= 0 {
-		return nil, invalid("a payment must be for more than zero")
-	}
-	money, err := s.moneyFor(ctx, p.TenantID)
+	denom, err := s.moneyFor(ctx, p.TenantID)
 	if err != nil {
 		return nil, err
 	}
-	amount, err := exact.NonNegativeDecimal(p.Amount, money.Scale, 18)
+	amount, err := money.Parse(amountLiteral, denom.Scale, denom.Code)
 	if err != nil {
-		return nil, invalid(exact.Field("amount", err).Error())
+		return nil, invalid("amount: " + err.Error())
 	}
+	if amount.Value <= 0 {
+		return nil, invalid("a payment must be for more than zero")
+	}
+	p.Amount = amount
 
 	p.ID = ulidpkg.New().String()
-	p.Currency = money.Code
 	if p.PaidAt.IsZero() {
 		p.PaidAt = time.Now()
 	}
@@ -180,7 +200,7 @@ func (s *Service) RecordPayment(ctx context.Context, p *domain.Payment) (*reposi
 	}
 	p.UpdatedBy = p.CreatedBy
 
-	return s.repo.RecordPaymentAndSettle(ctx, p, amount, money)
+	return s.repo.RecordPaymentAndSettle(ctx, p, amount.String(), denom)
 }
 
 func (s *Service) VoidInvoice(ctx context.Context, id, tenantID, updatedBy string) (*domain.Invoice, error) {

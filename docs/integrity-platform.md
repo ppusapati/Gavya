@@ -51,7 +51,7 @@ have, and each of the three is a deliberate difference rather than an oversight.
 |---|---|---|
 | **Append-only history** | Held. Every `UPDATE` in the spine is a supersession stamp or a lifecycle status, never a change to a record's content. | **Not held, and nothing stands in for it.** These are ordinary CRUD services: a price is updated in place and the previous one is gone. They carry `updated_by` and `updated_at`, so the last change has a name and a time against it — but no earlier value, and no record that a change happened at all. See *The audit trail is narrower than it looks* below. |
 | **Bitemporality** | Held on every authoritative record. | **Not held.** They record what is true now, not what was believed when. |
-| **Deterministic money** | Held. `libs/integrity/money`: scaled integers, explicit rounding mode, recorded rounding trail. | **Partly.** See below — this is the one worth reading. |
+| **Deterministic money** | Held. `libs/integrity/money`: scaled integers, explicit rounding mode, recorded rounding trail. | **Mostly held.** All five services that carry money use `libs/integrity/money` end to end. No rounding trail, though: they round in SQL rather than recording the step, so a figure can be reproduced but the rounding that produced it is not itself a record. See below. |
 | **Derivation provenance** | Held. | Not applicable: they capture, they do not import. |
 | **Replayable idempotent ingestion** | Held. | Not applicable: no device feed. |
 | **Database-enforced tenant isolation** | Held. | **Held.** Same RLS policies, same `gavya_app` role. Proven end to end for all seven in `e2e/erp_test.go`. |
@@ -82,33 +82,71 @@ The two groups that do not use it are not the same case:
 
 ### Money in the older services
 
-They do not use `libs/integrity/money`, and the wire carries a JSON number rather
-than a decimal literal, so a currency amount reaches Go as a `float64`. That
-sounds worse than it is, and the detail is worth having because the obvious
-conclusion is the wrong one:
+`product-catalog`, `cattle-market`, `order`, `billing` and `health` now hold
+currency amounts in `libs/integrity/money`, and the wire carries a decimal
+literal rather than a JSON number. Nothing between a request and a column is a
+`float64`.
 
-- **No arithmetic happens in `float64`.** Every write goes through
+This was not the case until recently, and what was there instead is worth
+recording, because the obvious conclusion about it was the wrong one:
+
+- **No arithmetic ever happened in `float64`.** Every write went through
   `libs/integrity/exact`, which converts to the decimal literal the column stores
   and *refuses* a value finer than that rather than letting PostgreSQL round it
-  silently. Comparisons are against zero. `order` and `billing` compute their
-  totals in SQL, in the column's own `NUMERIC` type, rounding once at the end.
-- **The read path is exact within a bound, and the bound is enforced.** Measured
-  rather than assumed: through `NUMERIC(18,4)`, 100,000 values below 10^11
-  round-tripped `float64 -> JSON -> float64` losing nothing; above 10^12, more
-  than three quarters lost a digit — 6791947779410.3551 comes back as
+  silently. `order` and `billing` compute their totals in SQL, in the column's
+  own `NUMERIC` type, rounding once at the end. That is still true.
+- **The read path was exact within a bound, and the bound was enforced.**
+  Measured rather than assumed: through `NUMERIC(18,4)`, 200,000 values below
+  10^11 round-tripped `float64 -> JSON -> float64` losing nothing; above 10^12,
+  more than three quarters lost a digit — 6791947779410.3551 came back as
   6791947779410.3555. The columns are `NUMERIC(18,4)` so one schema serves a yen
-  deployment and a dinar one, which means they could hold values the code cannot
-  carry. A `CHECK` on every such column now refuses those, and
-  `exact.MoneyPrecision` names the same ceiling in Go so the refusal is a
-  sentence rather than a constraint violation. A test compares the two.
+  deployment and a dinar one, which meant they could hold values the code could
+  not carry, so a `CHECK` on every such column refused them.
 
-So the guarantee these services actually offer is narrower than the integrity
-layer's and is not nothing: *money is exact for every value the system will
-accept, and a value it cannot represent exactly is refused rather than
-silently changed.* Reading them as exact decimals throughout would remove the
-bound's relevance entirely; it is a breaking wire change across four services,
-and it buys robustness against a future widening rather than correcting anything
-wrong today. It has not been made, and `docs/roadmap.md` says so.
+So the guarantee was narrower than the integrity layer's and was not nothing:
+*money is exact for every value the system will accept, and a value it cannot
+represent exactly is refused rather than silently changed.*
+
+What was wrong with it was where the bound lived. A `CHECK` at 10^11 on a
+`NUMERIC(18,4)` column is a limit of the Go read path written into the database,
+and it made a fact about `float64` look like a fact about money. The read path is
+exact to the full width of the column now, so those `CHECK`s are dropped.
+
+Three things surfaced in making the change, none of which the old shape would
+have shown:
+
+- **PostgreSQL renders a rupee in a `NUMERIC(18,4)` column as `"42.5000"`.**
+  Those last two zeros are the column's padding, not precision, and a zero comes
+  back as `"0"` with no point at all. Telling padding from precision is what
+  `money.ParseStored` does: it reads at the column's scale, brings the value down
+  to the currency's, and refuses rather than rounds if a non-zero digit would be
+  dropped — a rupee amount with a third decimal is a figure that currency cannot
+  express, and something is wrong upstream if one is stored.
+- **`cattle-market`'s `PlaceBid` and `RecordSale` had never worked.** Both
+  required a currency, neither request type carried one, and `currency.Normalise("")`
+  refuses an empty code, so every call either endpoint ever received came back
+  with a message about currency codes being three letters. Nothing noticed
+  because nothing tested them. A bid's currency is the listing's now.
+- **`order`'s money columns were half widened.** The migration taking them from
+  `NUMERIC(12,2)` to `NUMERIC(18,4)` named `order_invoices`, which is not a table
+  in that schema; it is `invoices`. It also omitted `returns`. The loop matched
+  nothing for a name that does not exist and reported success, so orders were
+  widened and the invoices raised from them were not. A dinar deployment could
+  place an order at 1.234 and have its invoice total silently rounded to 1.23.
+  `e2e/moneycolumns_test.go` now applies each schema and asks the database what
+  its money columns are, rather than reading a `DO` block and believing it.
+
+`exact.MoneyScale`, `exact.MoneyPrecision` and `exact.MoneyCeiling` are gone with
+the `CHECK`s they matched. They named a limit that no longer exists, and were
+kept alive only by tests comparing them with each other — a control that reports
+success while doing nothing. `exact.NonNegativeDecimal` remains, for the things
+that are still JSON numbers.
+
+Quantities are a separate matter and are still `float64` at the boundary:
+`order_items.quantity` counts litres, its column is `NUMERIC(10,3)`, and the
+values are nowhere near where `float64` loses a digit. `libs/integrity/quantity`
+is where they would go. Tax rates are percentages rather than amounts and are
+held to three decimals by their own columns.
 
 ## Architecture
 

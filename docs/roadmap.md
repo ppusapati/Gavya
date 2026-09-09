@@ -241,11 +241,14 @@ Measured rather than argued:
   values; above 10^12, more than three quarters lost a digit. 6791947779410.3551
   comes back as 6791947779410.3555.
 
-So the column could hold values the code cannot carry and nothing said so. The
-schemas now bound every four-decimal money column to what float64 carries
-exactly, refusing the value rather than mangling it on the way out — where both
-ends would believe they agreed. The ceiling is a hundred billion of any
-currency, so it refuses nothing a dairy does.
+So the column could hold values the code could not carry and nothing said so.
+The schemas were made to bound every four-decimal money column to what float64
+carries exactly, refusing the value rather than mangling it on the way out —
+where both ends would believe they agreed.
+
+(That bound is gone now, and the rest of this section is the record of why. The
+read path is exact to the full width of the column, so a ceiling drawn where
+float64 stops describes nothing. Read on.)
 
 One usability defect fell out of writing those tests: `ListNotifications`
 compared channel and status unconditionally, so a caller passing neither — which
@@ -264,14 +267,59 @@ correctness.
 What was wrong was that the two layers disagreed about the ceiling — Go accepted
 eighteen digits and the database refused anything above eleven, so a price
 somebody typed came back as a constraint violation rather than a sentence saying
-what was wrong with it. `exact.MoneyPrecision` and `exact.MoneyCeiling` now name
-the decision once, with the measurement behind it, and a test compares the
-constant against the `CHECK` in every schema.
+what was wrong with it. `exact.MoneyPrecision` and `exact.MoneyCeiling` were
+added to name the decision once, with the measurement behind it.
 
-**Still open, at lower priority than it looked:** reading these as exact decimals
-the way the integrity services do. It is a breaking wire change across four
-services and buys robustness against a future widening, not a correction to
-anything wrong today.
+Both are gone now, along with every `CHECK` they matched. The read path is exact
+to the full width of the column, so the ceiling describes nothing — and a
+constant kept alive only by tests comparing it with itself is a control that
+reports success while doing nothing. The measurement survives in the comment on
+each schema's drop statement, where it says why the `CHECK` was there and why it
+is not any more.
+
+**Closed, and the reasoning above was half right.** All five services now read
+money as exact decimals: `libs/integrity/money` in the domain, decimal literals
+on the wire, `::numeric` in every statement, and the `CHECK` ceilings dropped
+because a limit of the Go read path does not belong in the database.
+
+The recommendation against doing it rested on "buys robustness, not correctness",
+and that held right up until the change was attempted. Three defects surfaced
+that the old shape had been hiding, none of them about floats:
+
+- **PostgreSQL renders a rupee in a `NUMERIC(18,4)` column as `"42.5000"`.**
+  Reading that at the currency's two decimals fails, correctly, because `Parse`
+  never discards precision. The column's padding has to be told from the amount's
+  precision, which is what `money.ParseStored` does — refusing rather than
+  rounding if a non-zero digit would be dropped. The e2e tests caught this; a
+  four-decimal currency alone would not have.
+- **`cattle-market`'s `PlaceBid` and `RecordSale` had never worked**, for any
+  caller, since they were written. Both required a currency, neither request type
+  carried one, and `currency.Normalise("")` refuses an empty code. Nothing
+  noticed because the e2e file covered `CreateListing` and stopped there. Both
+  endpoints have coverage now, and a bid takes the listing's currency.
+- **`order`'s money columns were half widened.** The migration named
+  `order_invoices`, which is not a table in that schema; it is `invoices`, and
+  `returns` was omitted entirely. The loop matched nothing for a name that does
+  not exist and reported success, so orders were widened at four decimals and the
+  invoices raised from them stayed at two. A dinar deployment could place an
+  order at 1.234 and have its invoice total silently rounded to 1.23.
+
+The last of those is the one worth taking a lesson from. It was invisible in the
+schema text because the widening is a `DO` block that searches
+`information_schema` at apply time — what it does is a fact about the database,
+not about the file. `e2e/moneycolumns_test.go` applies each schema and asks the
+database. Reverting the one line makes it name all four affected columns.
+
+Neither `order` nor `billing` had any end-to-end coverage of a line item or a
+payment before this. The suite created an order and an invoice, moved their
+statuses, and stopped — it had never checked that either service can add up what
+it is for. `e2e/money_test.go` does that now, including that tax is rounded per
+line rather than on the total, which is a penny's difference on three lines of
+0.10 and the reason an invoice can disagree with the lines printed on it.
+
+**Still open:** quantities. They are `float64` at the boundary — `order_items.quantity` counts litres,
+its column is `NUMERIC(10,3)`, and the values are nowhere near where `float64`
+loses a digit — but `libs/integrity/quantity` exists and they are not using it.
 
 ### 3. Deployment drift — **closed**
 
@@ -366,7 +414,9 @@ the tenant's own currency scale — three decimals for a dinar deployment — an
 `UpdateSKUPrice` validated against a hardcoded two. A price of 1.234 was accepted
 on the way in and every attempt to correct it was refused, with a message about
 precision that gave no hint the two paths disagreed. **A price you could set and
-never change.** Both now use the tenant's scale and `exact.MoneyPrecision`.
+never change.** Both now take the price as a decimal literal and parse it at the
+tenant's own currency scale, which refuses a finer figure rather than rounding it
+and cannot disagree between the two paths because there is only one of them.
 
 Checked while there and found nothing further: every other hardcoded scale in
 these services — unit sizes, kilograms, litres, fat and SNF percentages, tax

@@ -3,11 +3,14 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ppusapati/gavya/libs/integrity/audit"
+	"github.com/ppusapati/gavya/libs/integrity/currency"
+	"github.com/ppusapati/gavya/libs/integrity/money"
 
 	"github.com/ppusapati/gavya/services/health-service/internal/domain"
 )
@@ -217,9 +220,9 @@ func (r *repo) UpdateTreatmentStatus(ctx context.Context, id, tenantID, status, 
 func (r *repo) CreateVetVisit(ctx context.Context, v *domain.VetVisit) (*domain.VetVisit, error) {
 	row := r.pool.QueryRow(ctx,
 		`INSERT INTO vet_visits (id,tenant_id,cattle_id,veterinarian_id,visit_date,purpose,notes,cost,currency,created_by,updated_by)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING `+vetVisitCols,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8::numeric,$9,$10,$11) RETURNING `+vetVisitCols,
 		v.ID, v.TenantID, v.CattleID, v.VeterinarianID, v.VisitDate, v.Purpose, v.Notes,
-		v.Cost, v.Currency, v.CreatedBy, v.UpdatedBy,
+		v.Cost.String(), v.Cost.Currency, v.CreatedBy, v.UpdatedBy,
 	)
 	return scanVetVisit(row)
 }
@@ -282,13 +285,43 @@ func scanTreatment(s scanner) (*domain.Treatment, error) {
 
 func scanVetVisit(s scanner) (*domain.VetVisit, error) {
 	v := &domain.VetVisit{}
+	var cost, code string
 	err := s.Scan(&v.ID, &v.TenantID, &v.CattleID, &v.VeterinarianID, &v.VisitDate,
-		&v.Purpose, &v.Notes, &v.Cost, &v.Currency, &v.CreatedAt, &v.UpdatedAt, &v.CreatedBy, &v.UpdatedBy, &v.DeletedAt)
+		&v.Purpose, &v.Notes, &cost, &code, &v.CreatedAt, &v.UpdatedAt, &v.CreatedBy, &v.UpdatedBy, &v.DeletedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
+	if v.Cost, err = parseAmount(cost, code); err != nil {
+		return nil, fmt.Errorf("vet visit %s: %w", v.ID, err)
+	}
 	return v, nil
+}
+
+// moneyColumnScale is how many decimals the money columns hold.
+//
+// They are NUMERIC(18,4) so that one schema serves a yen deployment and a dinar
+// one: four is the most any ISO 4217 currency has. It is not how many decimals
+// any particular amount has — a rupee cost stored there reads back as
+// "450.0000", and those trailing zeros are the column's padding.
+const moneyColumnScale int32 = 4
+
+// parseAmount turns a stored decimal literal into money at its currency's scale.
+//
+// A row whose currency is unreadable is an error rather than a zero: an amount
+// with no currency is not an amount, and returning one as though it were is how
+// a rupee figure ends up being read as dollars. money.ParseStored is what
+// separates the column's padding from the amount's real precision.
+func parseAmount(literal, code string) (money.Money, error) {
+	normalised, err := currency.Normalise(code)
+	if err != nil {
+		return money.Money{}, fmt.Errorf("currency %q: %w", code, err)
+	}
+	scale, err := currency.Scale(normalised)
+	if err != nil {
+		return money.Money{}, fmt.Errorf("currency %q: %w", code, err)
+	}
+	return money.ParseStored(literal, moneyColumnScale, scale, normalised)
 }
