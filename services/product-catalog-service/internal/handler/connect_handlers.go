@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -140,11 +141,15 @@ type ListProductsResponse struct {
 }
 
 type CreateSKURequest struct {
-	TenantID  string  `json:"tenant_id"`
-	ProductID string  `json:"product_id"`
-	Code      string  `json:"code"`
-	Name      string  `json:"name"`
-	Price     float64 `json:"price"`
+	TenantID  string `json:"tenant_id"`
+	ProductID string `json:"product_id"`
+	Code      string `json:"code"`
+	Name      string `json:"name"`
+	// Price is a decimal literal — "1234.50", not 1234.5 — for the same reason
+	// the integrity services take one: a JSON number is a float64 by the time Go
+	// has read it, and a price that has been through a float is a price nobody
+	// can prove was not changed on the way.
+	Price     string  `json:"price"`
 	Currency  string  `json:"currency"`
 	Unit      string  `json:"unit"`
 	UnitSize  float64 `json:"unit_size"`
@@ -152,8 +157,53 @@ type CreateSKURequest struct {
 	CreatedBy string  `json:"created_by"`
 }
 
+// SKUView is what a SKU looks like on the wire.
+//
+// The domain model used to be serialised directly, which meant its price went
+// out as a JSON number. This exists so the price can go out as a decimal
+// literal at its currency's scale, and so a change to the stored shape is not
+// automatically a change to the published one.
+type SKUView struct {
+	ID        string     `json:"id"`
+	TenantID  string     `json:"tenant_id"`
+	ProductID string     `json:"product_id"`
+	Code      string     `json:"code"`
+	Name      string     `json:"name"`
+	Price     string     `json:"price"`
+	Currency  string     `json:"currency"`
+	Unit      string     `json:"unit"`
+	UnitSize  float64    `json:"unit_size"`
+	Status    string     `json:"status"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+	CreatedBy string     `json:"created_by"`
+	UpdatedBy string     `json:"updated_by"`
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+}
+
+func viewSKU(s *domain.SKU) *SKUView {
+	if s == nil {
+		return nil
+	}
+	return &SKUView{
+		ID: s.ID, TenantID: s.TenantID, ProductID: s.ProductID, Code: s.Code,
+		Name: s.Name, Price: s.Price.String(), Currency: s.Price.Currency,
+		Unit: s.Unit, UnitSize: s.UnitSize, Status: s.Status,
+		CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt,
+		CreatedBy: s.CreatedBy, UpdatedBy: s.UpdatedBy, DeletedAt: s.DeletedAt,
+	}
+}
+
+func viewSKUs(in []*domain.SKU) []*SKUView {
+	out := make([]*SKUView, 0, len(in))
+	for _, s := range in {
+		out = append(out, viewSKU(s))
+	}
+	return out
+}
+
 type SKUResponse struct {
-	SKU *domain.SKU `json:"sku"`
+	SKU *SKUView `json:"sku"`
 }
 
 type ListProductSKUsRequest struct {
@@ -162,14 +212,17 @@ type ListProductSKUsRequest struct {
 }
 
 type ListProductSKUsResponse struct {
-	SKUs []*domain.SKU `json:"skus"`
+	SKUs []*SKUView `json:"skus"`
 }
 
 type UpdateSKUPriceRequest struct {
-	ID        string  `json:"id"`
-	TenantID  string  `json:"tenant_id"`
-	Price     float64 `json:"price"`
-	UpdatedBy string  `json:"updated_by"`
+	ID       string `json:"id"`
+	TenantID string `json:"tenant_id"`
+	// A decimal literal, as on the way in. There is no currency field: a SKU's
+	// currency is fixed when it is created, and repricing is not the place to
+	// change what a past invoice was denominated in.
+	Price     string `json:"price"`
+	UpdatedBy string `json:"updated_by"`
 }
 
 func (h *Handler) CreateCategory(ctx context.Context, req *connect.Request[CreateCategoryRequest]) (*connect.Response[CategoryResponse], error) {
@@ -263,17 +316,15 @@ func (h *Handler) CreateSKU(ctx context.Context, req *connect.Request[CreateSKUR
 		ProductID: m.ProductID,
 		Code:      m.Code,
 		Name:      m.Name,
-		Price:     m.Price,
-		Currency:  m.Currency,
 		Unit:      m.Unit,
 		UnitSize:  m.UnitSize,
 		Status:    m.Status,
 		CreatedBy: m.CreatedBy,
-	})
+	}, m.Price, m.Currency)
 	if err != nil {
 		return nil, classify(err)
 	}
-	return connect.NewResponse(&SKUResponse{SKU: out}), nil
+	return connect.NewResponse(&SKUResponse{SKU: viewSKU(out)}), nil
 }
 
 func (h *Handler) GetSKU(ctx context.Context, req *connect.Request[IDTenantRequest]) (*connect.Response[SKUResponse], error) {
@@ -281,7 +332,7 @@ func (h *Handler) GetSKU(ctx context.Context, req *connect.Request[IDTenantReque
 	if err != nil {
 		return nil, classify(err)
 	}
-	return connect.NewResponse(&SKUResponse{SKU: out}), nil
+	return connect.NewResponse(&SKUResponse{SKU: viewSKU(out)}), nil
 }
 
 func (h *Handler) ListProductSKUs(ctx context.Context, req *connect.Request[ListProductSKUsRequest]) (*connect.Response[ListProductSKUsResponse], error) {
@@ -289,7 +340,7 @@ func (h *Handler) ListProductSKUs(ctx context.Context, req *connect.Request[List
 	if err != nil {
 		return nil, classify(err)
 	}
-	return connect.NewResponse(&ListProductSKUsResponse{SKUs: out}), nil
+	return connect.NewResponse(&ListProductSKUsResponse{SKUs: viewSKUs(out)}), nil
 }
 
 func (h *Handler) UpdateSKUPrice(ctx context.Context, req *connect.Request[UpdateSKUPriceRequest]) (*connect.Response[SKUResponse], error) {
@@ -298,5 +349,5 @@ func (h *Handler) UpdateSKUPrice(ctx context.Context, req *connect.Request[Updat
 	if err != nil {
 		return nil, classify(err)
 	}
-	return connect.NewResponse(&SKUResponse{SKU: out}), nil
+	return connect.NewResponse(&SKUResponse{SKU: viewSKU(out)}), nil
 }

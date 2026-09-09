@@ -776,12 +776,15 @@ type productResp struct {
 	} `json:"product"`
 }
 
+// Prices cross the wire as decimal literals, not JSON numbers. A JSON number is
+// a float64 by the time Go has read it, and these tests are the place that would
+// notice if it stopped being one.
 type createSKUReq struct {
 	TenantID  string  `json:"tenant_id"`
 	ProductID string  `json:"product_id"`
 	Code      string  `json:"code"`
 	Name      string  `json:"name"`
-	Price     float64 `json:"price"`
+	Price     string  `json:"price"`
 	Currency  string  `json:"currency"`
 	Unit      string  `json:"unit"`
 	UnitSize  float64 `json:"unit_size"`
@@ -790,24 +793,30 @@ type createSKUReq struct {
 }
 
 type updateSKUPriceReq struct {
-	ID        string  `json:"id"`
-	TenantID  string  `json:"tenant_id"`
-	Price     float64 `json:"price"`
-	UpdatedBy string  `json:"updated_by"`
+	ID        string `json:"id"`
+	TenantID  string `json:"tenant_id"`
+	Price     string `json:"price"`
+	UpdatedBy string `json:"updated_by"`
+}
+
+// idTenantReq is what the catalog's read methods take.
+type idTenantReq struct {
+	ID       string `json:"id"`
+	TenantID string `json:"tenant_id"`
 }
 
 type skuResp struct {
 	SKU *struct {
-		ID       string  `json:"id"`
-		Price    float64 `json:"price"`
-		Currency string  `json:"currency"`
+		ID       string `json:"id"`
+		Price    string `json:"price"`
+		Currency string `json:"currency"`
 	} `json:"sku"`
 }
 
 const catalogSvc = "productcatalog.v1.ProductCatalogService"
 
 // aSKU creates a product and one SKU under it, priced in the given currency.
-func aSKU(t *testing.T, p *platform, currency string, price float64) *skuResp {
+func aSKU(t *testing.T, p *platform, currency, price string) *skuResp {
 	t.Helper()
 	code := newID("sku")
 
@@ -832,7 +841,7 @@ func aSKU(t *testing.T, p *platform, currency string, price float64) *skuResp {
 			Name: code, Price: price, Currency: currency, Unit: "kg", UnitSize: 1,
 			Status: "active", CreatedBy: "e2e"}, p.opts())
 	if err != nil {
-		t.Fatalf("create SKU in %s at %v: %v", currency, price, err)
+		t.Fatalf("create SKU in %s at %s: %v", currency, price, err)
 	}
 	return sku
 }
@@ -848,32 +857,90 @@ func TestAPriceCanBeCorrectedInTheCurrencyItWasSetIn(t *testing.T) {
 	p := startPlatform(t)
 
 	// A three-decimal currency. The scale comes from ISO 4217, not from us.
-	sku := aSKU(t, p, "BHD", 1.234)
-	if sku.SKU.Price != 1.234 {
-		t.Fatalf("a dinar SKU was created at %v, want 1.234", sku.SKU.Price)
+	sku := aSKU(t, p, "BHD", "1.234")
+	if sku.SKU.Price != "1.234" {
+		t.Fatalf("a dinar SKU was created at %s, want 1.234", sku.SKU.Price)
 	}
 
 	updated, err := svcclient.Call[updateSKUPriceReq, skuResp](
 		context.Background(), p.catalog(), catalogSvc+"/UpdateSKUPrice",
-		updateSKUPriceReq{ID: sku.SKU.ID, TenantID: p.tenant, Price: 1.235,
+		updateSKUPriceReq{ID: sku.SKU.ID, TenantID: p.tenant, Price: "1.235",
 			UpdatedBy: "e2e"}, p.opts())
 	if err != nil {
 		t.Fatalf("a price set at three decimals could not be corrected to three decimals: %v\n"+
 			"CreateSKU and UpdateSKUPrice have to validate the same column the same way, or "+
 			"there are prices the platform will accept and never let anybody change", err)
 	}
-	if updated.SKU.Price != 1.235 {
-		t.Errorf("the price came back as %v, want 1.235", updated.SKU.Price)
+	if updated.SKU.Price != "1.235" {
+		t.Errorf("the price came back as %s, want 1.235", updated.SKU.Price)
 	}
 
 	// And a fourth decimal is still refused, in a currency that has three. The
 	// fix must not have been to stop checking.
 	if _, err := svcclient.Call[updateSKUPriceReq, skuResp](
 		context.Background(), p.catalog(), catalogSvc+"/UpdateSKUPrice",
-		updateSKUPriceReq{ID: sku.SKU.ID, TenantID: p.tenant, Price: 1.2345,
+		updateSKUPriceReq{ID: sku.SKU.ID, TenantID: p.tenant, Price: "1.2345",
 			UpdatedBy: "e2e"}, p.opts()); err == nil {
 		t.Error("a four-decimal price was accepted for a three-decimal currency; the database " +
 			"would round it on the way in and nobody would be told")
+	}
+}
+
+// A price larger than float64 can carry to four decimals.
+//
+// The catalog's money columns are NUMERIC(18,4), and they used to be bounded by
+// a CHECK at 10^11 because that is where a float64 read path stops carrying four
+// decimals faithfully. 6791947779410.3551 came back out of that path as
+// 6791947779410.3555. The ceiling was a limit of the Go code written into the
+// database.
+//
+// The read path is now exact, the ceiling is gone, and this is what says so.
+// It is not a price a dairy will ever charge; it is the value that used to be
+// mangled, and the point is that it no longer is.
+func TestACatalogPriceBeyondFloat64PrecisionSurvivesTheRoundTrip(t *testing.T) {
+	p := startPlatform(t)
+
+	// A four-decimal currency, so all four digits are meaningful, and a figure
+	// above 10^12 where float64 loses one.
+	const big = "6791947779410.3551"
+	sku := aSKU(t, p, "CLF", big)
+	if sku.SKU.Price != big {
+		t.Fatalf("a price of %s came back from CreateSKU as %s", big, sku.SKU.Price)
+	}
+
+	// And again on a read, which is a different code path from the RETURNING of
+	// the insert.
+	read, err := svcclient.Call[idTenantReq, skuResp](
+		context.Background(), p.catalog(), catalogSvc+"/GetSKU",
+		idTenantReq{ID: sku.SKU.ID, TenantID: p.tenant}, p.opts())
+	if err != nil {
+		t.Fatalf("get sku: %v", err)
+	}
+	if read.SKU.Price != big {
+		t.Errorf("stored %s, read back %s; the value changed between the column and the reply, "+
+			"which is the failure mode the old ceiling existed to prevent", big, read.SKU.Price)
+	}
+}
+
+// A SKU's currency cannot be changed by repricing it.
+//
+// Every invoice raised against a SKU was denominated in the currency it had at
+// the time, and nothing in the record says when the meaning of the number
+// changed. So the repricing path does not take a currency at all, and the
+// repository refuses a price that arrives in a different one.
+func TestRepricingASKUCannotChangeItsCurrency(t *testing.T) {
+	p := startPlatform(t)
+	// The tenant's currency is pinned by the first amount it records.
+	sku := aSKU(t, p, "INR", "42.50")
+
+	// UpdateSKUPrice has no currency field, so the only way to attempt this is
+	// to send a literal with a precision the pinned currency does not have. A
+	// rupee has two decimals; three is refused rather than rounded.
+	if _, err := svcclient.Call[updateSKUPriceReq, skuResp](
+		context.Background(), p.catalog(), catalogSvc+"/UpdateSKUPrice",
+		updateSKUPriceReq{ID: sku.SKU.ID, TenantID: p.tenant, Price: "42.505",
+			UpdatedBy: "e2e"}, p.opts()); err == nil {
+		t.Error("a three-decimal price was accepted for a two-decimal currency")
 	}
 }
 
@@ -886,11 +953,11 @@ func TestAPriceCanBeCorrectedInTheCurrencyItWasSetIn(t *testing.T) {
 // reconciled against a price that no longer exists anywhere.
 func TestChangingASKUPriceRecordsWhatItWas(t *testing.T) {
 	p := startPlatform(t)
-	sku := aSKU(t, p, "INR", 42.50)
+	sku := aSKU(t, p, "INR", "42.50")
 
 	if _, err := svcclient.Call[updateSKUPriceReq, skuResp](
 		context.Background(), p.catalog(), catalogSvc+"/UpdateSKUPrice",
-		updateSKUPriceReq{ID: sku.SKU.ID, TenantID: p.tenant, Price: 47.75,
+		updateSKUPriceReq{ID: sku.SKU.ID, TenantID: p.tenant, Price: "47.75",
 			UpdatedBy: "e2e"}, p.opts()); err != nil {
 		t.Fatalf("update price: %v", err)
 	}
@@ -914,12 +981,15 @@ func TestChangingASKUPriceRecordsWhatItWas(t *testing.T) {
 		t.Fatalf("no audit entry for a price change (%v); the price moved from 42.50 to 47.75 "+
 			"and nothing anywhere records that it did, or what it was", err)
 	}
-	if !strings.Contains(string(before), "42.5") {
-		t.Errorf("the audit entry's old_value is %s and does not carry the old price; a "+
-			"record that a change happened without the value it replaced cannot reconcile an "+
-			"invoice raised before it", before)
+	// The literal, at the currency's own scale — "42.50", not 42.5. The trail
+	// records the figure as it was written, not a float64's shortest rendering
+	// of something close to it.
+	if !strings.Contains(string(before), `"42.50"`) {
+		t.Errorf("the audit entry's old_value is %s and does not carry the old price as an "+
+			"exact literal; a record that a change happened without the value it replaced "+
+			"cannot reconcile an invoice raised before it", before)
 	}
-	if !strings.Contains(string(after), "47.75") {
+	if !strings.Contains(string(after), `"47.75"`) {
 		t.Errorf("the audit entry's new_value is %s and does not carry the new price", after)
 	}
 }

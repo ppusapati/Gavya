@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ppusapati/gavya/libs/integrity/money"
 	"github.com/ppusapati/gavya/services/product-catalog-service/internal/domain"
 )
 
@@ -172,8 +173,7 @@ func TestASKUForAProductThatDoesNotExistIsNamed(t *testing.T) {
 		ProductID: newTestID("gone"),
 		Code:      newTestID("code"),
 		Name:      "1L pouch",
-		Price:     54.00,
-		Currency:  "INR",
+		Price:     money.Money{Value: 5400, Scale: 2, Currency: "INR"},
 		Unit:      "L",
 		Status:    "active",
 		CreatedBy: newTestID("usr"),

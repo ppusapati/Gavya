@@ -7,6 +7,7 @@ import (
 
 	"github.com/ppusapati/gavya/libs/integrity/currency"
 	"github.com/ppusapati/gavya/libs/integrity/exact"
+	"github.com/ppusapati/gavya/libs/integrity/money"
 	"github.com/ppusapati/gavya/services/product-catalog-service/internal/domain"
 	"github.com/ppusapati/gavya/services/product-catalog-service/internal/repository"
 	ulidpkg "p9e.in/samavaya/packages/ulid"
@@ -127,7 +128,15 @@ func (s *Service) ListProducts(ctx context.Context, tenantID, productType, statu
 	return s.repo.ListProducts(ctx, tenantID, productType, status)
 }
 
-func (s *Service) CreateSKU(ctx context.Context, sku *domain.SKU) (*domain.SKU, error) {
+// CreateSKU takes the price as the decimal literal the caller wrote, together
+// with the currency it is in, rather than as a parsed amount.
+//
+// The two have to arrive together and be resolved here, because the scale a
+// price is held to is a fact about its currency — three decimals for a dinar,
+// none for a yen — and it is this function that decides what currency the tenant
+// is recording in. A handler that parsed the price first would have to guess
+// that scale before the currency had been normalised.
+func (s *Service) CreateSKU(ctx context.Context, sku *domain.SKU, priceLiteral, currencyCode string) (*domain.SKU, error) {
 	// unit_size is stored as NUMERIC(10,3). A finer value would be rounded
 	// into the column without anyone being told, so it is refused instead.
 	if _, err := exact.NonNegativeDecimal(sku.UnitSize, 3, 10); err != nil {
@@ -145,7 +154,7 @@ func (s *Service) CreateSKU(ctx context.Context, sku *domain.SKU) (*domain.SKU, 
 	// The currency is stated, not assumed. There is no default: a price silently
 	// recorded in rupees outside India is a price nobody can act on. The first
 	// amount a tenant records fixes the currency it records in.
-	code, err := currency.Normalise(sku.Currency)
+	code, err := currency.Normalise(currencyCode)
 	if err != nil {
 		return nil, invalid("currency: " + err.Error())
 	}
@@ -156,12 +165,18 @@ func (s *Service) CreateSKU(ctx context.Context, sku *domain.SKU) (*domain.SKU, 
 	if err := s.repo.PinTenantMoney(ctx, sku.TenantID, repository.Money{Code: code, Scale: scale}); err != nil {
 		return nil, err
 	}
-	sku.Currency = code
-	// Amounts are held to that currency's own precision: a yen price has no
-	// decimals, a dinar price has three.
-	if _, err := exact.NonNegativeDecimal(sku.Price, scale, exact.MoneyPrecision); err != nil {
-		return nil, invalid(exact.Field("price", err).Error())
+	// Held to that currency's own precision. Parse refuses a literal with more
+	// decimals than the currency has rather than rounding it, so a price the
+	// caller cannot actually charge is reported instead of being quietly
+	// changed into one that can be.
+	price, err := money.Parse(priceLiteral, scale, code)
+	if err != nil {
+		return nil, invalid("price: " + err.Error())
 	}
+	if price.Value < 0 {
+		return nil, invalid("price must be non-negative")
+	}
+	sku.Price = price
 
 	sku.ID = ulidpkg.New().String()
 	if sku.Status == "" {
@@ -188,7 +203,7 @@ func (s *Service) ListProductSKUs(ctx context.Context, productID, tenantID strin
 	return s.repo.ListProductSKUs(ctx, productID, tenantID)
 }
 
-func (s *Service) UpdateSKUPrice(ctx context.Context, id, tenantID string, price float64, updatedBy string) (*domain.SKU, error) {
+func (s *Service) UpdateSKUPrice(ctx context.Context, id, tenantID, priceLiteral, updatedBy string) (*domain.SKU, error) {
 	if id == "" || tenantID == "" {
 		return nil, invalid("id and tenant_id are required")
 	}
@@ -199,14 +214,19 @@ func (s *Service) UpdateSKUPrice(ctx context.Context, id, tenantID string, price
 	// create a SKU at 1.234 and then never change its price, because every
 	// update of it was refused for having a third decimal. A price you can set
 	// and cannot correct.
-	money, err := s.repo.TenantMoney(ctx, tenantID)
+	//
+	// The currency is not taken from the request. It is the tenant's, already
+	// pinned, and the repository refuses the update outright if the row it finds
+	// is in a different one.
+	tenant, err := s.repo.TenantMoney(ctx, tenantID)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := exact.NonNegativeDecimal(price, money.Scale, exact.MoneyPrecision); err != nil {
-		return nil, invalid(exact.Field("price", err).Error())
+	price, err := money.Parse(priceLiteral, tenant.Scale, tenant.Code)
+	if err != nil {
+		return nil, invalid("price: " + err.Error())
 	}
-	if price < 0 {
+	if price.Value < 0 {
 		return nil, invalid("price must be non-negative")
 	}
 	if updatedBy == "" {

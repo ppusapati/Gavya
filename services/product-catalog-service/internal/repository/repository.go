@@ -3,12 +3,15 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ppusapati/gavya/libs/integrity/audit"
+	"github.com/ppusapati/gavya/libs/integrity/currency"
+	"github.com/ppusapati/gavya/libs/integrity/money"
 
 	"github.com/ppusapati/gavya/services/product-catalog-service/internal/domain"
 )
@@ -24,6 +27,12 @@ var ErrNotFound = errors.New("not found")
 // violation reaches the handler as an opaque error and is reported as internal,
 // which tells a client to retry a call that will never succeed.
 var ErrUnknownReference = errors.New("a referenced category, brand or product does not exist")
+
+// ErrCurrencyChange is a price update that would put a SKU into a different
+// currency than the one it was created in. Refused rather than applied: every
+// invoice raised against that SKU was denominated in the old one, and there is
+// nothing in the record that would say when the meaning of the number changed.
+var ErrCurrencyChange = errors.New("a SKU's currency cannot be changed by repricing it")
 
 // The unique violations, named so the handler can report a conflict rather than
 // an internal failure.
@@ -67,7 +76,7 @@ type Repository interface {
 	CreateSKU(ctx context.Context, s *domain.SKU) (*domain.SKU, error)
 	GetSKU(ctx context.Context, id, tenantID string) (*domain.SKU, error)
 	ListProductSKUs(ctx context.Context, productID, tenantID string) ([]*domain.SKU, error)
-	UpdateSKUPrice(ctx context.Context, id, tenantID string, price float64, updatedBy string) (*domain.SKU, error)
+	UpdateSKUPrice(ctx context.Context, id, tenantID string, price money.Money, updatedBy string) (*domain.SKU, error)
 }
 
 // IDs supplies the identifier each audit entry carries.
@@ -224,9 +233,12 @@ func (r *repo) ListProducts(ctx context.Context, tenantID, productType, status s
 
 func (r *repo) CreateSKU(ctx context.Context, s *domain.SKU) (*domain.SKU, error) {
 	row := r.pool.QueryRow(ctx,
+		// The price goes down as the decimal literal the caller asked for, cast
+		// to the column's type by PostgreSQL. Nothing between the request and
+		// the column is a float.
 		`INSERT INTO skus (id,tenant_id,product_id,code,name,price,currency,unit,unit_size,status,created_by,updated_by)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING `+skuCols,
-		s.ID, s.TenantID, s.ProductID, s.Code, s.Name, s.Price, s.Currency,
+		 VALUES ($1,$2,$3,$4,$5,$6::numeric,$7,$8,$9,$10,$11,$12) RETURNING `+skuCols,
+		s.ID, s.TenantID, s.ProductID, s.Code, s.Name, s.Price.String(), s.Price.Currency,
 		s.Unit, s.UnitSize, s.Status, s.CreatedBy, s.UpdatedBy,
 	)
 	out, err := scanSKU(row)
@@ -278,7 +290,10 @@ func (r *repo) ListProductSKUs(ctx context.Context, productID, tenantID string) 
 // The audit entry goes in the same transaction as the change, so the two land
 // together or not at all. A trail written afterwards is one that is missing
 // exactly the changes that crashed halfway.
-func (r *repo) UpdateSKUPrice(ctx context.Context, id, tenantID string, price float64, updatedBy string) (*domain.SKU, error) {
+// The price arrives as money, and the currency it carries has to be the one the
+// row is already in. A price cannot change currency: that would restate what a
+// past invoice was denominated in, silently, as a side effect of a price edit.
+func (r *repo) UpdateSKUPrice(ctx context.Context, id, tenantID string, price money.Money, updatedBy string) (*domain.SKU, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -288,31 +303,41 @@ func (r *repo) UpdateSKUPrice(ctx context.Context, id, tenantID string, price fl
 	// The old price, read under the lock the update will hold, so a concurrent
 	// change cannot land between the read and the write and be recorded as
 	// though it had not happened.
-	var before float64
-	var currencyCode string
+	var beforeLiteral, currencyCode string
 	if err := tx.QueryRow(ctx,
 		`SELECT price, COALESCE(currency,'') FROM skus
 		  WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL FOR UPDATE`,
-		id, tenantID).Scan(&before, &currencyCode); err != nil {
+		id, tenantID).Scan(&beforeLiteral, &currencyCode); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
+	before, err := parsePrice(beforeLiteral, currencyCode)
+	if err != nil {
+		return nil, fmt.Errorf("sku %s: %w", id, err)
+	}
+	if before.Currency != price.Currency {
+		return nil, fmt.Errorf("%w: this SKU is priced in %s, not %s",
+			ErrCurrencyChange, before.Currency, price.Currency)
+	}
 
 	row := tx.QueryRow(ctx,
-		`UPDATE skus SET price=$3,updated_by=$4,updated_at=NOW() WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL RETURNING `+skuCols,
-		id, tenantID, price, updatedBy,
+		`UPDATE skus SET price=$3::numeric,updated_by=$4,updated_at=NOW() WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL RETURNING `+skuCols,
+		id, tenantID, price.String(), updatedBy,
 	)
 	sku, err := scanSKU(row)
 	if err != nil {
 		return nil, err
 	}
 
+	// The trail records the decimal literals, not the floats they used to be
+	// read as. An audit entry is the record of what happened; a figure rounded
+	// on its way into one is a record of something else.
 	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
 		Action: "update_sku_price", ResourceType: "sku", ResourceID: id,
-		Before:      map[string]any{"price": before, "currency": currencyCode},
-		After:       map[string]any{"price": price, "currency": currencyCode},
+		Before:      map[string]any{"price": before.String(), "currency": before.Currency},
+		After:       map[string]any{"price": price.String(), "currency": price.Currency},
 		ServiceName: serviceName,
 	}); err != nil {
 		return nil, err
@@ -359,9 +384,21 @@ func scanProduct(s scanner) (*domain.Product, error) {
 	return p, nil
 }
 
+// scanSKU reads one row, taking the price out of NUMERIC as a decimal literal
+// rather than a float64.
+//
+// The scale is the currency's, not the column's. The column is NUMERIC(18,4) so
+// that one schema serves a yen deployment and a dinar one; how many of those
+// four decimals are real is a fact about the currency. PostgreSQL hands back
+// "0" for a zero NUMERIC(18,4) and "1234.50" for a two-decimal one, so the text
+// carries no reliable scale of its own — money.Parse pads a short literal to the
+// currency's scale and refuses a long one, which is the behaviour wanted here:
+// a stored figure with more precision than its currency has is not something to
+// round away quietly.
 func scanSKU(s scanner) (*domain.SKU, error) {
 	s2 := &domain.SKU{}
-	err := s.Scan(&s2.ID, &s2.TenantID, &s2.ProductID, &s2.Code, &s2.Name, &s2.Price, &s2.Currency,
+	var price, code string
+	err := s.Scan(&s2.ID, &s2.TenantID, &s2.ProductID, &s2.Code, &s2.Name, &price, &code,
 		&s2.Unit, &s2.UnitSize, &s2.Status, &s2.CreatedAt, &s2.UpdatedAt, &s2.CreatedBy, &s2.UpdatedBy, &s2.DeletedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -369,7 +406,63 @@ func scanSKU(s scanner) (*domain.SKU, error) {
 		}
 		return nil, err
 	}
+	s2.Price, err = parsePrice(price, code)
+	if err != nil {
+		return nil, fmt.Errorf("sku %s: %w", s2.ID, err)
+	}
 	return s2, nil
+}
+
+// moneyColumnScale is how many decimals the money columns hold.
+//
+// They are NUMERIC(18,4) so that one schema serves a yen deployment and a dinar
+// one: four is the most any ISO 4217 currency has. It is not how many decimals
+// any particular amount has — a rupee price stored there reads back as
+// "42.5000", and those last two zeros are the column's padding, not precision.
+const moneyColumnScale int32 = 4
+
+// parsePrice turns a stored decimal literal into money at its currency's scale.
+//
+// Two steps, deliberately. The literal is read at the column's scale, because
+// that is what PostgreSQL renders; then it is brought down to the currency's,
+// because that is how many decimals the amount actually has. The second step
+// must throw nothing away — a rupee price with a non-zero third decimal is a
+// figure the currency cannot express, and something has gone wrong upstream if
+// one is there. Reporting it beats rounding it away, which would make the
+// service quietly disagree with its own database.
+//
+// The rounding mode is named but never used: the call is refused unless it
+// discarded nothing, so no rounding decision is being made here. It is a
+// decomposition of the column's padding, not a choice about money.
+//
+// A row whose currency is unreadable is an error rather than a zero: a price
+// with no currency is not a price, and returning one as though it were is how a
+// rupee figure ends up being read as dollars.
+func parsePrice(literal, code string) (money.Money, error) {
+	normalised, err := currency.Normalise(code)
+	if err != nil {
+		return money.Money{}, fmt.Errorf("currency %q: %w", code, err)
+	}
+	scale, err := currency.Scale(normalised)
+	if err != nil {
+		return money.Money{}, fmt.Errorf("currency %q: %w", code, err)
+	}
+	stored, err := money.Parse(literal, moneyColumnScale, normalised)
+	if err != nil {
+		return money.Money{}, fmt.Errorf("price %q: %w", literal, err)
+	}
+	m, step, err := money.Rescale(stored, scale, money.RoundTowardZero)
+	if err != nil {
+		return money.Money{}, fmt.Errorf("price %q: %w", literal, err)
+	}
+	if step.Discarded != 0 {
+		return money.Money{}, fmt.Errorf(
+			"price %q is stored with more precision than %s has: %d beyond %d decimals would "+
+				"have to be dropped to read it, and dropping it silently would make this "+
+				"service disagree with its own database",
+			literal, normalised, step.Discarded, scale)
+	}
+	return m, nil
 }
 
 func isForeignKeyViolation(err error) bool {
