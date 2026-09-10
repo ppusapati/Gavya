@@ -400,6 +400,40 @@ that the old shape had been hiding, none of them about floats:
   reaches is left. That is an argument for the error never firing rather than for
   discarding it. "This producer owes nothing" is the worst answer a settlement
   service can give, and it was set up to give it silently.
+
+  The other four — `tenant`, `inventory`, `canonical` and `balance` — were read
+  and nothing was found. `inventory`'s `AdjustStock` already does the movement,
+  the new quantity and the refusal to go below zero in one transaction, with the
+  arithmetic in the database; `tenant` refuses a currency it does not recognise
+  rather than defaulting; `canonical` and `balance` are integrity-layer services
+  with the unit tests to match. They still have no end-to-end coverage, and
+  reading a service is weaker evidence than running it.
+
+### 7. A tenant's timezone is stored and never read — **open**
+
+`tenant-service` records a `Timezone` per tenant, defaulted to UTC at creation.
+Nothing else in the platform reads it.
+
+Meanwhile `milk-service` answers "what did this animal give today" with
+`recorded_at::date`, which PostgreSQL evaluates in the database session's
+timezone. So a tenant's day is decided by where the database is configured, not
+by where the tenant is — and the tenant record says otherwise. Two things claim
+to say when a tenant's day begins, which is the same shape as two things claiming
+what currency an amount is in, and it goes wrong the same way: silently, and only
+for whoever is furthest from the assumption.
+
+Single-country, single-database it is invisible. A society in Assam and one in
+Gujarat share a day boundary anyway. It matters for a deployment spanning
+timezones, and for any figure a fortnight's settlement is drawn from — a
+collection at half past eleven at night falls in one day or the other depending
+on a setting nobody involved chose.
+
+Not fixed, because the fix is a decision rather than a correction: either
+milk-service learns each tenant's timezone the way the older services learn each
+tenant's currency — pinned locally on first use, refusing to change — or the
+platform states that one deployment is one timezone and the tenant field goes.
+Both are defensible; guessing between them would put a model in place that
+somebody works around forever.
 - **`order`'s money columns were half widened.** The migration named
   `order_invoices`, which is not a table in that schema; it is `invoices`, and
   `returns` was omitted entirely. The loop matched nothing for a name that does
