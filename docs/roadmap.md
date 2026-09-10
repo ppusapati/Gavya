@@ -310,10 +310,46 @@ that the old shape had been hiding, none of them about floats:
 
   What it cannot do is tell whether an endpoint does the right thing — only
   whether it is capable of doing anything at all. The real answer to that is
-  end-to-end coverage, and 142 of the platform's 245 registered routes still
-  have none. (Counted by matching each route's method name against the e2e
-  files, which errs towards saying a route is covered when two services share a
-  method name — so 142 is the optimistic figure.)
+  end-to-end coverage, and around 137 of the platform's 245 registered routes
+  still have none.
+
+  "Around", because counting this by grep is unreliable in both directions and
+  the first attempt got it wrong: identity-service builds its procedure name at
+  the call site — `base + "/gavya.identity.v1.IdentityService/" + method` — so a
+  search for the literal string reported its whole suite as uncovered when it is
+  one of the better-tested services here. The figure is worth having as an order
+  of magnitude and not as a number.
+
+  What is worth having exactly is which of them matter, and one answer stood
+  out: **`ingestion-service` had no end-to-end coverage of anything.** The
+  harness built it, waited for it to report ready, and never called it. Of the
+  six properties this platform claims, replayable idempotent ingestion was the
+  only one with nothing behind it end to end.
+
+  `e2e/ingestion_test.go` covers it now — one milk analyser in a village
+  collection centre, reflashed halfway through the fortnight:
+
+  - A record redelivered nine more times comes back `DUPLICATE_REPLAY` with the
+    same record id every time, and the session still holds one record. Ten
+    concurrent deliveries of it admit exactly one, which is the case a phone
+    firing its whole outbox on regaining signal actually walks into.
+  - Two payloads under one sequence number are both held and neither chosen
+    between, the quarantine names the record it collided with, and the session
+    stops accepting — a sequence space that has issued one number for two
+    readings cannot be trusted for the rest of the run.
+  - A reflashed device restarts at sequence 1 and is admitted, which is the case
+    generations exist for; the late arrival from the old epoch is held rather
+    than dropped.
+  - A closed session refuses new records and holds them, while records admitted
+    before the close still replay cleanly. A device retrying its outbox must not
+    be told its accepted records have gone.
+
+  The admission rules already had thorough unit tests and those are the right
+  place for the rule table — `Admit` is a pure function. What they cannot show is
+  that the loading is right, so the mutation that matters is a wiring one:
+  drop the sequence from the slot lookup so it never finds the record already
+  there, and these tests fail while the unit tests do not. Three rule mutations
+  are caught as well.
 - **`order`'s money columns were half widened.** The migration named
   `order_invoices`, which is not a table in that schema; it is `invoices`, and
   `returns` was omitted entirely. The loop matched nothing for a name that does
