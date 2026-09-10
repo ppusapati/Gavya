@@ -381,11 +381,39 @@ that the old shape had been hiding, none of them about floats:
 
   **The pattern across both is worth stating plainly.** Two services with no
   end-to-end coverage were examined and both were hiding something: two endpoints
-  that had never worked in one, an error silently swallowed in the other. The
-  remaining uncovered services are not obviously different, and the way to find
-  out is one at a time. `tenant-service`, `inventory-service`, `breeding-service`,
-  `canonical-service`, `balance-service` and the write half of `health-service`
-  are the ones still untouched.
+  that had never worked in one, an error silently swallowed in the other.
+
+  The other six are covered now too — `tenant`, `inventory`, `breeding`, the
+  write half of `health` in `e2e/lifecycle_test.go`, and the four decision
+  endpoints `canonical` and `balance` had left out in `e2e/decisions_test.go`.
+  Those four are `ReverseResolve`, `RetireIdentity`, `ResolveConflict` and
+  `AcceptRun`, and they have something in common: each is where a person
+  overrides or accepts what the machinery worked out. The happy path is walked
+  every day; the endpoint somebody reaches for when the answer is wrong is used
+  rarely and under pressure, which is where a defect survives longest.
+
+  **Nothing was wrong in any of them.** Three tests failed on the first run and
+  all three were the test, not the service:
+
+  - A tenant is created `pending` and activation moves it to `active`. Lifting a
+    suspension is a promotion rather than an undo, which is worth pinning because
+    the obvious assumption is the opposite.
+  - `calf_gender` is `VARCHAR(1)` and the service deliberately accepts "female",
+    "Female", "F" and "heifer" and stores one letter. The test had asserted the
+    opposite of a feature whose comment explains exactly why it exists.
+  - `AcceptRun` refuses a run that never converged — "a period cannot be closed
+    on an arithmetic that never closed" — and converging needs the reconciler, so
+    that test belongs on the ML platform.
+
+  One real gap did come out of it, and it is small: **a superseded identity
+  mapping is in the table and reachable from no endpoint.** `RetireIdentity`
+  stamps `superseded_at` and keeps the row, which is the platform's supersession
+  rule working. But `ReverseResolve` and `ListIdentities` both filter superseded
+  rows and neither takes an as-of, so "which code resolved to this producer last
+  March" cannot be asked through the service. The history is preserved and not
+  published. `e2e/decisions_test.go` asserts the row survives by querying the
+  table directly, and says in its comment that this is what it is doing — the
+  distinction between what is stored and what is reachable is the whole point.
 
   Swallowing the error was cheap enough to look for everywhere, so it was.
   Across every service, one other discarded error was worth fixing:

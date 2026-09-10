@@ -493,18 +493,23 @@ func (p *platform) production() *svcclient.Client {
 	return p.clients["production-service"]
 }
 
-func (p *platform) catalog() *svcclient.Client      { return p.clients["product-catalog-service"] }
-func (p *platform) inventory() *svcclient.Client    { return p.clients["inventory-service"] }
-func (p *platform) billing() *svcclient.Client      { return p.clients["billing-service"] }
-func (p *platform) cattleMarket() *svcclient.Client { return p.clients["cattle-market-service"] }
-func (p *platform) breeding() *svcclient.Client     { return p.clients["breeding-service"] }
-func (p *platform) feed() *svcclient.Client         { return p.clients["feed-service"] }
-func (p *platform) notification() *svcclient.Client { return p.clients["notification-service"] }
-func (p *platform) order() *svcclient.Client        { return p.clients["order-service"] }
-func (p *platform) health() *svcclient.Client       { return p.clients["health-service"] }
-func (p *platform) cattle() *svcclient.Client       { return p.clients["cattle-service"] }
-func (p *platform) farm() *svcclient.Client         { return p.clients["farm-service"] }
-func (p *platform) reporting() *svcclient.Client    { return p.clients["reporting-service"] }
+func (p *platform) catalog() *svcclient.Client   { return p.clients["product-catalog-service"] }
+func (p *platform) inventory() *svcclient.Client { return p.clients["inventory-service"] }
+
+// tenantSvcClient is spelled out rather than called tenant(), because platform
+// already has a tenant field holding this run's tenant id and a method of the
+// same name cannot exist beside it.
+func (p *platform) tenantSvcClient() *svcclient.Client { return p.clients["tenant-service"] }
+func (p *platform) billing() *svcclient.Client         { return p.clients["billing-service"] }
+func (p *platform) cattleMarket() *svcclient.Client    { return p.clients["cattle-market-service"] }
+func (p *platform) breeding() *svcclient.Client        { return p.clients["breeding-service"] }
+func (p *platform) feed() *svcclient.Client            { return p.clients["feed-service"] }
+func (p *platform) notification() *svcclient.Client    { return p.clients["notification-service"] }
+func (p *platform) order() *svcclient.Client           { return p.clients["order-service"] }
+func (p *platform) health() *svcclient.Client          { return p.clients["health-service"] }
+func (p *platform) cattle() *svcclient.Client          { return p.clients["cattle-service"] }
+func (p *platform) farm() *svcclient.Client            { return p.clients["farm-service"] }
+func (p *platform) reporting() *svcclient.Client       { return p.clients["reporting-service"] }
 
 func (p *platform) opts() svcclient.CallOptions {
 	// Tenant and Actor are what the gateway sets from a verified session. These
