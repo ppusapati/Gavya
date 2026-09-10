@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -206,7 +207,17 @@ func (h *Handler) ListSessionRecords(ctx context.Context, req *connect.Request[L
 }
 
 func (h *Handler) GetDailyYield(ctx context.Context, req *connect.Request[DailyYieldRequest]) (*connect.Response[DailyYieldResponse], error) {
-	date, _ := time.Parse("2006-01-02", req.Msg.Date)
+	// The error used to be discarded. A malformed date became the zero time —
+	// the first of January, year one — and the query summed the readings
+	// recorded that day, of which there are none. The caller was told the animal
+	// gave nothing, which is a fact somebody acts on, rather than that the
+	// request was malformed, which is a fact they can fix.
+	date, err := time.Parse("2006-01-02", req.Msg.Date)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("date must be a calendar day as YYYY-MM-DD, and %q is not one",
+				req.Msg.Date))
+	}
 	total, err := h.svc.GetDailyYield(ctx, req.Msg.TenantID, req.Msg.CattleID, date)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)

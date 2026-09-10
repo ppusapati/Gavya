@@ -146,6 +146,28 @@ func (r *repo) ListSessionRecords(ctx context.Context, sessionID, tenantID strin
 	return out, rows.Err()
 }
 
+// GetDailyYield sums one animal's readings for one day.
+//
+// The day is bound as a time.Time and PostgreSQL infers the parameter's type
+// from the comparison — `recorded_at::date = $3` types $3 as a date — so pgx
+// encodes it as a date and no timezone arithmetic touches it.
+//
+// That is worth stating because the alternative is a real trap and this query
+// looks exactly like it. If the parameter were forced to a timestamptz, the
+// comparison would promote the date on the left to midnight in the session's
+// timezone and compare it against midnight UTC, and the two agree only where the
+// database runs in UTC. This platform is written for India, where every daily
+// yield would then come back as zero litres — a number of the right magnitude in
+// the right units and entirely wrong, and a cow that gave nothing is a cow
+// somebody goes out to look at.
+//
+// dailyyield_integration_test.go runs this in UTC, in a zone ahead of it and in
+// a zone behind it, which is what says the inference holds rather than that it
+// happens to work where the tests run.
+//
+// Which day a reading falls on is decided by the database's timezone, because
+// that is what `recorded_at::date` means. That is one stated fact about a
+// deployment rather than a disagreement between two.
 func (r *repo) GetDailyYield(ctx context.Context, tenantID, cattleID string, date time.Time) (float64, error) {
 	const q = `SELECT COALESCE(SUM(quantity_liters),0) FROM milk_records WHERE tenant_id=$1 AND cattle_id=$2 AND recorded_at::date=$3 AND deleted_at IS NULL`
 	var total float64

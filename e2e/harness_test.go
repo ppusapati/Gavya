@@ -483,6 +483,9 @@ func (p *platform) material() *svcclient.Client {
 func (p *platform) balance() *svcclient.Client {
 	return p.clients["balance-service"]
 }
+func (p *platform) milk() *svcclient.Client {
+	return p.clients["milk-service"]
+}
 func (p *platform) laboratory() *svcclient.Client {
 	return p.clients["laboratory-service"]
 }
