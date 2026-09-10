@@ -310,8 +310,8 @@ that the old shape had been hiding, none of them about floats:
 
   What it cannot do is tell whether an endpoint does the right thing — only
   whether it is capable of doing anything at all. The real answer to that is
-  end-to-end coverage, and around 137 of the platform's 245 registered routes
-  still have none.
+  end-to-end coverage. That was around 137 of 245 registered routes when this
+  started and is around 109 of 249 now — the four new ones are returns.
 
   "Around", because counting this by grep is unreliable in both directions and
   the first attempt got it wrong: identity-service builds its procedure name at
@@ -320,8 +320,13 @@ that the old shape had been hiding, none of them about floats:
   one of the better-tested services here. The figure is worth having as an order
   of magnitude and not as a number.
 
-  What is worth having exactly is which of them matter, and one answer stood
-  out: **`ingestion-service` had no end-to-end coverage of anything.** The
+  What is worth having exactly is which of them matter. Every service now has
+  coverage of its main write paths; what is left uncovered is mostly reads, plus
+  the write halves of `farm`, `feed`, `file`, `notification` and `reporting` —
+  none of which holds a figure anybody is paid against.
+
+  The first answer, and the one that started this: **`ingestion-service` had no
+  end-to-end coverage of anything.** The
   harness built it, waited for it to report ready, and never called it. Of the
   six properties this platform claims, replayable idempotent ingestion was the
   only one with nothing behind it end to end.
