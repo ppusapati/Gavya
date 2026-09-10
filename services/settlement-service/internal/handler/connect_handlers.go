@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -282,7 +283,11 @@ func (h *Handler) OpenRecovery(ctx context.Context, req *connect.Request[OpenRec
 	if err != nil {
 		return nil, classify(err)
 	}
-	return connect.NewResponse(&RecoveryResponse{Recovery: fromRecovery(saved)}), nil
+	proto, err := fromRecovery(saved)
+	if err != nil {
+		return nil, classify(err)
+	}
+	return connect.NewResponse(&RecoveryResponse{Recovery: proto}), nil
 }
 
 type ListRecoveriesRequest struct {
@@ -302,7 +307,11 @@ func (h *Handler) ListRecoveries(ctx context.Context, req *connect.Request[ListR
 	}
 	out := make([]*RecoveryProto, 0, len(list))
 	for _, r := range list {
-		out = append(out, fromRecovery(r))
+		proto, err := fromRecovery(r)
+		if err != nil {
+			return nil, classify(err)
+		}
+		out = append(out, proto)
 	}
 	return connect.NewResponse(&ListRecoveriesResponse{Recoveries: out}), nil
 }
@@ -589,8 +598,26 @@ func fromCycle(c *domain.Cycle) *CycleProto {
 	return p
 }
 
-func fromRecovery(r *domain.Recovery) *RecoveryProto {
-	outstanding, _ := r.OutstandingAmount()
+// fromRecovery renders one recovery for the wire.
+//
+// It returns an error because OutstandingAmount can fail, and the error used to
+// be discarded. money.Sub refuses to subtract amounts in different currencies or
+// at different scales, and it refuses an overflow; on any of those the zero Money
+// comes back, whose String is "0" and whose Value is 0. A loan would then be
+// reported to the caller as fully repaid.
+//
+// It cannot happen on the path this has today: the repository builds Principal
+// and Recovered from the same row's currency and scale, so the only remaining
+// failure is an overflow no real figure reaches. That is an argument for the
+// error never firing, not for throwing it away — the day something makes it
+// reachable, "this producer owes nothing" is the worst answer this service could
+// give, and it would give it silently.
+func fromRecovery(r *domain.Recovery) (*RecoveryProto, error) {
+	outstanding, err := r.OutstandingAmount()
+	if err != nil {
+		return nil, fmt.Errorf("recovery %s: what is still owed on it cannot be worked "+
+			"out: %w", r.ID, err)
+	}
 	return &RecoveryProto{
 		ID: r.ID, TenantID: r.TenantID, ProducerRef: r.ProducerRef,
 		Kind: string(r.Kind), Reference: r.Reference,
@@ -601,7 +628,7 @@ func fromRecovery(r *domain.Recovery) *RecoveryProto {
 		OutstandingMinorUnits: outstanding.Value,
 		Priority:              r.Priority, Status: string(r.Status),
 		OpenedOn: r.OpenedOn.UTC().Format("2006-01-02"),
-	}
+	}, nil
 }
 
 func fromPayable(p *domain.ProducerPayable) *PayableProto {

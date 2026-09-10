@@ -350,6 +350,56 @@ that the old shape had been hiding, none of them about floats:
   drop the sequence from the slot lookup so it never finds the record already
   there, and these tests fail while the unit tests do not. Three rule mutations
   are caught as well.
+
+  **`milk-service` was the second, and it had a defect.** Nine routes, none of
+  them called by a test, in the service holding the reading a producer is paid
+  for. `GetDailyYield` discarded the error from parsing its date, so a malformed
+  date became the zero time and the query summed the readings recorded on the
+  first of January, year one — of which there are none. An empty date, a
+  day-first date, an RFC3339 timestamp and the word "yesterday" all came back as
+  zero litres. The caller was told the animal gave nothing, which is a fact
+  somebody acts on, rather than that the request was malformed, which is a fact
+  they can fix.
+
+  A second defect in the same function turned out not to be one, and that is
+  worth recording because it nearly went in as though it were.
+  `recorded_at::date = $3` compares a date against a parameter; bound as a
+  TIMESTAMPTZ it would promote the date to midnight in the session's timezone and
+  compare it against midnight UTC, so a deployment in India would read zero for
+  every animal on every day. It was reproduced in psql, the fix was written, the
+  tests were written — and they passed against the unfixed query. PostgreSQL
+  infers the parameter's type from the comparison and types it `date`, so pgx
+  encodes a date and nothing is promoted. The psql experiment had an explicit
+  `::timestamptz` literal typed by hand, which is not what the driver sends: a
+  check of a statement nobody runs, which is the same failure as a control that
+  reports success while doing nothing, one level up.
+
+  The query change was reverted. The tests stayed, because the reliance on type
+  inference was real and nothing said so, and they run in UTC, a zone ahead and a
+  zone behind — one non-UTC zone would not do, since a query that shifted
+  everything by a day would still pass under Asia/Kolkata alone.
+
+  **The pattern across both is worth stating plainly.** Two services with no
+  end-to-end coverage were examined and both were hiding something: two endpoints
+  that had never worked in one, an error silently swallowed in the other. The
+  remaining uncovered services are not obviously different, and the way to find
+  out is one at a time. `tenant-service`, `inventory-service`, `breeding-service`,
+  `canonical-service`, `balance-service` and the write half of `health-service`
+  are the ones still untouched.
+
+  Swallowing the error was cheap enough to look for everywhere, so it was.
+  Across every service, one other discarded error was worth fixing:
+  `settlement-service`'s `fromRecovery` threw away the error from
+  `OutstandingAmount`. `money.Sub` refuses to subtract amounts in different
+  currencies or at different scales and refuses an overflow, and on any of those
+  the zero Money comes back — whose `String()` is `"0"`. A loan would have been
+  reported to the caller as fully repaid.
+
+  It is not reachable today: the repository builds `Principal` and `Recovered`
+  from the same row's currency and scale, so only an overflow no real figure
+  reaches is left. That is an argument for the error never firing rather than for
+  discarding it. "This producer owes nothing" is the worst answer a settlement
+  service can give, and it was set up to give it silently.
 - **`order`'s money columns were half widened.** The migration named
   `order_invoices`, which is not a table in that schema; it is `invoices`, and
   `returns` was omitted entirely. The loop matched nothing for a name that does
