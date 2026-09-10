@@ -297,6 +297,23 @@ that the old shape had been hiding, none of them about floats:
   carried one, and `currency.Normalise("")` refuses an empty code. Nothing
   noticed because the e2e file covered `CreateListing` and stopped there. Both
   endpoints have coverage now, and a bid takes the listing's currency.
+
+  Two of them was enough to ask whether there were more. `e2e/reachable_test.go`
+  parses every handler, finds the request type each endpoint takes and the
+  service method it calls, and asks whether the request could satisfy what that
+  method insists on — including the implicit demand a `currency.Normalise` makes
+  without saying so, which is the shape that hid this one. It reports 74
+  handler-to-service calls and fails if it ever matches none, so it cannot pass
+  by examining nothing. Run against the tree at `e3aa028` it names `PlaceBid` and
+  `RecordSale`; run against the tree now it finds nothing, which is worth
+  something only because of the first half of that sentence.
+
+  What it cannot do is tell whether an endpoint does the right thing — only
+  whether it is capable of doing anything at all. The real answer to that is
+  end-to-end coverage, and 142 of the platform's 245 registered routes still
+  have none. (Counted by matching each route's method name against the e2e
+  files, which errs towards saying a route is covered when two services share a
+  method name — so 142 is the optimistic figure.)
 - **`order`'s money columns were half widened.** The migration named
   `order_invoices`, which is not a table in that schema; it is `invoices`, and
   `returns` was omitted entirely. The loop matched nothing for a name that does
@@ -317,9 +334,38 @@ it is for. `e2e/money_test.go` does that now, including that tax is rounded per
 line rather than on the total, which is a penny's difference on three lines of
 0.10 and the reason an invoice can disagree with the lines printed on it.
 
-**Still open:** quantities. They are `float64` at the boundary — `order_items.quantity` counts litres,
-its column is `NUMERIC(10,3)`, and the values are nowhere near where `float64`
-loses a digit — but `libs/integrity/quantity` exists and they are not using it.
+**Quantities were listed here as still open, and that was wrong on both counts.**
+
+The claim was that `order_items.quantity` should move to
+`libs/integrity/quantity`. It should not. That package is about milk: a closed
+set of two units, LITRES and KILOGRAMS, existing because the two differ by about
+three per cent and subtracting one from the other looks like theft. An order line
+counts SKUs — three pouches, two sacks of feed — and forcing it to declare itself
+litres or kilograms would be inventing a fact about it. The unit it is really in
+is the SKU's, which the line already references.
+
+The second half was that `float64` is a risk there. Measured rather than
+assumed: 200,000 values across the whole range of `NUMERIC(10,3)` round-tripped
+`NUMERIC -> float64 -> JSON -> float64` and **none lost a digit**. The column
+tops out near 10^7 and `float64` is exact to three decimals past 10^12, so there
+is no value the column can hold that the code cannot carry. The boundary is also
+guarded — `exact.NonNegativeDecimal` refuses a quantity finer than the column
+rather than letting PostgreSQL round it silently.
+
+So there is nothing here to fix, and saying otherwise was the same mistake in
+the other direction from the money one: reaching for a type because it is the
+platform's type, rather than because the problem it solves is the problem in
+hand.
+
+**Genuinely open, and small: `returns` is a shape with no mechanism.**
+`order-service` has a `returns` table and a `domain.Return` type, and nothing
+else — no repository method, no service method, no endpoint, no reference
+anywhere in the tree. Refunds do not exist. The table and the type make it look
+as though they do, which is worse than their absence would be. Building them
+would mean deciding what triggers a refund, whether it can be partial, who
+approves one and what it does to the invoice — none of which is knowable from
+here, and all of which a wrong guess turns into a model somebody works around
+forever. So it stays unbuilt and is named here instead.
 
 ### 3. Deployment drift — **closed**
 
@@ -478,7 +524,15 @@ searches for when an animal has gone missing from a list. Verified by mutation:
 make the handler drop the field again and the test fails.
 
 Checked whether any other handler discards a declared request field, by comparing
-each `*Request` type's fields against what the handler actually reads. None does.
+each `*Request` type's fields against what the handler actually reads. None does
+— and that check is now `e2e/reachable_test.go`'s second half rather than
+something done once, because a check done once has already stopped working.
+
+It examines 239 handlers and stays quiet about five, which hand the whole message
+on to something this cannot follow — `printOptions(*m)` and the like. Skipping
+them under-reports; flagging them would have made the whole thing something to
+scroll past, and all five are fine. Run against the tree before `87e8115` it
+names `DeleteCattleRequest`'s `deleted_by`, which is the defect it exists for.
 
 ---
 
