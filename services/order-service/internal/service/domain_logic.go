@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/ppusapati/gavya/libs/integrity/currency"
@@ -215,4 +216,84 @@ func (s *Service) GenerateInvoice(ctx context.Context, orderID, tenantID, create
 		inv.UpdatedBy = "system"
 	}
 	return s.repo.CreateInvoice(ctx, inv)
+}
+
+// ---------------------------------------------------------------------------
+// Returns
+// ---------------------------------------------------------------------------
+
+// RequestReturn records that somebody has asked for a refund on an order.
+//
+// The amount arrives as a decimal literal and is held to the tenant's own
+// currency scale, like every other money figure here. A request is allowed to
+// ask for more than the order charged: what somebody asked for is part of the
+// record of what was decided, and the refusal belongs at approval, which is when
+// it becomes money.
+//
+// A reason is required. A refund with no stated reason is a payment nobody can
+// account for later, and the field was on the table from the beginning.
+func (s *Service) RequestReturn(ctx context.Context, ret *domain.Return, amountLiteral string) (*domain.Return, error) {
+	if ret.TenantID == "" || ret.OrderID == "" {
+		return nil, invalid("tenant_id and order_id are required")
+	}
+	if strings.TrimSpace(ret.Reason) == "" {
+		return nil, invalid("a return must say why; a refund with no reason is a payment " +
+			"nobody can account for afterwards")
+	}
+	denom, err := s.moneyFor(ctx, ret.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	amount, err := money.Parse(amountLiteral, denom.Scale, denom.Code)
+	if err != nil {
+		return nil, invalid("refund_amount: " + err.Error())
+	}
+	if amount.Value <= 0 {
+		return nil, invalid("a return must ask for more than zero")
+	}
+	ret.RefundAmount = amount
+
+	ret.ID = ulidpkg.New().String()
+	ret.Status = domain.ReturnRequested
+	if ret.CreatedBy == "" {
+		ret.CreatedBy = "system"
+	}
+	ret.UpdatedBy = ret.CreatedBy
+	return s.repo.RequestReturn(ctx, ret, amount.String(), denom)
+}
+
+// DecideReturn moves a return to approved, rejected or completed.
+//
+// One method rather than three, because the interesting rule is which moves are
+// allowed and that lives in one place — domain.ReturnMayMove — rather than being
+// spread across three functions that each know a fragment of it.
+func (s *Service) DecideReturn(ctx context.Context, id, tenantID, to, updatedBy string) (*domain.Return, error) {
+	if id == "" || tenantID == "" {
+		return nil, invalid("id and tenant_id are required")
+	}
+	if !domain.ValidReturnStatus(to) {
+		return nil, invalid("status must be one of requested, approved, rejected or completed")
+	}
+	if to == domain.ReturnRequested {
+		return nil, invalid("a return cannot be put back to requested; the decision has " +
+			"been made and unmaking it would leave no record that it was")
+	}
+	if updatedBy == "" {
+		return nil, invalid("updated_by is required: a refund decision has to say who made it")
+	}
+	return s.repo.TransitionReturn(ctx, id, tenantID, to, updatedBy)
+}
+
+func (s *Service) GetReturn(ctx context.Context, id, tenantID string) (*domain.Return, error) {
+	if id == "" || tenantID == "" {
+		return nil, invalid("id and tenant_id are required")
+	}
+	return s.repo.GetReturn(ctx, id, tenantID)
+}
+
+func (s *Service) ListOrderReturns(ctx context.Context, orderID, tenantID string) ([]*domain.Return, error) {
+	if orderID == "" || tenantID == "" {
+		return nil, invalid("order_id and tenant_id are required")
+	}
+	return s.repo.ListOrderReturns(ctx, orderID, tenantID)
 }

@@ -234,3 +234,79 @@ BEGIN
     END IF;
 END
 $$;
+
+-- ---------------------------------------------------------------------------
+-- Returns
+--
+-- The table and domain.Return existed from the beginning with no code path at
+-- all — no repository method, no service method, no endpoint. Refunds did not
+-- exist, and a table called `returns` made it look as though they did, which is
+-- worse than their absence would have been.
+--
+-- What is wired now is the state machine the type already declared in a comment:
+-- requested, then approved or rejected, then completed. Nothing beyond it was
+-- invented. In particular, completing a return does not touch the invoice or the
+-- order's totals: what that should do to a customer's account is an accounting
+-- decision nobody here has made, and guessing it would put a model in place that
+-- somebody works around forever.
+-- ---------------------------------------------------------------------------
+ALTER TABLE returns DROP CONSTRAINT IF EXISTS returns_status_is_known;
+ALTER TABLE returns ADD CONSTRAINT returns_status_is_known
+    CHECK (status IN ('requested','approved','rejected','completed'));
+
+-- A refund cannot exceed what was charged.
+--
+-- This is arithmetic rather than policy — refunding more than was taken is wrong
+-- under any refund policy — so it belongs in the database, where no code path can
+-- route around it. Only approved and completed returns count against the total; a
+-- request is not money until somebody agrees to it, and refusing to record an
+-- optimistic request would lose the fact that it was made.
+CREATE OR REPLACE FUNCTION gavya_return_does_not_exceed_the_order()
+RETURNS TRIGGER AS $fn$
+DECLARE
+    committed NUMERIC;
+    charged   NUMERIC;
+BEGIN
+    IF NEW.status NOT IN ('approved','completed') THEN
+        RETURN NEW;
+    END IF;
+
+    -- The lock comes first, and the order of these two statements is the whole
+    -- of the concurrency argument.
+    --
+    -- FOR UPDATE on the order serialises approvals against it, so the second
+    -- transaction waits for the first. A sum taken before that wait is a sum of
+    -- the world as it was before the other approval existed, and using it
+    -- afterwards is the same as not having waited. Written the other way round
+    -- this let two concurrent approvals of 60 both through against an order of
+    -- 100 — measured, not reasoned about, and the reason these two lines are in
+    -- this order rather than the one that reads more naturally.
+    SELECT total_amount INTO charged
+      FROM orders WHERE id = NEW.order_id AND tenant_id = NEW.tenant_id
+      FOR UPDATE;
+    IF charged IS NULL THEN
+        RAISE EXCEPTION 'return % is against order %, which does not exist',
+            NEW.id, NEW.order_id;
+    END IF;
+
+    SELECT COALESCE(SUM(refund_amount), 0) INTO committed
+      FROM returns
+     WHERE order_id = NEW.order_id AND tenant_id = NEW.tenant_id
+       AND id <> NEW.id AND deleted_at IS NULL
+       AND status IN ('approved','completed');
+
+    IF committed + NEW.refund_amount > charged THEN
+        RAISE EXCEPTION 'refunding % on order % would take the total refunded to %, and only % was charged',
+            NEW.refund_amount, NEW.order_id, committed + NEW.refund_amount, charged
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END;
+$fn$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS gavya_return_does_not_exceed_the_order ON returns;
+CREATE TRIGGER gavya_return_does_not_exceed_the_order
+    BEFORE INSERT OR UPDATE ON returns
+    FOR EACH ROW EXECUTE FUNCTION gavya_return_does_not_exceed_the_order();
+
+CREATE INDEX IF NOT EXISTS idx_returns_order ON returns(tenant_id, order_id);

@@ -77,6 +77,13 @@ type Repository interface {
 	GetOrder(ctx context.Context, id, tenantID string) (*domain.Order, error)
 	ListOrders(ctx context.Context, tenantID, status string) ([]*domain.Order, error)
 	UpdateOrderStatus(ctx context.Context, id, tenantID, status, updatedBy string) (*domain.Order, error)
+
+	// Returns. The table and domain.Return existed from the start with nothing
+	// behind them; these are that shape wired to something.
+	RequestReturn(ctx context.Context, ret *domain.Return, amount string, money Money) (*domain.Return, error)
+	TransitionReturn(ctx context.Context, id, tenantID, to, updatedBy string) (*domain.Return, error)
+	GetReturn(ctx context.Context, id, tenantID string) (*domain.Return, error)
+	ListOrderReturns(ctx context.Context, orderID, tenantID string) ([]*domain.Return, error)
 	// AddItemAndRetotal writes a line and its order's totals together, so an
 	// order can never disagree with the sum of its own lines.
 	// TenantMoney reports the currency this tenant records money in.

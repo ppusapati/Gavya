@@ -99,3 +99,44 @@ const (
 	OrderConfirmed = "confirmed"
 	OrderCancelled = "cancelled"
 )
+
+// Return statuses. These were a comment on the Return type and nothing else for
+// as long as the type existed; naming them is the first half of making them
+// mean something.
+const (
+	ReturnRequested = "requested"
+	ReturnApproved  = "approved"
+	ReturnRejected  = "rejected"
+	ReturnCompleted = "completed"
+)
+
+// returnMoves is where a return may go from where it is.
+//
+// Written as the whole map rather than as a series of checks, because what is
+// interesting about a state machine is the transitions it does not have, and
+// those are invisible in a chain of if statements. Read it as: a request is
+// decided once, a rejection is final, an approval is carried out, and a
+// completed refund is not undone by editing it — that would need a second
+// movement of money, which is a decision nobody here has made.
+var returnMoves = map[string][]string{
+	ReturnRequested: {ReturnApproved, ReturnRejected},
+	ReturnApproved:  {ReturnCompleted},
+	ReturnRejected:  {},
+	ReturnCompleted: {},
+}
+
+// ReturnMayMove reports whether a return in state from may become to.
+func ReturnMayMove(from, to string) bool {
+	for _, allowed := range returnMoves[from] {
+		if allowed == to {
+			return true
+		}
+	}
+	return false
+}
+
+// ValidReturnStatus reports whether a status is one this service writes.
+func ValidReturnStatus(s string) bool {
+	_, ok := returnMoves[s]
+	return ok
+}

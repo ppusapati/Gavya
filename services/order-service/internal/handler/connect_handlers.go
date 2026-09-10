@@ -39,6 +39,13 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	route("ConfirmOrder", connectjson.Unary(h.ConfirmOrder))
 	route("CancelOrder", connectjson.Unary(h.CancelOrder))
 	route("GenerateInvoice", connectjson.Unary(h.GenerateInvoice))
+
+	// Returns. The table and domain.Return were here from the start with no
+	// endpoint reaching them.
+	route("RequestReturn", connectjson.Unary(h.RequestReturn))
+	route("DecideReturn", connectjson.Unary(h.DecideReturn))
+	route("GetReturn", connectjson.Unary(h.GetReturn))
+	route("ListOrderReturns", connectjson.Unary(h.ListOrderReturns))
 }
 
 // classify maps a failure onto the code that describes it.
@@ -54,9 +61,15 @@ func classify(err error) error {
 		return connect.NewError(connect.CodeAlreadyExists, err)
 	case errors.Is(err, repository.ErrCurrencyMismatch):
 		return connect.NewError(connect.CodeInvalidArgument, err)
-	case errors.Is(err, repository.ErrNotDraft):
-		// The request was well formed; the order's state refused it. Retrying
-		// changes nothing until the order changes.
+	case errors.Is(err, repository.ErrNotDraft),
+		errors.Is(err, repository.ErrNotReturnable),
+		errors.Is(err, repository.ErrBadTransition),
+		errors.Is(err, repository.ErrRefundTooLarge):
+		// The request was well formed; the state of the thing it names refused
+		// it. Retrying changes nothing until that changes, which is what
+		// FailedPrecondition tells a caller and Internal does not — and a
+		// refund refused because the order was already fully refunded is
+		// precisely something a person needs to read rather than retry.
 		return connect.NewError(connect.CodeFailedPrecondition, err)
 	case errors.Is(err, service.ErrInvalidArgument):
 		return connect.NewError(connect.CodeInvalidArgument, err)
@@ -303,4 +316,114 @@ func (h *Handler) GenerateInvoice(ctx context.Context, req *connect.Request[Gene
 		return nil, classify(err)
 	}
 	return connect.NewResponse(&InvoiceResponse{Invoice: viewInvoice(out)}), nil
+}
+
+// ---------------------------------------------------------------------------
+// Returns
+// ---------------------------------------------------------------------------
+
+type RequestReturnRequest struct {
+	TenantID string `json:"tenant_id"`
+	OrderID  string `json:"order_id"`
+	// Reason is required. A refund with no stated reason is a payment nobody
+	// can account for afterwards.
+	Reason string `json:"reason"`
+	// RefundAmount is a decimal literal, in the tenant's currency, for the same
+	// reason every other money field here is one.
+	RefundAmount string `json:"refund_amount"`
+	CreatedBy    string `json:"created_by"`
+}
+
+type DecideReturnRequest struct {
+	ID       string `json:"id"`
+	TenantID string `json:"tenant_id"`
+	// Status is approved, rejected or completed. Which of those a return may
+	// move to depends on where it is, and the service says so rather than the
+	// caller assuming.
+	Status    string `json:"status"`
+	UpdatedBy string `json:"updated_by"`
+}
+
+type ListOrderReturnsRequest struct {
+	OrderID  string `json:"order_id"`
+	TenantID string `json:"tenant_id"`
+}
+
+// ReturnView is what a return looks like on the wire.
+type ReturnView struct {
+	ID           string     `json:"id"`
+	TenantID     string     `json:"tenant_id"`
+	OrderID      string     `json:"order_id"`
+	Reason       string     `json:"reason"`
+	Status       string     `json:"status"`
+	RefundAmount string     `json:"refund_amount"`
+	Currency     string     `json:"currency"`
+	RequestedAt  time.Time  `json:"requested_at"`
+	ProcessedAt  *time.Time `json:"processed_at,omitempty"`
+	CreatedBy    string     `json:"created_by"`
+	UpdatedBy    string     `json:"updated_by"`
+}
+
+func viewReturn(r *domain.Return) *ReturnView {
+	if r == nil {
+		return nil
+	}
+	return &ReturnView{
+		ID: r.ID, TenantID: r.TenantID, OrderID: r.OrderID,
+		Reason: r.Reason, Status: r.Status,
+		RefundAmount: r.RefundAmount.String(), Currency: r.RefundAmount.Currency,
+		RequestedAt: r.RequestedAt, ProcessedAt: r.ProcessedAt,
+		CreatedBy: r.CreatedBy, UpdatedBy: r.UpdatedBy,
+	}
+}
+
+type ReturnResponse struct {
+	Return *ReturnView `json:"return"`
+}
+
+type ListReturnsResponse struct {
+	Returns []*ReturnView `json:"returns"`
+}
+
+func (h *Handler) RequestReturn(ctx context.Context, req *connect.Request[RequestReturnRequest]) (*connect.Response[ReturnResponse], error) {
+	m := req.Msg
+	out, err := h.svc.RequestReturn(ctx, &domain.Return{
+		TenantID:  m.TenantID,
+		OrderID:   m.OrderID,
+		Reason:    m.Reason,
+		CreatedBy: m.CreatedBy,
+	}, m.RefundAmount)
+	if err != nil {
+		return nil, classify(err)
+	}
+	return connect.NewResponse(&ReturnResponse{Return: viewReturn(out)}), nil
+}
+
+func (h *Handler) DecideReturn(ctx context.Context, req *connect.Request[DecideReturnRequest]) (*connect.Response[ReturnResponse], error) {
+	m := req.Msg
+	out, err := h.svc.DecideReturn(ctx, m.ID, m.TenantID, m.Status, m.UpdatedBy)
+	if err != nil {
+		return nil, classify(err)
+	}
+	return connect.NewResponse(&ReturnResponse{Return: viewReturn(out)}), nil
+}
+
+func (h *Handler) GetReturn(ctx context.Context, req *connect.Request[IDTenantRequest]) (*connect.Response[ReturnResponse], error) {
+	out, err := h.svc.GetReturn(ctx, req.Msg.ID, req.Msg.TenantID)
+	if err != nil {
+		return nil, classify(err)
+	}
+	return connect.NewResponse(&ReturnResponse{Return: viewReturn(out)}), nil
+}
+
+func (h *Handler) ListOrderReturns(ctx context.Context, req *connect.Request[ListOrderReturnsRequest]) (*connect.Response[ListReturnsResponse], error) {
+	list, err := h.svc.ListOrderReturns(ctx, req.Msg.OrderID, req.Msg.TenantID)
+	if err != nil {
+		return nil, classify(err)
+	}
+	out := make([]*ReturnView, 0, len(list))
+	for _, r := range list {
+		out = append(out, viewReturn(r))
+	}
+	return connect.NewResponse(&ListReturnsResponse{Returns: out}), nil
 }

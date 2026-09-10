@@ -490,15 +490,45 @@ the other direction from the money one: reaching for a type because it is the
 platform's type, rather than because the problem it solves is the problem in
 hand.
 
-**Genuinely open, and small: `returns` is a shape with no mechanism.**
-`order-service` has a `returns` table and a `domain.Return` type, and nothing
-else — no repository method, no service method, no endpoint, no reference
-anywhere in the tree. Refunds do not exist. The table and the type make it look
-as though they do, which is worse than their absence would be. Building them
-would mean deciding what triggers a refund, whether it can be partial, who
-approves one and what it does to the invoice — none of which is knowable from
-here, and all of which a wrong guess turns into a model somebody works around
-forever. So it stays unbuilt and is named here instead.
+**`returns` was a shape with no mechanism, and now has one.** `order-service`
+had a `returns` table and a `domain.Return` type and nothing else — no repository
+method, no service method, no endpoint, no reference anywhere in the tree.
+Refunds did not exist, and the table made it look as though they did.
+
+What is wired is the state machine the type already declared in a comment:
+requested, then approved or rejected, then completed. Naming those and writing
+the allowed moves as a map rather than a chain of checks is most of it — what is
+interesting about a state machine is the transitions it does not have, and those
+are invisible in a series of if statements.
+
+Two things were deliberately not decided:
+
+- **Completing a return does not touch the invoice or the order's totals.** What
+  a refund does to a customer's account is an accounting decision nobody here has
+  made. An e2e test asserts the order still reads what it charged, so the absence
+  is stated rather than merely true.
+- **A request may ask for more than the order charged.** What somebody asked for
+  is part of the record of what was decided; refusing to write it down leaves the
+  person who asked arguing about a conversation with no record. The bound applies
+  at approval, which is when it becomes money.
+
+That bound is a trigger rather than a check in one code path, because refunding
+more than was taken is wrong under any refund policy — arithmetic, not policy, so
+it belongs where no path can route around it.
+
+**And the trigger was wrong the first time, in a way worth recording.** It summed
+what was already committed and then locked the order. A sum taken before the wait
+is a sum of the world as it was before the other approval existed, so two
+concurrent approvals of 60 both passed against an order of 100. Measured, not
+reasoned about: 120 of 100 committed, then 60 of 100 once the two statements were
+swapped.
+
+The test for it is a transaction-level one, and that is also worth recording. The
+end-to-end version fires four approvals through HTTP and passes whichever way
+round the two statements are written — the window is too narrow to hit from out
+there. It was written first, it passed against the broken trigger, and it is kept
+only as a smoke test with a comment saying exactly that. The guarantee is a
+repository test that holds one transaction open and steps the other into it. So it stays unbuilt and is named here instead.
 
 ### 3. Deployment drift — **closed**
 
