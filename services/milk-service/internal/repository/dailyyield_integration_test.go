@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,88 +28,153 @@ func acting(tenant string) context.Context {
 		tenantctx.Actor{ID: "integration-test"})
 }
 
-// A day's yield has to be right in the timezone the database actually runs in.
+// A day's yield falls on the tenant's day, whatever timezone the database is in.
 //
-// These tests exist because of a bug that turned out not to be there, and the
-// hunt is worth recording. `recorded_at::date = $3` compares a date against a
-// parameter; if that parameter were a TIMESTAMPTZ, PostgreSQL would promote the
-// date to midnight in the session's timezone and compare it against midnight
-// UTC, and outside UTC the two never meet. This platform is written for India,
-// where every daily yield would then read zero litres — a number of the right
-// magnitude in the right units and entirely wrong.
+// recorded_at is a TIMESTAMPTZ and casting one to a date uses the session's
+// timezone, so the query used to answer a different question depending on where
+// the database happened to be configured. Measured, not assumed: a collection at
+// one in the morning Indian time reads as the 11th from a session in Kolkata and
+// the 10th from one in UTC or Chicago.
 //
-// It does not happen, because PostgreSQL infers the parameter's type from the
-// comparison and types it `date`, so pgx encodes a date and nothing is promoted.
-// The experiment that suggested otherwise had an explicit `::timestamptz`
-// literal written by hand in psql, which is not what the driver sends — a check
-// of a statement nobody runs.
+// That is not a small difference at a fortnight boundary. The figure settlement
+// is drawn from would move between one fortnight and the next on a setting
+// nobody involved chose, and nothing anywhere would say so.
 //
-// So the query was already right, and what it was missing was anything saying
-// so. These run it in UTC, in a zone ahead of it and in a zone behind it, which
-// turns a silent reliance on type inference into something that fails if the
-// inference ever changes.
+// The query now converts the instant to the tenant's own wall clock before
+// taking the date — `recorded_at AT TIME ZONE $4` — and the tenant's zone is
+// pinned on its first session, the same way the services holding money pin a
+// currency. These tests run from sessions in three zones, one of them ahead of
+// the tenant's and one behind, and the answer has to be the same in all three.
 //
 // They are repository tests rather than end-to-end ones because reproducing a
-// timezone needs control of the connection. The e2e harness opens its pool once
-// at startup, so setting a database's timezone afterwards changes nothing for a
-// service already running — an e2e test written for this passes without
-// exercising it, which is worse than not having one.
+// session timezone needs control of the connection. The e2e harness opens its
+// pool at startup, so a timezone set there changes nothing for a service already
+// running — an e2e test written for this passes without exercising anything. One
+// was written that way first, and did exactly that.
 //
 //	TEST_DATABASE_DSN="postgres://user@host:port/%s?sslmode=disable" go test ./...
 
 const testDatabase = "milk_repo_test"
 
-// zones covers UTC, a zone ahead of it and a zone behind it. The failure this
-// guards against would be invisible in the first and would move the day in
-// opposite directions in the other two, so one non-UTC zone would not be enough:
-// a query that shifted everything by a day would still pass with only
-// Asia/Kolkata.
-var zones = []string{"UTC", "Asia/Kolkata", "America/Chicago"}
+// sessionZones are what the database might be configured as: UTC, one ahead of
+// the tenant and one behind. A query that read the session's timezone instead of
+// the tenant's would agree with the tenant in exactly one of these, which is why
+// one non-UTC zone would not be enough.
+var sessionZones = []string{"UTC", "Asia/Tokyo", "America/Chicago"}
 
-func TestADaysYieldIsTheSameDayInEveryTimezone(t *testing.T) {
-	for _, zone := range zones {
-		t.Run(zone, func(t *testing.T) {
+// The tenant is in India throughout, and the reading below is at one in the
+// morning there — an instant that is the previous day in UTC, in Chicago, and in
+// every zone west of it.
+const (
+	tenantZone   = "Asia/Kolkata"
+	earlyMorning = "2026-09-11T01:00:00+05:30"
+	indianDay    = "2026-09-11"
+	utcDay       = "2026-09-10"
+)
+
+func TestAReadingFallsOnTheTenantsDayNotTheDatabasesTimezone(t *testing.T) {
+	for _, zone := range sessionZones {
+		t.Run("database in "+zone, func(t *testing.T) {
 			pool := testPoolIn(t, zone)
 			r := New(pool)
 			tenant, cattle := newTestID("tnt"), newTestID("cow")
 			ctx := acting(tenant)
 
+			if err := r.PinTenantTimezone(ctx, tenant, tenantZone); err != nil {
+				t.Fatalf("pin timezone: %v", err)
+			}
 			session := newTestID("ses")
 			mustSession(t, r, tenant, cattle, session)
 
-			// Two readings, written now. "Now" falls on whichever day the
-			// database reckons it to be, which is what a plant's operators
-			// would call today.
-			mustRecord(t, r, tenant, session, cattle, 6.250)
-			mustRecord(t, r, tenant, session, cattle, 5.750)
+			at, err := time.Parse(time.RFC3339, earlyMorning)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mustRecordAt(t, r, tenant, session, cattle, 6.250, at)
+			mustRecordAt(t, r, tenant, session, cattle, 5.750, at)
 
-			today := currentDate(t, pool)
-			total, err := r.GetDailyYield(ctx, tenant, cattle, today)
+			// The Indian day holds both.
+			onDay, err := r.GetDailyYield(ctx, tenant, cattle, mustDay(t, indianDay), tenantZone)
 			if err != nil {
 				t.Fatalf("get daily yield: %v", err)
 			}
-			if total != 12.0 {
-				t.Errorf("in %s the day's yield is %v litres, want 12\n"+
-					"Two readings of 6.250 and 5.750 were written today (%s) and the sum "+
-					"found none of them. recorded_at::date is evaluated in the session's "+
-					"timezone, and this holds only while PostgreSQL infers the parameter as "+
-					"a date; bound as a timestamp it would be compared against midnight UTC, "+
-					"which outside UTC is a different instant. Every animal would then "+
-					"report having given nothing, which is a number somebody acts on.",
-					zone, total, today.Format("2006-01-02"))
+			if onDay != 12.0 {
+				t.Errorf("from a database in %s, %s holds %v litres, want 12\n"+
+					"The readings were taken at one in the morning on %s in %s, which is "+
+					"where the tenant is. Reading them into the previous day would move a "+
+					"morning's milk from one fortnight into the other.",
+					zone, indianDay, onDay, indianDay, tenantZone)
 			}
 
-			// The day before holds none of them. Without this, a query that
-			// matched everything would pass the check above.
-			before, err := r.GetDailyYield(ctx, tenant, cattle, today.AddDate(0, 0, -1))
+			// And the UTC day holds neither. Without this, a query that matched
+			// everything would satisfy the check above.
+			dayBefore, err := r.GetDailyYield(ctx, tenant, cattle, mustDay(t, utcDay), tenantZone)
 			if err != nil {
-				t.Fatalf("get yesterday's yield: %v", err)
+				t.Fatalf("get the previous day's yield: %v", err)
 			}
-			if before != 0 {
-				t.Errorf("in %s yesterday reports %v litres, and nothing was recorded then",
-					zone, before)
+			if dayBefore != 0 {
+				t.Errorf("from a database in %s, %s holds %v litres — that is the day these "+
+					"readings fall on in UTC, not the day they fall on where they were taken",
+					zone, utcDay, dayBefore)
 			}
 		})
+	}
+}
+
+// A tenant's timezone is stated once and cannot be changed by a later session.
+//
+// The same argument as the currency pin. What is stored is an instant; the
+// disagreement is about how to read it, so two reckonings of the same evening
+// are indistinguishable afterwards.
+func TestATenantsTimezoneIsFixedByItsFirstSession(t *testing.T) {
+	pool := testPoolIn(t, "UTC")
+	r := New(pool)
+	tenant := newTestID("tnt")
+	ctx := acting(tenant)
+
+	if err := r.PinTenantTimezone(ctx, tenant, "Asia/Kolkata"); err != nil {
+		t.Fatalf("pin: %v", err)
+	}
+	// The same zone again is fine; a device retrying, or a second session on the
+	// same day, must not be refused.
+	if err := r.PinTenantTimezone(ctx, tenant, "Asia/Kolkata"); err != nil {
+		t.Errorf("pinning the same timezone twice was refused: %v", err)
+	}
+	if err := r.PinTenantTimezone(ctx, tenant, "America/Chicago"); !errors.Is(err, ErrTimezoneMismatch) {
+		t.Errorf("a second timezone was accepted (err = %v); the readings already "+
+			"recorded were filed under the first, and nothing would say which is which", err)
+	}
+
+	got, err := r.TenantTimezone(ctx, tenant)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if got != "Asia/Kolkata" {
+		t.Errorf("timezone reads back as %s, want Asia/Kolkata", got)
+	}
+}
+
+// A zone this binary cannot load is refused rather than stored.
+func TestAnUnknownTimezoneIsRefused(t *testing.T) {
+	pool := testPoolIn(t, "UTC")
+	r := New(pool)
+	tenant := newTestID("tnt")
+	for _, bad := range []string{"", "IST", "Asia/Kothapalli", "+05:30"} {
+		if err := r.PinTenantTimezone(acting(tenant), tenant, bad); !errors.Is(err, ErrUnknownTimezone) {
+			t.Errorf("timezone %q was accepted (err = %v); a zone the database holds and "+
+				"the code cannot load fails later, somewhere further from the cause", bad, err)
+		}
+	}
+}
+
+// A tenant that has recorded nothing has not said which days it reckons by.
+func TestATenantWithNoTimezoneIsSaidToHaveNone(t *testing.T) {
+	pool := testPoolIn(t, "UTC")
+	r := New(pool)
+	tenant := newTestID("tnt")
+	if _, err := r.TenantTimezone(acting(tenant), tenant); !errors.Is(err, ErrTimezoneUnset) {
+		t.Errorf("err = %v, want ErrTimezoneUnset — answering anyway would mean picking "+
+			"a timezone on the tenant's behalf", err)
 	}
 }
 
@@ -119,6 +185,9 @@ func TestADaysYieldCountsOneAnimal(t *testing.T) {
 	r := New(pool)
 	tenant := newTestID("tnt")
 	ctx := acting(tenant)
+	if err := r.PinTenantTimezone(ctx, tenant, tenantZone); err != nil {
+		t.Fatalf("pin timezone: %v", err)
+	}
 
 	mine, theirs := newTestID("cow"), newTestID("cow")
 	session := newTestID("ses")
@@ -126,7 +195,7 @@ func TestADaysYieldCountsOneAnimal(t *testing.T) {
 	mustRecord(t, r, tenant, session, mine, 6.250)
 	mustRecord(t, r, tenant, session, theirs, 40.000)
 
-	total, err := r.GetDailyYield(ctx, tenant, mine, currentDate(t, pool))
+	total, err := r.GetDailyYield(ctx, tenant, mine, currentDate(t, pool), tenantZone)
 	if err != nil {
 		t.Fatalf("get daily yield: %v", err)
 	}
@@ -144,12 +213,15 @@ func TestADaysYieldCountsOneTenant(t *testing.T) {
 	mine, theirs := newTestID("tnt"), newTestID("tnt")
 	ctx := acting(mine)
 	for _, tenant := range []string{mine, theirs} {
+		if err := r.PinTenantTimezone(acting(tenant), tenant, tenantZone); err != nil {
+			t.Fatalf("pin timezone: %v", err)
+		}
 		session := newTestID("ses")
 		mustSession(t, r, tenant, cattle, session)
 		mustRecord(t, r, tenant, session, cattle, 6.250)
 	}
 
-	total, err := r.GetDailyYield(ctx, mine, cattle, currentDate(t, pool))
+	total, err := r.GetDailyYield(ctx, mine, cattle, currentDate(t, pool), tenantZone)
 	if err != nil {
 		t.Fatalf("get daily yield: %v", err)
 	}
@@ -172,13 +244,30 @@ func mustSession(t *testing.T, r Repository, tenant, cattle, id string) {
 
 func mustRecord(t *testing.T, r Repository, tenant, session, cattle string, litres float64) {
 	t.Helper()
+	mustRecordAt(t, r, tenant, session, cattle, litres, time.Now())
+}
+
+// mustRecordAt writes a reading at a stated instant, which is what lets a test
+// put one either side of a day boundary on purpose.
+func mustRecordAt(t *testing.T, r Repository, tenant, session, cattle string, litres float64, at time.Time) {
+	t.Helper()
 	if _, err := r.CreateRecord(acting(tenant), &domain.MilkRecord{
 		ID: newTestID("rec"), TenantID: tenant, SessionID: session, CattleID: cattle,
-		QuantityLiters: litres, RecordedAt: time.Now(),
+		QuantityLiters: litres, RecordedAt: at,
 		CreatedBy: "test", UpdatedBy: "test",
 	}); err != nil {
 		t.Fatalf("record %v litres: %v", litres, err)
 	}
+}
+
+// mustDay reads a calendar day written as YYYY-MM-DD.
+func mustDay(t *testing.T, s string) time.Time {
+	t.Helper()
+	d, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		t.Fatalf("parse day %q: %v", s, err)
+	}
+	return d
 }
 
 // currentDate is today as this connection reckons it, which is the day a reading

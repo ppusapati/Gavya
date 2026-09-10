@@ -22,7 +22,11 @@ type Repository interface {
 	CreateRecord(ctx context.Context, r *domain.MilkRecord) (*domain.MilkRecord, error)
 	GetRecord(ctx context.Context, id, tenantID string) (*domain.MilkRecord, error)
 	ListSessionRecords(ctx context.Context, sessionID, tenantID string) ([]*domain.MilkRecord, error)
-	GetDailyYield(ctx context.Context, tenantID, cattleID string, date time.Time) (float64, error)
+	GetDailyYield(ctx context.Context, tenantID, cattleID string, date time.Time, zone string) (float64, error)
+	// PinTenantTimezone fixes which timezone this tenant reckons its days in.
+	PinTenantTimezone(ctx context.Context, tenantID, zone string) error
+	// TenantTimezone reports it.
+	TenantTimezone(ctx context.Context, tenantID string) (string, error)
 	CreateQuality(ctx context.Context, q *domain.MilkQuality) (*domain.MilkQuality, error)
 	GetQuality(ctx context.Context, recordID, tenantID string) (*domain.MilkQuality, error)
 }
@@ -146,32 +150,33 @@ func (r *repo) ListSessionRecords(ctx context.Context, sessionID, tenantID strin
 	return out, rows.Err()
 }
 
-// GetDailyYield sums one animal's readings for one day.
+// GetDailyYield sums one animal's readings for one day, in the timezone that
+// tenant reckons its days by.
 //
-// The day is bound as a time.Time and PostgreSQL infers the parameter's type
-// from the comparison — `recorded_at::date = $3` types $3 as a date — so pgx
-// encodes it as a date and no timezone arithmetic touches it.
+// `recorded_at AT TIME ZONE $4` converts the stored instant to a wall clock in
+// the tenant's own zone before the date is taken, so which day a reading falls
+// on is a fact about the tenant rather than about where the database happens to
+// be configured.
 //
-// That is worth stating because the alternative is a real trap and this query
-// looks exactly like it. If the parameter were forced to a timestamptz, the
-// comparison would promote the date on the left to midnight in the session's
-// timezone and compare it against midnight UTC, and the two agree only where the
-// database runs in UTC. This platform is written for India, where every daily
-// yield would then come back as zero litres — a number of the right magnitude in
-// the right units and entirely wrong, and a cow that gave nothing is a cow
-// somebody goes out to look at.
+// It used to be a bare `recorded_at::date`, which casts using the session's
+// timezone. Measured, not assumed: a collection at one in the morning Indian
+// time reads as the 11th from a database session in Kolkata and the 10th from
+// one in UTC or Chicago. A morning's milk would fall in one fortnight or the
+// other depending on a setting nobody involved chose, and settlement is drawn
+// from these figures.
 //
-// dailyyield_integration_test.go runs this in UTC, in a zone ahead of it and in
-// a zone behind it, which is what says the inference holds rather than that it
-// happens to work where the tests run.
-//
-// Which day a reading falls on is decided by the database's timezone, because
-// that is what `recorded_at::date` means. That is one stated fact about a
-// deployment rather than a disagreement between two.
-func (r *repo) GetDailyYield(ctx context.Context, tenantID, cattleID string, date time.Time) (float64, error) {
-	const q = `SELECT COALESCE(SUM(quantity_liters),0) FROM milk_records WHERE tenant_id=$1 AND cattle_id=$2 AND recorded_at::date=$3 AND deleted_at IS NULL`
+// The day itself is bound as a time.Time and PostgreSQL infers the parameter as
+// a date from the comparison, so no timezone arithmetic touches it either.
+// dailyyield_integration_test.go runs this from sessions in three zones, which
+// is what says both of those hold rather than that they happen to work where the
+// tests run.
+func (r *repo) GetDailyYield(ctx context.Context, tenantID, cattleID string, date time.Time, zone string) (float64, error) {
+	const q = `SELECT COALESCE(SUM(quantity_liters),0) FROM milk_records
+	           WHERE tenant_id=$1 AND cattle_id=$2
+	             AND (recorded_at AT TIME ZONE $4)::date = $3
+	             AND deleted_at IS NULL`
 	var total float64
-	err := r.db.QueryRow(ctx, q, tenantID, cattleID, date).Scan(&total)
+	err := r.db.QueryRow(ctx, q, tenantID, cattleID, date, zone).Scan(&total)
 	return total, err
 }
 

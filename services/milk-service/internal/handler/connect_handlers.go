@@ -17,6 +17,14 @@ type CreateSessionRequest struct {
 	TenantID  string `json:"tenant_id"`
 	CattleID  string `json:"cattle_id"`
 	ShiftType string `json:"shift_type"`
+	// Timezone is required, as an IANA name such as Asia/Kolkata, and there is
+	// no default. A shift is "morning" somewhere, and which day a reading falls
+	// on is read out of it later — silently defaulting that to UTC files a
+	// society's evening collection under the previous day.
+	//
+	// It is stated once. The first session a tenant opens fixes it, and a later
+	// session naming a different one is refused rather than applied.
+	Timezone  string `json:"timezone"`
 	CreatedBy string `json:"created_by"`
 }
 type CreateSessionResponse struct {
@@ -141,7 +149,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 func (h *Handler) CreateSession(ctx context.Context, req *connect.Request[CreateSessionRequest]) (*connect.Response[CreateSessionResponse], error) {
 	m := req.Msg
-	sess, err := h.svc.CreateSession(ctx, &domain.MilkSession{TenantID: m.TenantID, CattleID: m.CattleID, ShiftType: m.ShiftType, CreatedBy: m.CreatedBy})
+	sess, err := h.svc.CreateSession(ctx, &domain.MilkSession{TenantID: m.TenantID, CattleID: m.CattleID, ShiftType: m.ShiftType, CreatedBy: m.CreatedBy}, m.Timezone)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}

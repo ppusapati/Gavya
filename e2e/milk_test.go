@@ -19,17 +19,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/ppusapati/gavya/libs/integrity/svcclient"
 )
 
 const milkSvc = "milk.v1.MilkService"
 
+// tenantTimezone is where these tenants are. It is stated rather than defaulted,
+// which is the point: a shift is "morning" somewhere, and which day a reading
+// falls on is read out of that later.
+const tenantTimezone = "Asia/Kolkata"
+
 type createMilkSessionReq struct {
 	TenantID  string `json:"tenant_id"`
 	CattleID  string `json:"cattle_id"`
 	ShiftType string `json:"shift_type"`
+	Timezone  string `json:"timezone"`
 	CreatedBy string `json:"created_by"`
 }
 
@@ -73,7 +77,7 @@ func aMilking(t *testing.T, p *platform, litres ...float64) string {
 	sess, err := svcclient.Call[createMilkSessionReq, milkSessionResp](
 		context.Background(), p.milk(), milkSvc+"/CreateSession",
 		createMilkSessionReq{TenantID: p.tenant, CattleID: cattle,
-			ShiftType: "morning", CreatedBy: "e2e"}, p.opts())
+			ShiftType: "morning", Timezone: tenantTimezone, CreatedBy: "e2e"}, p.opts())
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
@@ -106,7 +110,7 @@ func TestADaysYieldIsTheSumOfThatDaysReadings(t *testing.T) {
 
 	// The day as the database sees it, which is the day the readings were
 	// written under.
-	today := dayIn(t, "e2e_milk")
+	today := today(t)
 	got, err := svcclient.Call[dailyYieldReq, dailyYieldResp](
 		context.Background(), p.milk(), milkSvc+"/GetDailyYield",
 		dailyYieldReq{TenantID: p.tenant, CattleID: cattle, Date: today}, p.opts())
@@ -154,7 +158,7 @@ func TestAReadingFinerThanTheColumnIsRefused(t *testing.T) {
 	sess, err := svcclient.Call[createMilkSessionReq, milkSessionResp](
 		context.Background(), p.milk(), milkSvc+"/CreateSession",
 		createMilkSessionReq{TenantID: p.tenant, CattleID: cattle,
-			ShiftType: "morning", CreatedBy: "e2e"}, p.opts())
+			ShiftType: "morning", Timezone: tenantTimezone, CreatedBy: "e2e"}, p.opts())
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
@@ -190,7 +194,7 @@ func TestADaysYieldCountsOneAnimalAndOneDay(t *testing.T) {
 	mine := aMilking(t, p, 6.250)
 	other := aMilking(t, p, 40.000)
 
-	today := dayIn(t, "e2e_milk")
+	today := today(t)
 	got, err := svcclient.Call[dailyYieldReq, dailyYieldResp](
 		context.Background(), p.milk(), milkSvc+"/GetDailyYield",
 		dailyYieldReq{TenantID: p.tenant, CattleID: mine, Date: today}, p.opts())
@@ -218,7 +222,7 @@ func TestADaysYieldCountsOneAnimalAndOneDay(t *testing.T) {
 func TestMilkKeepsTenantsApart(t *testing.T) {
 	p := startPlatform(t)
 	cattle := aMilking(t, p, 6.250)
-	today := dayIn(t, "e2e_milk")
+	today := today(t)
 
 	mine, err := svcclient.Call[dailyYieldReq, dailyYieldResp](
 		context.Background(), p.milk(), milkSvc+"/GetDailyYield",
@@ -242,18 +246,89 @@ func TestMilkKeepsTenantsApart(t *testing.T) {
 	}
 }
 
-// dayIn is today as the given database reckons it, which is the day a reading
-// written now is recorded under.
-func dayIn(t *testing.T, database string) string {
+// today is the current day where these tenants are, which is the day a reading
+// written now is filed under.
+//
+// It used to ask the database what day it was. That is the question the service
+// stopped asking: which day a reading falls on is a fact about the tenant, and a
+// test that reads it from the database agrees with the service only while the
+// two happen to be in the same zone.
+func today(t *testing.T) string {
 	t.Helper()
-	conn, err := pgx.Connect(context.Background(), dsn(t, database))
+	loc, err := time.LoadLocation(tenantTimezone)
 	if err != nil {
-		t.Fatalf("connect to %s: %v", database, err)
+		t.Fatalf("load %s: %v", tenantTimezone, err)
 	}
-	defer conn.Close(context.Background())
-	var day time.Time
-	if err := conn.QueryRow(context.Background(), "SELECT CURRENT_DATE").Scan(&day); err != nil {
-		t.Fatalf("read current date: %v", err)
+	return time.Now().In(loc).Format("2006-01-02")
+}
+
+// A tenant's timezone is stated on its first session and fixed from then on.
+//
+// tenant-service has recorded a Timezone per tenant since it was written and
+// nothing read it, while the daily yield took its day boundary from whatever
+// timezone the database was configured in. Two things claiming to say when a
+// day begins is the same shape as two things claiming what currency an amount
+// is in, and it goes wrong the same way: silently, and only for whoever is
+// furthest from the assumption.
+//
+// So milk-service pins it where the readings are, on the same shape the services
+// holding money use for currency. What that buys is checked properly in
+// milk-service's own repository tests, which can put a reading either side of a
+// day boundary; this is the part that belongs at this level — that a caller has
+// to say, and cannot change its mind.
+func TestATenantsTimezoneIsStatedOnceAndThenFixed(t *testing.T) {
+	p := startPlatform(t)
+
+	// Stated on the first session.
+	if _, err := svcclient.Call[createMilkSessionReq, milkSessionResp](
+		context.Background(), p.milk(), milkSvc+"/CreateSession",
+		createMilkSessionReq{TenantID: p.tenant, CattleID: newID("cow"),
+			ShiftType: "morning", Timezone: tenantTimezone, CreatedBy: "e2e"},
+		p.opts()); err != nil {
+		t.Fatalf("open the first session: %v", err)
 	}
-	return day.Format("2006-01-02")
+
+	// A second session in the same zone is fine — most days are the second
+	// session, and refusing them would make the pin unusable.
+	if _, err := svcclient.Call[createMilkSessionReq, milkSessionResp](
+		context.Background(), p.milk(), milkSvc+"/CreateSession",
+		createMilkSessionReq{TenantID: p.tenant, CattleID: newID("cow"),
+			ShiftType: "evening", Timezone: tenantTimezone, CreatedBy: "e2e"},
+		p.opts()); err != nil {
+		t.Errorf("a second session in the same timezone was refused: %v", err)
+	}
+
+	// A different one is refused. The readings already taken were filed under
+	// the first, and what is stored is an instant — so after the change nothing
+	// would say which evening is which.
+	if _, err := svcclient.Call[createMilkSessionReq, milkSessionResp](
+		context.Background(), p.milk(), milkSvc+"/CreateSession",
+		createMilkSessionReq{TenantID: p.tenant, CattleID: newID("cow"),
+			ShiftType: "morning", Timezone: "America/Chicago", CreatedBy: "e2e"},
+		p.opts()); err == nil {
+		t.Error("a session in a second timezone was accepted; every reading already " +
+			"recorded was filed under the first one")
+	}
+
+	// And a zone nobody can load is refused rather than stored, in a fresh
+	// tenant so the refusal is about the name and not about the pin.
+	fresh := newID("tnt")
+	if _, err := svcclient.Call[createMilkSessionReq, milkSessionResp](
+		context.Background(), p.milk(), milkSvc+"/CreateSession",
+		createMilkSessionReq{TenantID: fresh, CattleID: newID("cow"),
+			ShiftType: "morning", Timezone: "IST", CreatedBy: "e2e"},
+		svcclient.CallOptions{Tenant: fresh, Actor: "e2e"}); err == nil {
+		t.Error(`"IST" was accepted as a timezone; it names two different zones five ` +
+			"and a half hours apart, and neither is what the database would store")
+	}
+
+	// An omitted one too. There is no default: a shift is "morning" somewhere.
+	if _, err := svcclient.Call[createMilkSessionReq, milkSessionResp](
+		context.Background(), p.milk(), milkSvc+"/CreateSession",
+		createMilkSessionReq{TenantID: newID("tnt"), CattleID: newID("cow"),
+			ShiftType: "morning", CreatedBy: "e2e"},
+		p.opts()); err == nil {
+		t.Error("a session with no timezone was accepted, so its tenant's days begin " +
+			"wherever the database happens to be configured")
+	}
 }

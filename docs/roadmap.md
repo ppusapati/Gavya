@@ -409,7 +409,7 @@ that the old shape had been hiding, none of them about floats:
   with the unit tests to match. They still have no end-to-end coverage, and
   reading a service is weaker evidence than running it.
 
-### 7. A tenant's timezone is stored and never read — **open**
+### 7. A tenant's timezone is stored and never read — **closed**
 
 `tenant-service` records a `Timezone` per tenant, defaulted to UTC at creation.
 Nothing else in the platform reads it.
@@ -428,12 +428,25 @@ timezones, and for any figure a fortnight's settlement is drawn from — a
 collection at half past eleven at night falls in one day or the other depending
 on a setting nobody involved chose.
 
-Not fixed, because the fix is a decision rather than a correction: either
-milk-service learns each tenant's timezone the way the older services learn each
-tenant's currency — pinned locally on first use, refusing to change — or the
-platform states that one deployment is one timezone and the tenant field goes.
-Both are defensible; guessing between them would put a model in place that
-somebody works around forever.
+Fixed by taking the first of the two options, because it is the one this
+platform has already chosen for the same shape. `milk-service` pins each tenant's
+timezone on its first session — stated, never defaulted, refused if a later
+session disagrees — exactly as the services holding money pin a currency. Read
+from the pin rather than from tenant-service, so recording a reading does not
+depend on another service being reachable, which is the argument the currency pin
+already makes.
+
+`GetDailyYield` converts the instant to the tenant's own wall clock before taking
+the date. The measurement that made this worth doing: a collection at one in the
+morning Indian time reads as the 11th from a database session in Kolkata and the
+10th from one in UTC or Chicago. `dailyyield_integration_test.go` runs it from
+three sessions — one ahead of the tenant, one behind, one UTC — and reverting the
+query to the session-timezone cast fails two of the three, naming the day the
+readings moved to.
+
+The second option is still open to a future deployment: if one deployment is
+declared to be one timezone, the pin becomes a formality rather than a constraint
+and nothing has to be undone. What has been closed is the disagreement.
 - **`order`'s money columns were half widened.** The migration named
   `order_invoices`, which is not a table in that schema; it is `invoices`, and
   `returns` was omitted entirely. The loop matched nothing for a name that does

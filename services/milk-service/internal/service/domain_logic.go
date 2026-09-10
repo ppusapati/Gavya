@@ -11,12 +11,25 @@ import (
 	"github.com/ppusapati/gavya/services/milk-service/internal/domain"
 )
 
-func (s *Service) CreateSession(ctx context.Context, sess *domain.MilkSession) (*domain.MilkSession, error) {
+// CreateSession opens a milking session, and is where a tenant says which
+// timezone its days are reckoned in.
+//
+// This is the call that states it because it is the first one that means
+// anything locally: a session has a shift — morning or evening — and a date, and
+// both are wall-clock facts. Everything downstream that asks what an animal gave
+// on a given day reads the answer from the pin this leaves.
+//
+// The same shape the services holding money use for currency: stated on first
+// use, fixed from then on, and refused if a later request disagrees.
+func (s *Service) CreateSession(ctx context.Context, sess *domain.MilkSession, zone string) (*domain.MilkSession, error) {
 	if sess.TenantID == "" || sess.CattleID == "" {
 		return nil, fmt.Errorf("tenant_id and cattle_id are required")
 	}
 	if sess.ShiftType == "" {
 		return nil, fmt.Errorf("shift_type is required")
+	}
+	if err := s.repo.PinTenantTimezone(ctx, sess.TenantID, zone); err != nil {
+		return nil, err
 	}
 	sess.ID = ulidpkg.New().String()
 	if sess.Status == "" {
@@ -87,8 +100,17 @@ func (s *Service) ListSessionRecords(ctx context.Context, sessionID, tenantID st
 	return s.repo.ListSessionRecords(ctx, sessionID, tenantID)
 }
 
+// GetDailyYield reads the day in the tenant's own timezone.
+//
+// A tenant that has recorded no milk here has not said which timezone its days
+// are reckoned in, and answering anyway would mean picking one. The refusal says
+// which fact is missing rather than returning a plausible zero.
 func (s *Service) GetDailyYield(ctx context.Context, tenantID, cattleID string, date time.Time) (float64, error) {
-	return s.repo.GetDailyYield(ctx, tenantID, cattleID, date)
+	zone, err := s.repo.TenantTimezone(ctx, tenantID)
+	if err != nil {
+		return 0, err
+	}
+	return s.repo.GetDailyYield(ctx, tenantID, cattleID, date, zone)
 }
 
 func (s *Service) RecordQuality(ctx context.Context, mq *domain.MilkQuality) (*domain.MilkQuality, error) {
