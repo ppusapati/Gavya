@@ -58,6 +58,16 @@ type service struct {
 // needs them present on its own connection.
 var sharedSchemas = []string{
 	"services/audit-service/internal/db/schema.sql",
+	// The hash chain and the append-only enforcement, which deployment applies
+	// to the one database every service writes its trail into.
+	//
+	// The harness applied only schema.sql, so audit_logs here was a plain table:
+	// the sealing function did not exist, SealAuditChain failed with "function
+	// gavya_seal_audit_log does not exist", and the append-only triggers that
+	// stop the application editing its own trail were not present either. The
+	// harness was less faithful than production in exactly the place the
+	// platform makes its strongest claim.
+	"services/audit-service/internal/db/tamper_evidence.sql",
 }
 
 var services = []service{
@@ -126,13 +136,18 @@ var services = []service{
 	// unstarted by anything, which made "every service in the platform answers
 	// health" a claim about eighteen of twenty-nine.
 	//
-	// Three are deliberately absent and stay absent:
+	// Two are deliberately absent and stay absent:
 	//   - gateway-service routes to every upstream and is covered by its own
 	//     unit tests, which check the routing table rather than the network.
-	//   - audit-service's schema is applied to every database here already, and
-	//     audit_test.go drives its tamper-evidence against a real database.
 	//   - identity-service starts its own binary in identity_service_test.go,
 	//     because what that test checks is the refusal to start.
+	//
+	// audit-service was a third, on the grounds that its schema is applied to
+	// every database here already and audit_test.go drives its tamper-evidence
+	// against a real database. Both of those are true and neither is about its
+	// endpoints: SealAuditChain and VerifyAuditChain were reachable only through
+	// SQL, so the seven routes that publish the chain had never been called.
+	{name: "audit-service", database: "e2e_audit", schema: "services/audit-service/internal/db/schema.sql"},
 	{name: "tenant-service", database: "e2e_tenant", schema: "services/tenant-service/internal/db/schema.sql"},
 	{name: "cattle-service", database: "e2e_cattle", schema: "services/cattle-service/internal/db/schema.sql"},
 	{name: "milk-service", database: "e2e_milk", schema: "services/milk-service/internal/db/schema.sql"},
@@ -500,6 +515,7 @@ func (p *platform) inventory() *svcclient.Client { return p.clients["inventory-s
 // already has a tenant field holding this run's tenant id and a method of the
 // same name cannot exist beside it.
 func (p *platform) tenantSvcClient() *svcclient.Client { return p.clients["tenant-service"] }
+func (p *platform) audit() *svcclient.Client           { return p.clients["audit-service"] }
 func (p *platform) billing() *svcclient.Client         { return p.clients["billing-service"] }
 func (p *platform) cattleMarket() *svcclient.Client    { return p.clients["cattle-market-service"] }
 func (p *platform) breeding() *svcclient.Client        { return p.clients["breeding-service"] }
