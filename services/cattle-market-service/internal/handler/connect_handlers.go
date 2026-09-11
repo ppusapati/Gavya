@@ -249,7 +249,7 @@ func (h *Handler) RecordSale(ctx context.Context, req *connect.Request[RecordSal
 }
 
 func (h *Handler) GetOwnershipHistory(ctx context.Context, req *connect.Request[OwnershipRequest]) (*connect.Response[OwnershipResponse], error) {
-	list, err := h.svc.GetOwnershipHistory(ctx, req.Msg.TenantID, req.Msg.CattleID)
+	list, err := h.svc.GetOwnershipHistory(ctx, req.Msg.CattleID, req.Msg.TenantID)
 	if err != nil {
 		return nil, classify(err)
 	}

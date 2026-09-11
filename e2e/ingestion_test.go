@@ -23,6 +23,7 @@ package e2e
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -617,4 +618,143 @@ type deviceListResp struct {
 	Devices []*struct {
 		ID string `json:"id"`
 	} `json:"devices"`
+}
+
+// The reads a person uses when something has gone wrong.
+//
+// A device's record, the epochs it has been through, and the full payload of a
+// record that was held. These are what somebody opens when a collection is
+// missing or two of them collide, and they were the three routes this service
+// had left uncalled.
+
+type getDeviceReq struct {
+	ID       string `json:"id"`
+	TenantID string `json:"tenant_id"`
+}
+
+type listGenerationsReq struct {
+	TenantID string `json:"tenant_id"`
+	DeviceID string `json:"device_id"`
+}
+
+type listGenerationsResp struct {
+	Generations []*struct {
+		Generation int64  `json:"generation"`
+		Reason     string `json:"reason"`
+		DeviceID   string `json:"device_id"`
+	} `json:"generations"`
+}
+
+type getQuarantinedResp struct {
+	Record *struct {
+		ID                  string `json:"id"`
+		Reason              string `json:"reason"`
+		Sequence            int64  `json:"sequence"`
+		ConflictingRecordID string `json:"conflicting_record_id"`
+	} `json:"record"`
+	Payload json.RawMessage `json:"payload"`
+}
+
+// A device's epochs are listed in order, and they are that device's.
+//
+// A reflash opens a new one, and the list is how somebody works out which run a
+// missing collection belonged to. One that shows another device's epochs answers
+// that question wrongly and plausibly.
+func TestADevicesGenerationsAreItsOwn(t *testing.T) {
+	p := startPlatform(t)
+	mine := aCollector(t, p)
+	other := aCollector(t, p)
+
+	for _, reason := range []string{"FIRMWARE_REFLASH", "APP_REINSTALL"} {
+		if _, err := svcclient.Call[rollGenerationReq, generationResp](
+			context.Background(), p.ingestion(), ingestionSvc+"/RollGeneration",
+			rollGenerationReq{TenantID: p.tenant, DeviceID: mine.device,
+				Reason: reason, Actor: "e2e"}, p.opts()); err != nil {
+			t.Fatalf("roll %s: %v", reason, err)
+		}
+	}
+
+	list, err := svcclient.Call[listGenerationsReq, listGenerationsResp](
+		context.Background(), p.ingestion(), ingestionSvc+"/ListGenerations",
+		listGenerationsReq{TenantID: p.tenant, DeviceID: mine.device}, p.opts())
+	if err != nil {
+		t.Fatalf("list generations: %v", err)
+	}
+	// Provisioning, then two rolls.
+	if len(list.Generations) != 3 {
+		t.Fatalf("the device has been through %d epochs, want 3 — provisioning and two "+
+			"rolls", len(list.Generations))
+	}
+	for _, g := range list.Generations {
+		if g.DeviceID != mine.device {
+			t.Errorf("an epoch of device %s came back in %s's list", g.DeviceID, mine.device)
+		}
+	}
+
+	// The other device has only been provisioned.
+	theirs, err := svcclient.Call[listGenerationsReq, listGenerationsResp](
+		context.Background(), p.ingestion(), ingestionSvc+"/ListGenerations",
+		listGenerationsReq{TenantID: p.tenant, DeviceID: other.device}, p.opts())
+	if err != nil {
+		t.Fatalf("list the other device's generations: %v", err)
+	}
+	if len(theirs.Generations) != 1 {
+		t.Errorf("a device that has never been rolled has %d epochs, want 1",
+			len(theirs.Generations))
+	}
+
+	// And the device itself reads back, with the generation it is now on.
+	dev, err := svcclient.Call[getDeviceReq, deviceResp](
+		context.Background(), p.ingestion(), ingestionSvc+"/GetDevice",
+		getDeviceReq{ID: mine.device, TenantID: p.tenant}, p.opts())
+	if err != nil {
+		t.Fatalf("get device: %v", err)
+	}
+	if dev.Device.CurrentGeneration != 3 {
+		t.Errorf("after two rolls the device is on generation %d, want 3",
+			dev.Device.CurrentGeneration)
+	}
+}
+
+// A held record comes back with the payload that was refused.
+//
+// Holding a record and then not being able to show it is the same as dropping
+// it: the whole argument for quarantine is that a person can look at both
+// readings and say which is the collection.
+func TestAHeldRecordComesBackWithThePayloadThatWasRefused(t *testing.T) {
+	p := startPlatform(t)
+	c := aCollector(t, p)
+
+	const first = `{"producer":"P-118","litres":"12.400"}`
+	const second = `{"producer":"P-118","litres":"21.400"}`
+	admitted := c.deliver(t, 1, first)
+	if admitted.Outcome != "ACCEPTED" {
+		t.Fatalf("seeding: %s", admitted.Outcome)
+	}
+	clash := c.deliver(t, 1, second)
+	if clash.Outcome != "QUARANTINED" {
+		t.Fatalf("expected a conflict, got %s", clash.Outcome)
+	}
+
+	held, err := svcclient.Call[getDeviceReq, getQuarantinedResp](
+		context.Background(), p.ingestion(), ingestionSvc+"/GetQuarantined",
+		getDeviceReq{ID: clash.QuarantineID, TenantID: p.tenant}, p.opts())
+	if err != nil {
+		t.Fatalf("get quarantined: %v", err)
+	}
+	if string(held.Payload) == "" || string(held.Payload) == "null" {
+		t.Fatal("the held record came back with no payload; holding a reading nobody " +
+			"can look at is the same as dropping it")
+	}
+	if !strings.Contains(string(held.Payload), "21.400") {
+		t.Errorf("the payload is %s, want the reading that was refused", held.Payload)
+	}
+	if held.Record.ConflictingRecordID != admitted.RecordID {
+		t.Errorf("the held record names %q as what it collided with, want %q — a "+
+			"reviewer has to be able to read both", held.Record.ConflictingRecordID,
+			admitted.RecordID)
+	}
+	if held.Record.Sequence != 1 {
+		t.Errorf("the held record is at sequence %d, want 1", held.Record.Sequence)
+	}
 }

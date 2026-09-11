@@ -328,5 +328,5 @@ func (s *Service) GetOwnershipHistory(ctx context.Context, cattleID, tenantID st
 	if cattleID == "" || tenantID == "" {
 		return nil, invalid("cattle_id and tenant_id are required")
 	}
-	return s.repo.ListCattleOwnership(ctx, tenantID, cattleID)
+	return s.repo.ListCattleOwnership(ctx, cattleID, tenantID)
 }

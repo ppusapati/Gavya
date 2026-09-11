@@ -74,7 +74,7 @@ type Repository interface {
 	// RecordSaleAndTransfer writes a sale and the ownership it transfers
 	// together, so an animal cannot be paid for without changing hands.
 	RecordSaleAndTransfer(ctx context.Context, sale *domain.CattleSale, o *domain.CattleOwnership, price string, money Money) (*domain.CattleSale, *domain.CattleOwnership, error)
-	ListCattleOwnership(ctx context.Context, tenantID, cattleID string) ([]*domain.CattleOwnership, error)
+	ListCattleOwnership(ctx context.Context, cattleID, tenantID string) ([]*domain.CattleOwnership, error)
 }
 
 // Columns are listed once and named, because the scans below are positional:
@@ -274,7 +274,15 @@ RETURNING id, tenant_id, cattle_id, owner_id, acquired_at, released_at, acquisit
 	return scanOwnership(row)
 }
 
-func (r *repo) ListCattleOwnership(ctx context.Context, tenantID, cattleID string) ([]*domain.CattleOwnership, error) {
+// ListCattleOwnership takes the cattle first and the tenant second, like
+// GetListing, ListListingBids and GetSale above it. It used to be the one
+// method here in the other order, and both layers above it called it as if it
+// were not: the handler passed (tenant, cattle) to a service declaring
+// (cattle, tenant), which passed (cattle, tenant) to this method declaring
+// (tenant, cattle). Two transpositions, no cancellation — the query looked for
+// a tenant whose id was an animal's. It matched nothing, ever, and the endpoint
+// answered 200 with an empty history for every animal that had ever been sold.
+func (r *repo) ListCattleOwnership(ctx context.Context, cattleID, tenantID string) ([]*domain.CattleOwnership, error) {
 	const q = `
 SELECT id, tenant_id, cattle_id, owner_id, acquired_at, released_at, acquisition_type, sale_id,
        created_at, updated_at, created_by, updated_by

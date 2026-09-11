@@ -1427,3 +1427,165 @@ type deleteCattleReq struct {
 type deleteCattleResp struct {
 	Success bool `json:"success"`
 }
+
+// A bid is accepted or rejected, and accepting one closes the listing.
+//
+// AcceptBid and RejectBid are the two decisions a seller makes, and accepting
+// settles a price. A listing that stays open after a bid is accepted can be sold
+// again, and the animal has two buyers.
+func TestAcceptingABidClosesTheListing(t *testing.T) {
+	p := startPlatform(t)
+	cattle, seller := newID("cow"), newID("sel")
+
+	listing, err := svcclient.Call[createListingReq, listingResp](
+		context.Background(), p.cattleMarket(),
+		"cattlemarket.v1.CattleMarketService/CreateListing",
+		createListingReq{TenantID: p.tenant, CattleID: cattle, SellerID: seller,
+			Title: "Murrah buffalo", AskingPrice: "85000.00", Currency: "INR",
+			ListingType: "auction", CreatedBy: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("create listing: %v", err)
+	}
+
+	low, err := svcclient.Call[placeBidReq, bidResp](
+		context.Background(), p.cattleMarket(),
+		"cattlemarket.v1.CattleMarketService/PlaceBid",
+		placeBidReq{TenantID: p.tenant, ListingID: listing.Listing.ID,
+			BidderID: newID("byr"), BidAmount: "80000.00", CreatedBy: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("place the low bid: %v", err)
+	}
+	high, err := svcclient.Call[placeBidReq, bidResp](
+		context.Background(), p.cattleMarket(),
+		"cattlemarket.v1.CattleMarketService/PlaceBid",
+		placeBidReq{TenantID: p.tenant, ListingID: listing.Listing.ID,
+			BidderID: newID("byr"), BidAmount: "84000.00", CreatedBy: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("place the high bid: %v", err)
+	}
+
+	rejected, err := svcclient.Call[bidActionReq, bidResp](
+		context.Background(), p.cattleMarket(),
+		"cattlemarket.v1.CattleMarketService/RejectBid",
+		bidActionReq{ID: low.Bid.ID, TenantID: p.tenant, UpdatedBy: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("reject the low bid: %v", err)
+	}
+	if rejected.Bid.Status == low.Bid.Status {
+		t.Errorf("the bid is still %s after being rejected", rejected.Bid.Status)
+	}
+
+	accepted, err := svcclient.Call[bidActionReq, bidResp](
+		context.Background(), p.cattleMarket(),
+		"cattlemarket.v1.CattleMarketService/AcceptBid",
+		bidActionReq{ID: high.Bid.ID, TenantID: p.tenant, UpdatedBy: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("accept the high bid: %v", err)
+	}
+	if accepted.Bid.Status == high.Bid.Status {
+		t.Errorf("the bid is still %s after being accepted", accepted.Bid.Status)
+	}
+
+	// The listing is closed, so it takes no further bids.
+	if _, err := svcclient.Call[placeBidReq, bidResp](
+		context.Background(), p.cattleMarket(),
+		"cattlemarket.v1.CattleMarketService/PlaceBid",
+		placeBidReq{TenantID: p.tenant, ListingID: listing.Listing.ID,
+			BidderID: newID("byr"), BidAmount: "86000.00", CreatedBy: "e2e"},
+		p.opts()); err == nil {
+		t.Error("a listing took a bid after one was accepted; the sale was settled " +
+			"and the animal now has two claims on it")
+	}
+
+	// And it reads back closed.
+	got, err := svcclient.Call[idTenantReq, listingStatusResp](
+		context.Background(), p.cattleMarket(),
+		"cattlemarket.v1.CattleMarketService/GetListing",
+		idTenantReq{ID: listing.Listing.ID, TenantID: p.tenant}, p.opts())
+	if err != nil {
+		t.Fatalf("get listing: %v", err)
+	}
+	if got.Listing.Status == "active" {
+		t.Errorf("the listing is still active after a bid was accepted")
+	}
+}
+
+// An animal's ownership history is its own, and a sale adds to it.
+//
+// The history is what answers "whose animal is this", and one that shows another
+// animal's transfers answers it wrongly with a real-looking chain.
+func TestAnAnimalsOwnershipHistoryIsItsOwn(t *testing.T) {
+	p := startPlatform(t)
+
+	sold := func() (string, string) {
+		cattle, seller, buyer := newID("cow"), newID("sel"), newID("byr")
+		listing, err := svcclient.Call[createListingReq, listingResp](
+			context.Background(), p.cattleMarket(),
+			"cattlemarket.v1.CattleMarketService/CreateListing",
+			createListingReq{TenantID: p.tenant, CattleID: cattle, SellerID: seller,
+				Title: "sold", AskingPrice: "85000.00", Currency: "INR",
+				ListingType: "fixed", CreatedBy: "e2e"}, p.opts())
+		if err != nil {
+			t.Fatalf("create listing: %v", err)
+		}
+		if _, err := svcclient.Call[recordSaleReq, saleResp](
+			context.Background(), p.cattleMarket(),
+			"cattlemarket.v1.CattleMarketService/RecordSale",
+			recordSaleReq{TenantID: p.tenant, ListingID: listing.Listing.ID,
+				SellerID: seller, BuyerID: buyer, CattleID: cattle,
+				SalePrice: "85000.00", CreatedBy: "e2e"}, p.opts()); err != nil {
+			t.Fatalf("record sale: %v", err)
+		}
+		return cattle, buyer
+	}
+
+	mine, buyer := sold()
+	sold()
+
+	history, err := svcclient.Call[ownershipReq, ownershipResp](
+		context.Background(), p.cattleMarket(),
+		"cattlemarket.v1.CattleMarketService/GetOwnershipHistory",
+		ownershipReq{TenantID: p.tenant, CattleID: mine}, p.opts())
+	if err != nil {
+		t.Fatalf("get ownership history: %v", err)
+	}
+	if len(history.History) != 1 {
+		t.Fatalf("one animal's history holds %d transfers, want 1 — another was sold "+
+			"the same moment and its transfer is not this animal's", len(history.History))
+	}
+	if history.History[0].CattleID != mine {
+		t.Errorf("a transfer of %s came back in %s's history",
+			history.History[0].CattleID, mine)
+	}
+	if history.History[0].OwnerID != buyer {
+		t.Errorf("the animal belongs to %s, want the buyer %s",
+			history.History[0].OwnerID, buyer)
+	}
+}
+
+type bidActionReq struct {
+	ID        string `json:"id"`
+	TenantID  string `json:"tenant_id"`
+	UpdatedBy string `json:"updated_by"`
+}
+
+type listingStatusResp struct {
+	Listing *struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	} `json:"listing"`
+}
+
+type ownershipReq struct {
+	TenantID string `json:"tenant_id"`
+	CattleID string `json:"cattle_id"`
+}
+
+type ownershipResp struct {
+	History []*struct {
+		ID              string `json:"id"`
+		CattleID        string `json:"cattle_id"`
+		OwnerID         string `json:"owner_id"`
+		AcquisitionType string `json:"acquisition_type"`
+	} `json:"history"`
+}

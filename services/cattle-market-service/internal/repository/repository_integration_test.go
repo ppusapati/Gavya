@@ -346,7 +346,7 @@ func TestTheSameListingCannotBeSoldTwice(t *testing.T) {
 		t.Fatalf("err = %v, want ErrListingNotActive — the animal was sold to two buyers", err)
 	}
 
-	owners, err := m.repo.ListCattleOwnership(context.Background(), m.tenant, listing.CattleID)
+	owners, err := m.repo.ListCattleOwnership(context.Background(), listing.CattleID, m.tenant)
 	if err != nil {
 		t.Fatal(err)
 	}
