@@ -50,6 +50,13 @@ func classify(err error) error {
 	switch {
 	case errors.Is(err, repository.ErrNotFound):
 		return connect.NewError(connect.CodeNotFound, err)
+	case errors.Is(err, repository.ErrCurrencyMismatch):
+		// The caller named a currency this tenant does not record in.
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	case errors.Is(err, repository.ErrCurrencyUnset):
+		// Well formed, and refused by the tenant's state rather than by
+		// anything in the request. Internal would tell a client to retry.
+		return connect.NewError(connect.CodeFailedPrecondition, err)
 	case errors.Is(err, service.ErrInvalidArgument):
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	default:

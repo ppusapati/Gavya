@@ -743,6 +743,38 @@ names `DeleteCattleRequest`'s `deleted_by`, which is the defect it exists for.
 
 ---
 
+## Errors that told a caller to retry what could never work
+
+Four services reported caller-fixable conditions as internal failures, which is
+the one thing a status code is for: `CodeInternal` means "try again", and these
+could not succeed on any number of retries.
+
+- `product-catalog`: a currency the tenant does not record in, a tenant with no
+  currency recorded yet, and a repricing that would change a SKU's currency.
+- `health` and `cattle-market`: the same currency conditions.
+- `milk`: every timezone refusal — and the service had no classifier at all.
+  `CreateSession` called every failure an invalid argument, so a database that
+  was down looked like a malformed request; `GetDailyYield` called every failure
+  internal, so a tenant that had simply never recorded any milk was told to
+  retry. The same mistake in opposite directions: a code chosen without looking
+  at the error.
+
+Three of the four error sets were added by this session's own work — the
+timezone errors and `ErrCurrencyChange` — so this is a gap that opened while the
+rest of it was being closed.
+
+Fixing `milk` needed one thing more. Its service layer returned plain
+`fmt.Errorf` values, so a caller mistake was indistinguishable from a database
+failure and any classifier would have had to guess. It has the
+`ErrInvalidArgument` marker every other service here has now, and its validation
+returns it.
+
+Found by comparing every exported `Err*` a service defines against what its
+handler package references. `balance` and `ingestion` classify inline rather than
+through a `classify` function and were fine; only the four above were not.
+
+---
+
 ## What a second look found: the wire format was accidental
 
 Eleven services returned their domain types directly from Connect handlers, and

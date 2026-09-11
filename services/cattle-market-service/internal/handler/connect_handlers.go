@@ -165,6 +165,10 @@ func classify(err error) error {
 		return connect.NewError(connect.CodeFailedPrecondition, err)
 	case errors.Is(err, repository.ErrCurrencyMismatch):
 		return connect.NewError(connect.CodeInvalidArgument, err)
+	case errors.Is(err, repository.ErrCurrencyUnset):
+		// Well formed, and refused by the tenant's state. Internal would tell a
+		// client to retry a call that cannot succeed until it records a price.
+		return connect.NewError(connect.CodeFailedPrecondition, err)
 	case errors.Is(err, service.ErrInvalidArgument):
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	default:

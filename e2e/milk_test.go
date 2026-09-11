@@ -16,8 +16,11 @@ package e2e
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
+
+	"connectrpc.com/connect"
 
 	"github.com/ppusapati/gavya/libs/integrity/svcclient"
 )
@@ -339,4 +342,56 @@ func TestATenantsTimezoneIsStatedOnceAndThenFixed(t *testing.T) {
 		t.Error("a session with no timezone was accepted, so its tenant's days begin " +
 			"wherever the database happens to be configured")
 	}
+}
+
+// A caller is told whose problem it is.
+//
+// milk-service had no classifier. CreateSession reported every failure as an
+// invalid argument, so a database that was down looked like a malformed request;
+// GetDailyYield reported every failure as internal, so a tenant that had simply
+// never recorded any milk was told to retry something that could not succeed
+// until it did. Both are the same mistake in opposite directions — a code
+// chosen without looking at the error.
+func TestMilkSaysWhoseProblemAFailureIs(t *testing.T) {
+	p := startPlatform(t)
+
+	// A tenant that has recorded nothing has not said which timezone its days
+	// are reckoned in. That is its state, not its request.
+	fresh := newID("tnt")
+	_, err := svcclient.Call[dailyYieldReq, dailyYieldResp](
+		context.Background(), p.milk(), milkSvc+"/GetDailyYield",
+		dailyYieldReq{TenantID: fresh, CattleID: newID("cow"), Date: today(t)},
+		svcclient.CallOptions{Tenant: fresh, Actor: "e2e"})
+	if err == nil {
+		t.Fatal("a yield was answered for a tenant that has recorded no milk")
+	}
+	if code := codeOf(t, err); code != connect.CodeFailedPrecondition {
+		t.Errorf("a tenant with no readings gets %s, want failed_precondition — "+
+			"internal tells a client to retry a call that cannot succeed until it "+
+			"opens a session (err = %v)", code, err)
+	}
+
+	// A missing field is the caller's.
+	_, err = svcclient.Call[createMilkSessionReq, milkSessionResp](
+		context.Background(), p.milk(), milkSvc+"/CreateSession",
+		createMilkSessionReq{TenantID: p.tenant, ShiftType: "morning",
+			Timezone: tenantTimezone, CreatedBy: "e2e"}, p.opts())
+	if err == nil {
+		t.Fatal("a session with no cattle_id was opened")
+	}
+	if code := codeOf(t, err); code != connect.CodeInvalidArgument {
+		t.Errorf("a missing cattle_id gets %s, want invalid_argument (err = %v)", code, err)
+	}
+}
+
+// codeOf reads the Connect code off a service error, failing the test if the
+// error is not one — a transport failure answering a question about
+// classification would otherwise read as the wrong classification.
+func codeOf(t *testing.T, err error) connect.Code {
+	t.Helper()
+	var svcErr *svcclient.Error
+	if !errors.As(err, &svcErr) {
+		t.Fatalf("not a service error: %v", err)
+	}
+	return svcErr.Code
 }

@@ -64,6 +64,17 @@ func classify(err error) error {
 		// The request named something that is not there. That is the caller's to
 		// fix, not a failure to retry.
 		return connect.NewError(connect.CodeInvalidArgument, err)
+	case errors.Is(err, repository.ErrCurrencyMismatch):
+		// The caller named a currency this tenant does not record in. Fixable by
+		// the caller, so not internal.
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	case errors.Is(err, repository.ErrCurrencyUnset),
+		errors.Is(err, repository.ErrCurrencyChange):
+		// The request was well formed; the tenant's or the SKU's state refused
+		// it. Retrying changes nothing until that state does — which is what
+		// FailedPrecondition says and Internal does not. Reported as internal,
+		// these told a client to retry a call that could never succeed.
+		return connect.NewError(connect.CodeFailedPrecondition, err)
 	case errors.Is(err, service.ErrInvalidArgument):
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	default:

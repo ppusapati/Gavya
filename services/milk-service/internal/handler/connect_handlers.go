@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -10,8 +11,37 @@ import (
 
 	"github.com/ppusapati/gavya/libs/integrity/connectjson"
 	"github.com/ppusapati/gavya/services/milk-service/internal/domain"
+	"github.com/ppusapati/gavya/services/milk-service/internal/repository"
 	"github.com/ppusapati/gavya/services/milk-service/internal/service"
 )
+
+// classify maps a failure onto the code that describes it.
+//
+// This service had no classifier. CreateSession reported every failure as an
+// invalid argument, so a database that was down looked like a malformed request;
+// GetDailyYield reported every failure as internal, so a tenant that had simply
+// never recorded any milk was told to retry something that could not succeed
+// until it did. Both are the same mistake in opposite directions: a code that
+// says whose problem it is, chosen without looking at the error.
+func classify(err error) error {
+	switch {
+	case errors.Is(err, repository.ErrTimezoneUnset):
+		// Well formed, and refused by the tenant's state rather than by anything
+		// in the request. Nothing to retry until a session is opened.
+		return connect.NewError(connect.CodeFailedPrecondition, err)
+	case errors.Is(err, repository.ErrTimezoneMismatch):
+		// The tenant already reckons its days in another zone, and changing that
+		// would restate which day every reading already taken belongs to.
+		return connect.NewError(connect.CodeFailedPrecondition, err)
+	case errors.Is(err, repository.ErrUnknownTimezone):
+		// A name this binary's tzdata cannot load. The caller's to fix.
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	case errors.Is(err, service.ErrInvalidArgument):
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	default:
+		return connect.NewError(connect.CodeInternal, err)
+	}
+}
 
 type CreateSessionRequest struct {
 	TenantID  string `json:"tenant_id"`
@@ -151,7 +181,7 @@ func (h *Handler) CreateSession(ctx context.Context, req *connect.Request[Create
 	m := req.Msg
 	sess, err := h.svc.CreateSession(ctx, &domain.MilkSession{TenantID: m.TenantID, CattleID: m.CattleID, ShiftType: m.ShiftType, CreatedBy: m.CreatedBy}, m.Timezone)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, classify(err)
 	}
 	return connect.NewResponse(&CreateSessionResponse{Session: toSessionProto(sess)}), nil
 }
@@ -228,7 +258,7 @@ func (h *Handler) GetDailyYield(ctx context.Context, req *connect.Request[DailyY
 	}
 	total, err := h.svc.GetDailyYield(ctx, req.Msg.TenantID, req.Msg.CattleID, date)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, classify(err)
 	}
 	return connect.NewResponse(&DailyYieldResponse{TotalLiters: total}), nil
 }
