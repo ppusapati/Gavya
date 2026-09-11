@@ -305,6 +305,25 @@ func scanInvoice(s scanner) (*domain.Invoice, error) {
 		}
 		return nil, err
 	}
+	// The four columns above were read into locals and then dropped on the
+	// floor, exactly as scanOrder reads its own and does not. Every invoice this
+	// service has ever produced came back at zero with no currency — the row was
+	// written correctly by CreateInvoice and never read back. Nothing errored,
+	// because Scan was given somewhere to put the values and the compiler asks
+	// for nothing more than that.
+	for _, f := range []struct {
+		name string
+		in   string
+		out  *money.Money
+	}{
+		{"sub_total", sub, &inv.SubTotal},
+		{"tax_amount", tax, &inv.TaxAmount},
+		{"total_amount", total, &inv.TotalAmount},
+	} {
+		if *f.out, err = parseAmount(f.in, code); err != nil {
+			return nil, fmt.Errorf("invoice %s %s: %w", inv.ID, f.name, err)
+		}
+	}
 	return inv, nil
 }
 
