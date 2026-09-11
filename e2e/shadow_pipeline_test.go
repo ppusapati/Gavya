@@ -21,6 +21,7 @@ type declarePolicyReq struct {
 	Resolution    string   `json:"resolution"`
 	Version       int32    `json:"version"`
 	EffectiveFrom string   `json:"effective_from"`
+	EffectiveTo   string   `json:"effective_to,omitempty"`
 	Actor         string   `json:"actor"`
 }
 type policyProto struct {
