@@ -50,12 +50,12 @@ type tenantActionReq struct {
 
 type tenantResp struct {
 	Tenant *struct {
-		ID            string `json:"ID"`
-		Slug          string `json:"Slug"`
-		Status        string `json:"Status"`
-		Currency      string `json:"Currency"`
-		CurrencyScale int32  `json:"CurrencyScale"`
-		Timezone      string `json:"Timezone"`
+		ID            string `json:"id"`
+		Slug          string `json:"slug"`
+		Status        string `json:"status"`
+		Currency      string `json:"currency"`
+		CurrencyScale int32  `json:"currency_scale"`
+		Timezone      string `json:"timezone"`
 	} `json:"tenant"`
 }
 
@@ -332,13 +332,12 @@ type recordCalvingReq struct {
 type calvingResp struct {
 	CalvingRecord *struct {
 		ID string `json:"id"`
-		// domain.CalvingRecord carries no json tags, so this is emitted as
-		// "CalfGender". Go's decoder ignores case but not the underscore, so
-		// `json:"calf_gender"` matches nothing and reads as empty. Written that
-		// way this failed saying the value was "" — which is worth knowing,
-		// because a field only ever compared against another empty string would
-		// have passed and checked nothing.
-		CalfGender string `json:"CalfGender"`
+		// This read `json:"CalfGender"` until the domain types were tagged,
+		// because they had none and Go emitted the field's own name. A client
+		// written the obvious way — `calf_gender` — matched nothing and read
+		// empty, silently. That trap is what turned up the wire-format defect
+		// this whole file now sits behind; see e2e/wireformat_test.go.
+		CalfGender string `json:"calf_gender"`
 	} `json:"calving_record"`
 }
 

@@ -6,44 +6,66 @@ import (
 )
 
 type BreedingCycle struct {
-	ID, TenantID, CattleID string
-	HeatDate               time.Time
-	Status                 string // heat/inseminated/pregnant/calved/failed
-	Notes                  string
-	CreatedAt, UpdatedAt   time.Time
-	CreatedBy, UpdatedBy   string
-	DeletedAt              *time.Time
+	ID        string     `json:"id"`
+	TenantID  string     `json:"tenant_id"`
+	CattleID  string     `json:"cattle_id"`
+	HeatDate  time.Time  `json:"heat_date"`
+	Status    string     `json:"status"` // heat/inseminated/pregnant/calved/failed
+	Notes     string     `json:"notes"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+	CreatedBy string     `json:"created_by"`
+	UpdatedBy string     `json:"updated_by"`
+	DeletedAt *time.Time `json:"deleted_at"`
 }
 
 type Insemination struct {
-	ID, TenantID, CycleID, CattleID string
-	BullID, SemenBatchID            *string
-	InseminatedAt                   time.Time
-	Method                          string // natural/AI
-	CreatedAt, UpdatedAt            time.Time
-	CreatedBy, UpdatedBy            string
-	DeletedAt                       *time.Time
+	ID            string     `json:"id"`
+	TenantID      string     `json:"tenant_id"`
+	CycleID       string     `json:"cycle_id"`
+	CattleID      string     `json:"cattle_id"`
+	BullID        *string    `json:"bull_id"`
+	SemenBatchID  *string    `json:"semen_batch_id"`
+	InseminatedAt time.Time  `json:"inseminated_at"`
+	Method        string     `json:"method"` // natural/AI
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+	CreatedBy     string     `json:"created_by"`
+	UpdatedBy     string     `json:"updated_by"`
+	DeletedAt     *time.Time `json:"deleted_at"`
 }
 
 type Pregnancy struct {
-	ID, TenantID, CattleID, InseminationID string
-	ConfirmedAt, ExpectedCalvingDate       time.Time
-	Status                                 string // active/delivered/aborted
-	CreatedAt, UpdatedAt                   time.Time
-	CreatedBy, UpdatedBy                   string
-	DeletedAt                              *time.Time
+	ID                  string     `json:"id"`
+	TenantID            string     `json:"tenant_id"`
+	CattleID            string     `json:"cattle_id"`
+	InseminationID      string     `json:"insemination_id"`
+	ConfirmedAt         time.Time  `json:"confirmed_at"`
+	ExpectedCalvingDate time.Time  `json:"expected_calving_date"`
+	Status              string     `json:"status"` // active/delivered/aborted
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
+	CreatedBy           string     `json:"created_by"`
+	UpdatedBy           string     `json:"updated_by"`
+	DeletedAt           *time.Time `json:"deleted_at"`
 }
 
 type CalvingRecord struct {
-	ID, TenantID, PregnancyID, CattleID string
-	CalfID                              *string
-	CalvingDate                         time.Time
-	CalfGender                          string
-	CalfWeight                          float64
-	Complications, Status               string // normal/assisted/emergency
-	CreatedAt, UpdatedAt                time.Time
-	CreatedBy, UpdatedBy                string
-	DeletedAt                           *time.Time
+	ID            string     `json:"id"`
+	TenantID      string     `json:"tenant_id"`
+	PregnancyID   string     `json:"pregnancy_id"`
+	CattleID      string     `json:"cattle_id"`
+	CalfID        *string    `json:"calf_id"`
+	CalvingDate   time.Time  `json:"calving_date"`
+	CalfGender    string     `json:"calf_gender"`
+	CalfWeight    float64    `json:"calf_weight"`
+	Complications string     `json:"complications"`
+	Status        string     `json:"status"` // normal/assisted/emergency
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+	CreatedBy     string     `json:"created_by"`
+	UpdatedBy     string     `json:"updated_by"`
+	DeletedAt     *time.Time `json:"deleted_at"`
 }
 
 // Breeding states, named so a comparison against a literal cannot drift from

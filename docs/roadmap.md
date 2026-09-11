@@ -743,6 +743,49 @@ names `DeleteCattleRequest`'s `deleted_by`, which is the defect it exists for.
 
 ---
 
+## What a second look found: the wire format was accidental
+
+Eleven services returned their domain types directly from Connect handlers, and
+those types carried no json tags at all. So their API emitted Go field names:
+`tenant-service` answered with `{"ID":...,"ContactEmail":...,"CurrencyScale":2}`
+while every other service in the platform answers in `lower_snake_case`.
+
+That is not a style difference, and the reason is a property of Go's decoder: it
+ignores case but not underscores. A client written in the platform's own
+convention matches `id` against `ID` and reads it, and matches `currency_scale`
+against `CurrencyScale` and reads **nothing** — the field arrives as its zero
+value with no error anywhere. Measured rather than argued: a client struct
+declaring `contact_email` and `currency_scale` against a real `TenantResponse`
+read `""` and `0`.
+
+`currency_scale` reading `0` is the sharp end. A tenant recording rupees looks
+to that client like a tenant whose currency has no minor unit, and the paise are
+dropped — by the client, on data the platform took care to keep exact all the way
+to the wire.
+
+It is the same shape as the `deleted_by` a handler discarded, one layer out: a
+value the caller has every reason to believe it received. And it was found the
+same way that one was — by a decoding trap in this repository's own tests, where
+a client struct read `""` where it expected a calf's sex, in a test written two
+days earlier.
+
+**Fixed by tagging, not by adding view types.** 432 fields across the eleven
+services now carry an explicit json name. The services that hold money already
+have view types, introduced because a `money.Money` field needs a different shape
+on the wire than in the domain; the rest have no such need, and tags are the
+smaller change. None of the eleven marshals its domain types into storage, so
+this changes the wire and nothing else — checked before touching them.
+
+**`e2e/wireformat_test.go` pins it.** Every exported field reachable from a
+Connect response, through the domain types the responses embed, must carry a json
+name in `lower_snake_case`. Removing one tag makes it fail and name the field.
+
+Worth noting why no existing test caught this: the e2e clients mostly read `id`,
+`status` and other single words, which match case-insensitively either way. The
+format was wrong in exactly the fields nothing happened to assert on.
+
+---
+
 ## What a re-audit of this work found
 
 Everything above was re-checked against a running system rather than re-read.

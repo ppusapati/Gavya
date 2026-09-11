@@ -7,56 +7,56 @@ import (
 )
 
 type Category struct {
-	ID          string
-	TenantID    string
-	Name        string
-	Slug        string
-	ParentID    *string
-	Description string
-	SortOrder   int
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	CreatedBy   string
-	UpdatedBy   string
-	DeletedAt   *time.Time
+	ID          string     `json:"id"`
+	TenantID    string     `json:"tenant_id"`
+	Name        string     `json:"name"`
+	Slug        string     `json:"slug"`
+	ParentID    *string    `json:"parent_id"`
+	Description string     `json:"description"`
+	SortOrder   int        `json:"sort_order"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+	CreatedBy   string     `json:"created_by"`
+	UpdatedBy   string     `json:"updated_by"`
+	DeletedAt   *time.Time `json:"deleted_at"`
 }
 
 type Brand struct {
-	ID        string
-	TenantID  string
-	Name      string
-	Slug      string
-	LogoURL   string
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	CreatedBy string
-	UpdatedBy string
-	DeletedAt *time.Time
+	ID        string     `json:"id"`
+	TenantID  string     `json:"tenant_id"`
+	Name      string     `json:"name"`
+	Slug      string     `json:"slug"`
+	LogoURL   string     `json:"logo_url"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+	CreatedBy string     `json:"created_by"`
+	UpdatedBy string     `json:"updated_by"`
+	DeletedAt *time.Time `json:"deleted_at"`
 }
 
 type Product struct {
-	ID          string
-	TenantID    string
-	CategoryID  string
-	BrandID     string
-	Name        string
-	Slug        string
-	Description string
-	ProductType string // feed/medicine/supplement/accessory/equipment
-	Status      string // active/inactive/discontinued
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	CreatedBy   string
-	UpdatedBy   string
-	DeletedAt   *time.Time
+	ID          string     `json:"id"`
+	TenantID    string     `json:"tenant_id"`
+	CategoryID  string     `json:"category_id"`
+	BrandID     string     `json:"brand_id"`
+	Name        string     `json:"name"`
+	Slug        string     `json:"slug"`
+	Description string     `json:"description"`
+	ProductType string     `json:"product_type"` // feed/medicine/supplement/accessory/equipment
+	Status      string     `json:"status"`       // active/inactive/discontinued
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+	CreatedBy   string     `json:"created_by"`
+	UpdatedBy   string     `json:"updated_by"`
+	DeletedAt   *time.Time `json:"deleted_at"`
 }
 
 type SKU struct {
-	ID        string
-	TenantID  string
-	ProductID string
-	Code      string
-	Name      string
+	ID        string `json:"id"`
+	TenantID  string `json:"tenant_id"`
+	ProductID string `json:"product_id"`
+	Code      string `json:"code"`
+	Name      string `json:"name"`
 	// Price is exact, and carries the currency it is in.
 	//
 	// It was a float64 read out of a NUMERIC(18,4) column. Four decimals survive
@@ -69,17 +69,17 @@ type SKU struct {
 	// each claim to say what currency an amount is in are two places that can
 	// disagree, and an amount whose currency is a separate field is one
 	// refactor away from being added to an amount in another.
-	Price money.Money
-	Unit  string
+	Price money.Money `json:"price"`
+	Unit  string      `json:"unit"`
 	// UnitSize is a quantity, not money: 2.5 kg, not 2.50 rupees. It is still a
 	// float64 and out of scope here; libs/integrity/quantity is where it would
 	// go, and NUMERIC(10,3) is nowhere near the range where float64 loses a
 	// digit.
-	UnitSize  float64
-	Status    string // active/inactive
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	CreatedBy string
-	UpdatedBy string
-	DeletedAt *time.Time
+	UnitSize  float64    `json:"unit_size"`
+	Status    string     `json:"status"` // active/inactive
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+	CreatedBy string     `json:"created_by"`
+	UpdatedBy string     `json:"updated_by"`
+	DeletedAt *time.Time `json:"deleted_at"`
 }
