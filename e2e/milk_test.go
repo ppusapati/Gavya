@@ -322,12 +322,20 @@ func TestATenantsTimezoneIsStatedOnceAndThenFixed(t *testing.T) {
 			"and a half hours apart, and neither is what the database would store")
 	}
 
-	// An omitted one too. There is no default: a shift is "morning" somewhere.
+	// An omitted one too. There is no default: a shift is "morning" somewhere,
+	// and time.LoadLocation("") succeeds — it returns UTC — so refusing an empty
+	// name has to be its own check rather than a consequence of loading it.
+	//
+	// The tenant here is fresh and the call options name the same one. Written
+	// with a fresh id in the body and the shared tenant in the header, this
+	// passed on the mismatch rather than on the empty zone: removing the
+	// emptiness check left it green.
+	blank := newID("tnt")
 	if _, err := svcclient.Call[createMilkSessionReq, milkSessionResp](
 		context.Background(), p.milk(), milkSvc+"/CreateSession",
-		createMilkSessionReq{TenantID: newID("tnt"), CattleID: newID("cow"),
+		createMilkSessionReq{TenantID: blank, CattleID: newID("cow"),
 			ShiftType: "morning", CreatedBy: "e2e"},
-		p.opts()); err == nil {
+		svcclient.CallOptions{Tenant: blank, Actor: "e2e"}); err == nil {
 		t.Error("a session with no timezone was accepted, so its tenant's days begin " +
 			"wherever the database happens to be configured")
 	}

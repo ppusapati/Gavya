@@ -49,7 +49,7 @@ have, and each of the three is a deliberate difference rather than an oversight.
 
 | Property | Integrity layer | Older ERP services |
 |---|---|---|
-| **Append-only history** | Held. Every `UPDATE` in the spine is a supersession stamp or a lifecycle status, never a change to a record's content. | **Not held, and nothing stands in for it.** These are ordinary CRUD services: a price is updated in place and the previous one is gone. They carry `updated_by` and `updated_at`, so the last change has a name and a time against it — but no earlier value, and no record that a change happened at all. See *The audit trail is narrower than it looks* below. |
+| **Append-only history** | Held. Every `UPDATE` in the spine is a supersession stamp or a lifecycle status, never a change to a record's content. | **Not held; partly stood in for.** These are ordinary CRUD services and a value updated in place is gone. Seven of them now write an audit entry for the transitions somebody could be asked to defend — an invoice voided, a SKU repriced, a return approved — which preserves the figure that was replaced in those cases and only those. Every other edit still overwrites with nothing but `updated_by` against it. See *The audit trail is narrower than it looks* below. |
 | **Bitemporality** | Held on every authoritative record. | **Not held.** They record what is true now, not what was believed when. |
 | **Deterministic money** | Held. `libs/integrity/money`: scaled integers, explicit rounding mode, recorded rounding trail. | **Mostly held.** All five services that carry money use `libs/integrity/money` end to end. No rounding trail, though: they round in SQL rather than recording the step, so a figure can be reproduced but the rounding that produced it is not itself a record. See below. |
 | **Derivation provenance** | Held. | Not applicable: they capture, they do not import. |
@@ -62,23 +62,32 @@ have, and each of the three is a deliberate difference rather than an oversight.
 caller's own transaction, so a change and its record land together or not at all,
 and `audit-service` verifies the chain. That mechanism is sound and tested.
 
-**Six of the twenty-nine services use it:** `procurement`, `settlement`,
-`material`, `laboratory`, `production` and `milk`. That is worth stating plainly,
-because "the platform has a hash-chained audit trail" is true of the mechanism
-and misleading about the coverage.
+**Thirteen of the twenty-nine services use it:** `procurement`, `settlement`,
+`material`, `laboratory`, `production` and `milk`, which always did, and
+`billing`, `breeding`, `cattle`, `cattle-market`, `health`, `order` and
+`product-catalog`, which were given entries for the decisions that destroy a
+figure. That is worth stating plainly with the next paragraph attached, because
+"the platform has a hash-chained audit trail" is true of the mechanism and
+still misleading about the coverage.
 
-The two groups that do not use it are not the same case:
+**What those seven write is narrower than what the first six write.** The
+integrity services record the operations they perform. The ERP services record
+only the transitions somebody could be asked to defend — an invoice voided, a bid
+accepted, a SKU repriced, a return approved, an animal deleted — and nothing else.
+Ordinary edits still overwrite in place with no trace: change a product's name or
+a warehouse's address and the previous value is gone, with `updated_by` naming
+whoever touched it last and nothing saying what they changed.
 
-- **The integrity spine** — `ingestion`, `observation`, `canonical`, `pooling`,
-  `shadow-settlement`, `balance` — does not need it. Its records are append-only
-  and bitemporal: a correction is a new row, the old one stays and is marked
-  superseded, and every version carries when it was recorded. The history is the
-  data. A separate trail would restate what the rows already say.
-- **The older ERP services** do need it and do not have it. They update content
-  in place, so a price that changed leaves no trace of what it was. `updated_by`
-  names whoever touched it last and nothing preserves the figure they replaced or
-  says that a replacement happened. This is a real gap rather than a design
-  difference, and `docs/roadmap.md` carries it as open work.
+So the gap narrowed rather than closed, and it narrowed on the cases that
+mattered: the ones where a figure was destroyed and could not be reconstructed
+from anything else. `docs/roadmap.md` carries what is left.
+
+**The integrity spine** — `ingestion`, `observation`, `canonical`, `pooling`,
+`shadow-settlement`, `balance` — does not use it and does not need to. Its
+records are append-only and bitemporal: a correction is a new row, the old one
+stays and is marked superseded, and every version carries when it was recorded.
+The history is the data. A separate trail would restate what the rows already
+say.
 
 ### Money in the older services
 

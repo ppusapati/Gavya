@@ -237,9 +237,14 @@ Measured rather than argued:
   with the shortest representation that round-trips, so the decimal survives.
 - But five services widen their money columns to `NUMERIC(18,4)` at deploy, so
   one schema serves a yen deployment and a dinar one. At four decimals float64
-  is exact only below about 10^11. Below that, nothing lost across 100,000
-  values; above 10^12, more than three quarters lost a digit. 6791947779410.3551
-  comes back as 6791947779410.3555.
+  is exact only below about 10^11. Below that, nothing lost across 200,000
+  values; above 10^12, 151,682 of 200,000 lost a digit — 75.8%.
+  6791947779410.3551 comes back as 6791947779410.3555.
+
+  (This read 100,000 while every other copy of the same measurement — the
+  schemas, `integrity-platform.md` — read 200,000. Re-measured rather than
+  reconciled by picking one: 200,000 is the figure, and the "more than three
+  quarters" everywhere else is 75.8%.)
 
 So the column could hold values the code could not carry and nothing said so.
 The schemas were made to bound every four-decimal money column to what float64
@@ -633,10 +638,16 @@ somebody has to work around forever.
 
 Found while making the properties table in `integrity-platform.md` truthful, and
 found the hard way: the first draft of that correction claimed these services
-carry the audit trail. They do not. Nine of them update content in place and
-write no audit entry at all.
+carry the audit trail. They did not — they updated content in place and wrote no
+audit entry at all.
 
-Narrowing it down mattered, because "nine services have no audit trail" and
+(Since then seven of them have been given entries for the transitions that
+destroy a figure, so thirteen of the twenty-nine services write to the trail
+rather than six. Sixteen still write nothing, and six of those are the integrity
+spine, which does not need it. The rest of this section is the reasoning that got
+there.)
+
+Narrowing it down mattered, because "these services have no audit trail" and
 "one figure is destroyed" are different problems:
 
 - **Order and billing totals are derived.** They are recomputed in SQL from the
@@ -729,6 +740,53 @@ on to something this cannot follow — `printOptions(*m)` and the like. Skipping
 them under-reports; flagging them would have made the whole thing something to
 scroll past, and all five are fine. Run against the tree before `87e8115` it
 names `DeleteCattleRequest`'s `deleted_by`, which is the defect it exists for.
+
+---
+
+## What a re-audit of this work found
+
+Everything above was re-checked against a running system rather than re-read.
+Four things came out of it, and all four were in the checking rather than the
+code.
+
+**One test was named for something it did not do.**
+`TestAReconciliationRunIsAcceptedOnce` accepted a run once, confirmed the id
+came back, and never accepted it twice. The assertion is there now. Reaching it
+takes removing two guards — the service refuses an already-accepted run and the
+repository's `UPDATE` carries `AND accepted_at IS NULL` — which is why mutating
+one at a time showed nothing and looked for a while like the test was still
+empty.
+
+**One assertion passed for the wrong reason.** The check that a milk session with
+no timezone is refused used a fresh tenant id in the body and the shared tenant
+in the header. The mismatch was what failed the call, not the missing timezone,
+so removing the emptiness check left the test green. It matters because
+`time.LoadLocation("")` succeeds — it returns UTC — so refusing an empty name has
+to be its own check rather than a consequence of loading it. Fixed, and the
+mutation kills it now.
+
+**Two documents disagreed about a measurement.** The round-trip figure read
+100,000 in one place and 200,000 in six others. Re-measured rather than
+reconciled by choosing: below 10^11, 0 of 200,000 values lost a digit; above
+10^12, 151,682 of 200,000 did, which is 75.8% and matches the "more than three
+quarters" written everywhere else.
+
+**The audit-trail coverage claim was stale, and this work is what made it
+stale.** `integrity-platform.md` said six of the twenty-nine services write to
+the trail. Thirteen do: the original six plus seven given entries for the
+transitions that destroy a figure. Sixteen still write nothing, six of which are
+the integrity spine and do not need to. The nuance that had to go in with the
+number is that what those seven write is narrower than what the first six write —
+they record decisions somebody could be asked to defend, and nothing else.
+
+Two mutations survived without anything being wrong, and both are worth knowing
+about before the next audit repeats them. Loosening the `quantity_on_hand >= 0`
+CHECK does not fail any test, because the guard the test exercises is in the
+repository's `UPDATE`; the constraint is a backstop for paths that bypass the
+repository, and nothing covers it. Removing the service's already-accepted check
+does not fail any test either, for the same reason one layer down. Redundant
+guards are not a defect, but a single-layer mutation proves less than it looks
+like it does.
 
 ---
 

@@ -359,6 +359,26 @@ func TestAReconciliationRunIsAcceptedOnce(t *testing.T) {
 		t.Errorf("accepting run %s returned run %s", run.Run.ID, accepted.Run.ID)
 	}
 
+	// Once, and not again. Accepting is what makes a run's adjustments the
+	// figures a plant works from, and a second acceptance would restate a
+	// fortnight somebody has already signed off — with the second signature
+	// overwriting the first, so the record would name the wrong person.
+	//
+	// This assertion was missing from the first version of this test, which was
+	// called AcceptedOnce and never accepted twice.
+	//
+	// It takes removing two guards to reach it: the service refuses an already
+	// accepted run, and the repository's UPDATE carries `AND accepted_at IS
+	// NULL`. Either alone is enough, which is why mutating one at a time showed
+	// nothing and looked for a while like the test was still empty.
+	if _, err := svcclient.Call[acceptRunReq, acceptRunResp](ctx, p.balance(),
+		balanceSvc+"/AcceptRun", acceptRunReq{
+			TenantID: p.tenant, RunID: run.Run.ID, Actor: "someone-else",
+		}, p.opts()); err == nil {
+		t.Error("the same run was accepted twice; the second acceptance restates a " +
+			"period already signed off and records a different person as having done it")
+	}
+
 	// A run nobody produced cannot be accepted. Accepting an id that is not
 	// there must say so rather than report success over nothing.
 	if _, err := svcclient.Call[acceptRunReq, acceptRunResp](ctx, p.balance(),
