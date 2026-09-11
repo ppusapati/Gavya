@@ -395,3 +395,245 @@ func codeOf(t *testing.T, err error) connect.Code {
 	}
 	return svcErr.Code
 }
+
+// The reads, and the quality reading that hangs off a milk record.
+//
+// These are the six routes milk-service had left. They are reads and one write,
+// and the assertions are the three things that go wrong in a service shaped like
+// this: a row that comes back as something other than what went in, a list
+// scoped to the wrong thing, and a figure rounded on its way into a column.
+
+type getByIDReq struct {
+	ID       string `json:"id"`
+	TenantID string `json:"tenant_id"`
+}
+
+type listSessionsReq struct {
+	TenantID string `json:"tenant_id"`
+	Limit    int32  `json:"limit"`
+	Offset   int32  `json:"offset"`
+}
+
+type listSessionsResp struct {
+	Sessions []*struct {
+		ID       string `json:"id"`
+		CattleID string `json:"cattle_id"`
+		Status   string `json:"status"`
+	} `json:"sessions"`
+}
+
+type listRecordsReq struct {
+	SessionID string `json:"session_id"`
+	TenantID  string `json:"tenant_id"`
+}
+
+type listRecordsResp struct {
+	Records []*struct {
+		ID             string  `json:"id"`
+		SessionID      string  `json:"session_id"`
+		QuantityLiters float64 `json:"quantity_liters"`
+	} `json:"records"`
+}
+
+type updateSessionStatusReq struct {
+	ID        string `json:"id"`
+	TenantID  string `json:"tenant_id"`
+	Status    string `json:"status"`
+	UpdatedBy string `json:"updated_by"`
+}
+
+type recordQualityReq struct {
+	TenantID   string  `json:"tenant_id"`
+	RecordID   string  `json:"record_id"`
+	FatPercent float64 `json:"fat_percent"`
+	SNFPercent float64 `json:"snf_percent"`
+	Lactose    float64 `json:"lactose"`
+	CreatedBy  string  `json:"created_by"`
+}
+
+type qualityResp struct {
+	Quality *struct {
+		ID         string  `json:"id"`
+		RecordID   string  `json:"record_id"`
+		FatPercent float64 `json:"fat_percent"`
+		SNFPercent float64 `json:"snf_percent"`
+		Lactose    float64 `json:"lactose"`
+	} `json:"quality"`
+}
+
+// A session and its records read back as what was written, and belong to the
+// session they were written against.
+func TestAMilkSessionAndItsRecordsReadBack(t *testing.T) {
+	p := startPlatform(t)
+	cattle := newID("cow")
+
+	sess, err := svcclient.Call[createMilkSessionReq, milkSessionResp](
+		context.Background(), p.milk(), milkSvc+"/CreateSession",
+		createMilkSessionReq{TenantID: p.tenant, CattleID: cattle,
+			ShiftType: "evening", Timezone: tenantTimezone, CreatedBy: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	got, err := svcclient.Call[getByIDReq, listSessionsResp](
+		context.Background(), p.milk(), milkSvc+"/GetSession",
+		getByIDReq{ID: sess.Session.ID, TenantID: p.tenant}, p.opts())
+	_ = got
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+
+	// Two records in this session, one in another, so the list has something to
+	// exclude. A list scoped to the wrong thing is a number of the right
+	// magnitude in the right units.
+	for _, l := range []float64{6.250, 5.750} {
+		if _, err := svcclient.Call[recordMilkReq, milkRecordResp](
+			context.Background(), p.milk(), milkSvc+"/RecordMilk",
+			recordMilkReq{TenantID: p.tenant, SessionID: sess.Session.ID,
+				CattleID: cattle, QuantityLiters: l, CreatedBy: "e2e"}, p.opts()); err != nil {
+			t.Fatalf("record %v: %v", l, err)
+		}
+	}
+	aMilking(t, p, 40.000)
+
+	list, err := svcclient.Call[listRecordsReq, listRecordsResp](
+		context.Background(), p.milk(), milkSvc+"/ListSessionRecords",
+		listRecordsReq{SessionID: sess.Session.ID, TenantID: p.tenant}, p.opts())
+	if err != nil {
+		t.Fatalf("list session records: %v", err)
+	}
+	if len(list.Records) != 2 {
+		t.Fatalf("the session holds %d records, want 2 — another session was milked "+
+			"the same day and its reading is not this one's", len(list.Records))
+	}
+	for _, r := range list.Records {
+		if r.SessionID != sess.Session.ID {
+			t.Errorf("a record from session %s came back in session %s's list",
+				r.SessionID, sess.Session.ID)
+		}
+	}
+
+	// And one of them reads back on its own, with the figure it was written with.
+	one, err := svcclient.Call[getByIDReq, milkRecordResp](
+		context.Background(), p.milk(), milkSvc+"/GetRecord",
+		getByIDReq{ID: list.Records[0].ID, TenantID: p.tenant}, p.opts())
+	if err != nil {
+		t.Fatalf("get record: %v", err)
+	}
+	if one.Record.QuantityLiters != list.Records[0].QuantityLiters {
+		t.Errorf("the record reads %v litres on its own and %v in the list",
+			one.Record.QuantityLiters, list.Records[0].QuantityLiters)
+	}
+
+	// A session listing holds this tenant's sessions and no other tenant's.
+	mine, err := svcclient.Call[listSessionsReq, listSessionsResp](
+		context.Background(), p.milk(), milkSvc+"/ListSessions",
+		listSessionsReq{TenantID: p.tenant, Limit: 100}, p.opts())
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if len(mine.Sessions) == 0 {
+		t.Fatal("the tenant that opened a session sees none")
+	}
+	other := newID("tnt")
+	theirs, err := svcclient.Call[listSessionsReq, listSessionsResp](
+		context.Background(), p.milk(), milkSvc+"/ListSessions",
+		listSessionsReq{TenantID: other, Limit: 100},
+		svcclient.CallOptions{Tenant: other, Actor: "e2e"})
+	if err == nil && len(theirs.Sessions) > 0 {
+		t.Errorf("a second tenant sees %d milk sessions it never opened", len(theirs.Sessions))
+	}
+}
+
+// A session's status moves, and only this tenant can move it.
+func TestAMilkSessionsStatusMoves(t *testing.T) {
+	p := startPlatform(t)
+	sess, err := svcclient.Call[createMilkSessionReq, milkSessionResp](
+		context.Background(), p.milk(), milkSvc+"/CreateSession",
+		createMilkSessionReq{TenantID: p.tenant, CattleID: newID("cow"),
+			ShiftType: "morning", Timezone: tenantTimezone, CreatedBy: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if sess.Session.Status != "pending" {
+		t.Fatalf("a new session is %s, want pending", sess.Session.Status)
+	}
+
+	moved, err := svcclient.Call[updateSessionStatusReq, milkSessionResp](
+		context.Background(), p.milk(), milkSvc+"/UpdateSessionStatus",
+		updateSessionStatusReq{ID: sess.Session.ID, TenantID: p.tenant,
+			Status: "completed", UpdatedBy: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+	if moved.Session.Status != "completed" {
+		t.Errorf("status = %s, want completed", moved.Session.Status)
+	}
+
+	// A second tenant cannot move it. Without the tenant clause this would
+	// succeed and read as a status somebody else set.
+	other := newID("tnt")
+	if _, err := svcclient.Call[updateSessionStatusReq, milkSessionResp](
+		context.Background(), p.milk(), milkSvc+"/UpdateSessionStatus",
+		updateSessionStatusReq{ID: sess.Session.ID, TenantID: other,
+			Status: "cancelled", UpdatedBy: "e2e"},
+		svcclient.CallOptions{Tenant: other, Actor: "e2e"}); err == nil {
+		t.Error("a second tenant moved the status of a session it did not open")
+	}
+}
+
+// A quality reading is held to two decimals, and refused finer.
+//
+// fat_percent, snf_percent and lactose are NUMERIC(5,2). A third decimal is a
+// value PostgreSQL would round on the way in without saying so, and fat is what
+// a producer is paid on.
+func TestAQualityReadingIsHeldToItsColumn(t *testing.T) {
+	p := startPlatform(t)
+	cattle := newID("cow")
+	sess, err := svcclient.Call[createMilkSessionReq, milkSessionResp](
+		context.Background(), p.milk(), milkSvc+"/CreateSession",
+		createMilkSessionReq{TenantID: p.tenant, CattleID: cattle,
+			ShiftType: "morning", Timezone: tenantTimezone, CreatedBy: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	rec, err := svcclient.Call[recordMilkReq, milkRecordResp](
+		context.Background(), p.milk(), milkSvc+"/RecordMilk",
+		recordMilkReq{TenantID: p.tenant, SessionID: sess.Session.ID,
+			CattleID: cattle, QuantityLiters: 6.250, CreatedBy: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("record milk: %v", err)
+	}
+
+	got, err := svcclient.Call[recordQualityReq, qualityResp](
+		context.Background(), p.milk(), milkSvc+"/RecordQuality",
+		recordQualityReq{TenantID: p.tenant, RecordID: rec.Record.ID,
+			FatPercent: 4.10, SNFPercent: 8.55, Lactose: 4.80,
+			CreatedBy: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("record quality: %v", err)
+	}
+	if got.Quality.FatPercent != 4.10 || got.Quality.SNFPercent != 8.55 {
+		t.Errorf("the reading came back as fat %v snf %v, want 4.10 and 8.55",
+			got.Quality.FatPercent, got.Quality.SNFPercent)
+	}
+	if got.Quality.RecordID != rec.Record.ID {
+		t.Errorf("the reading is against record %s, not the one it was taken on",
+			got.Quality.RecordID)
+	}
+
+	// A third decimal on any of the three is refused rather than rounded.
+	for _, finer := range []recordQualityReq{
+		{FatPercent: 4.105, SNFPercent: 8.55, Lactose: 4.80},
+		{FatPercent: 4.10, SNFPercent: 8.555, Lactose: 4.80},
+		{FatPercent: 4.10, SNFPercent: 8.55, Lactose: 4.805},
+	} {
+		finer.TenantID, finer.RecordID, finer.CreatedBy = p.tenant, rec.Record.ID, "e2e"
+		if _, err := svcclient.Call[recordQualityReq, qualityResp](
+			context.Background(), p.milk(), milkSvc+"/RecordQuality", finer,
+			p.opts()); err == nil {
+			t.Errorf("a three-decimal reading was accepted (fat %v snf %v lactose %v) "+
+				"into columns that hold two", finer.FatPercent, finer.SNFPercent, finer.Lactose)
+		}
+	}
+}

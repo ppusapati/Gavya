@@ -313,7 +313,11 @@ type sendNotificationReq struct {
 
 type notificationResp struct {
 	Notification *struct {
-		ID string `json:"id"`
+		ID          string `json:"id"`
+		RecipientID string `json:"recipient_id"`
+		Channel     string `json:"channel"`
+		Status      string `json:"status"`
+		Title       string `json:"title"`
 	} `json:"notification"`
 }
 
@@ -325,7 +329,9 @@ type listNotificationsReq struct {
 
 type listNotificationsResp struct {
 	Notifications []*struct {
-		ID string `json:"id"`
+		ID      string `json:"id"`
+		Channel string `json:"channel"`
+		Status  string `json:"status"`
 	} `json:"notifications"`
 }
 
@@ -396,7 +402,10 @@ type requestReportReq struct {
 
 type reportResp struct {
 	Report *struct {
-		ID string `json:"id"`
+		ID         string `json:"id"`
+		Name       string `json:"name"`
+		Status     string `json:"status"`
+		ReportType string `json:"report_type"`
 	} `json:"report"`
 }
 
