@@ -69,6 +69,23 @@ const (
 	PerKg    Basis = "PER_KG"
 )
 
+// ValidBasis reports whether a basis is one of the two this package knows.
+//
+// It exists because the check above it used to be `basis == ""`, which refuses a
+// card that says nothing and accepts a card that says "LITRES", "kg" or
+// "per_litre" — none of which is PER_LITRE or PER_KG. Those are what a caller
+// naturally writes, and procurement-service takes the value straight off the
+// wire, so all three reached this package as a Basis nothing recognised.
+//
+// What happened then was worse than a refusal. unitWord reported anything that
+// was not PER_KG as "litre", so a card priced per kilogram and labelled "kg"
+// described itself as per litre in every message it produced — and the mismatch
+// check between a collection and its card compared two unrecognised strings and
+// found them equal. Milk is about 1.03 kilograms to the litre: the error that
+// buys is three per cent of what a producer is paid, in the direction nobody
+// checks.
+func ValidBasis(b Basis) bool { return b == PerLitre || b == PerKg }
+
 // Between says what a chart does with a reading that falls between its points.
 //
 // All three of these are in use and none is more standard than the others. A
@@ -178,12 +195,18 @@ type Card struct {
 }
 
 var (
-	ErrNoKind     = errors.New("ratecard: the card does not say whether it is a chart or a formula")
-	ErrNoBasis    = errors.New("ratecard: the card does not say whether its rate is per litre or per kilogram")
-	ErrNoBetween  = errors.New("ratecard: the card does not say what to do with a reading between chart points")
-	ErrNoOutside  = errors.New("ratecard: the card does not say what to do with a reading outside the chart")
-	ErrEmptyChart = errors.New("ratecard: the chart has no cells")
-	ErrNoTerms    = errors.New("ratecard: the formula has no terms")
+	ErrNoKind  = errors.New("ratecard: the card does not say whether it is a chart or a formula")
+	ErrNoBasis = errors.New("ratecard: the card does not say whether its rate is per litre or per kilogram")
+	// ErrUnknownBasis is a basis that is neither PER_LITRE nor PER_KG. Named
+	// separately from ErrNoBasis because "you did not say" and "you said
+	// something I cannot read" are different things to be told.
+	ErrUnknownBasis = errors.New("ratecard: that is not a basis this package knows; it is PER_LITRE or PER_KG")
+	// ErrUnknownUnit is the same for the collection being priced.
+	ErrUnknownUnit = errors.New("ratecard: the collection is recorded in a unit this package does not know; it is PER_LITRE or PER_KG")
+	ErrNoBetween   = errors.New("ratecard: the card does not say what to do with a reading between chart points")
+	ErrNoOutside   = errors.New("ratecard: the card does not say what to do with a reading outside the chart")
+	ErrEmptyChart  = errors.New("ratecard: the chart has no cells")
+	ErrNoTerms     = errors.New("ratecard: the formula has no terms")
 )
 
 // Validate refuses a card that would have to guess.
@@ -208,6 +231,9 @@ func (c *Card) Validate() error {
 		}
 		if c.Basis == "" {
 			return ErrNoBasis
+		}
+		if !ValidBasis(c.Basis) {
+			return fmt.Errorf("%w: %q", ErrUnknownBasis, c.Basis)
 		}
 		if c.Between == "" {
 			return ErrNoBetween
@@ -315,6 +341,12 @@ func (e *ErrNotOnAPoint) Error() string {
 func Price(c *Card, col Collection) (*Priced, error) {
 	if err := c.Validate(); err != nil {
 		return nil, err
+	}
+	// Checked before the comparison in priceFromChart, because two unrecognised
+	// strings compare equal to each other and the collection would then be
+	// priced against a card it may not match at all.
+	if !ValidBasis(col.Unit) {
+		return nil, fmt.Errorf("%w: %q", ErrUnknownUnit, col.Unit)
 	}
 	switch c.Kind {
 	case Chart:
@@ -638,9 +670,20 @@ func maxScale(s ...int32) int32 {
 
 func joinHow(a, b string) string { return a + b }
 
+// unitWord is the word for a basis, in a sentence.
+//
+// It used to read `if b == PerKg { return "kilogram" }; return "litre"`, which
+// describes every unrecognised value as litres — so a message about a card
+// labelled "kg" said "per litre", which is the one thing it must not say.
+// Nothing reaches here unrecognised any more, and if something does it says so
+// rather than picking.
 func unitWord(b Basis) string {
-	if b == PerKg {
+	switch b {
+	case PerKg:
 		return "kilogram"
+	case PerLitre:
+		return "litre"
+	default:
+		return fmt.Sprintf("an unrecognised unit (%q)", string(b))
 	}
-	return "litre"
 }

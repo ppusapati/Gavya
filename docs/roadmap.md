@@ -743,6 +743,41 @@ names `DeleteCattleRequest`'s `deleted_by`, which is the defect it exists for.
 
 ---
 
+## A rate card could be priced in a unit nobody recognised
+
+`ratecard.Basis` is the thing a chart's rate is per, and its own doc comment says
+there is no default because litres and kilograms of milk differ by about three
+per cent — "larger than most of the divergences this platform exists to find".
+
+The check beneath that comment was `Basis == ""`. It refuses a card that says
+nothing and accepts one that says `"LITRES"`, `"kg"` or `"per_litre"` — which are
+the three things a caller naturally writes, and `procurement-service` takes
+`quantity_unit` straight off the wire into it.
+
+What followed was worse than a refusal:
+
+- `unitWord` read `if b == PerKg { return "kilogram" }; return "litre"`, so every
+  unrecognised value was described as litres. A card priced per kilogram and
+  labelled `"kg"` called itself per litre in every message it produced.
+- The guard that stops a collection being priced against a card in the other unit
+  is `col.Unit != c.Basis`. Two unrecognised strings compare equal, so a
+  collection labelled `"kg"` priced happily against a card labelled `"kg"` and
+  nothing anywhere knew what either of them meant.
+
+Three per cent of what a producer is paid, in the direction nobody checks. It is
+the error `libs/integrity/quantity` exists to prevent, arriving through the one
+package that prices things.
+
+`ValidBasis` now refuses anything that is not `PER_LITRE` or `PER_KG`; `Price`
+checks the collection's unit before comparing it against the card, so two
+unreadable strings can no longer agree with each other; `unitWord` says a value
+is unrecognised rather than calling it litres; and `procurement-service` reports
+it as an invalid argument rather than an internal failure. `ErrNoBasis` and
+`ErrUnknownBasis` stay separate, because "you did not say" and "you said
+something I cannot read" are different things to be told.
+
+---
+
 ## Errors that told a caller to retry what could never work
 
 Four services reported caller-fixable conditions as internal failures, which is

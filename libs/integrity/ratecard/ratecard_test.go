@@ -426,3 +426,82 @@ func TestChartPointsCompareExactly(t *testing.T) {
 		t.Errorf("4.100 priced at %s, want the 4.1 row's 43.0000", got.Rate)
 	}
 }
+
+// A basis nobody recognises is refused, not read as litres.
+//
+// The check used to be `Basis == ""`, which refuses a card that says nothing and
+// accepts one that says "LITRES", "kg" or "per_litre" — the three things a
+// caller naturally writes. procurement-service takes the value straight off the
+// wire, so all three reached this package.
+//
+// What followed was worse than a refusal. unitWord described anything that was
+// not PER_KG as "litre", so a card priced per kilogram and labelled "kg" called
+// itself per litre in every message it produced, and the mismatch check between
+// a collection and its card compared two unrecognised strings and found them
+// equal. Milk is about 1.03 kilograms to the litre. That is three per cent of
+// what a producer is paid, in the direction nobody checks.
+func TestABasisNobodyRecognisesIsRefused(t *testing.T) {
+	for _, bad := range []Basis{"LITRES", "KILOGRAMS", "kg", "per_litre", "PERLITRE", "L"} {
+		card := chartCard()
+		card.Basis = bad
+		if err := card.Validate(); !errors.Is(err, ErrUnknownBasis) {
+			t.Errorf("a card priced per %q validated (err = %v); nothing downstream "+
+				"would ever tell it apart from PER_LITRE", bad, err)
+		}
+	}
+
+	// And the two it does know still pass, so the refusal is not a validator
+	// that refuses everything.
+	for _, good := range []Basis{PerLitre, PerKg} {
+		card := chartCard()
+		card.Basis = good
+		if err := card.Validate(); err != nil {
+			t.Errorf("a card priced %s was refused: %v", good, err)
+		}
+	}
+
+	// An empty one is still its own error: "you did not say" and "you said
+	// something I cannot read" are different things to be told.
+	card := chartCard()
+	card.Basis = ""
+	if err := card.Validate(); !errors.Is(err, ErrNoBasis) {
+		t.Errorf("a card with no basis gives %v, want ErrNoBasis", err)
+	}
+}
+
+// A collection recorded in a unit nobody recognises is refused before it is
+// compared against the card.
+//
+// Two unrecognised strings compare equal to each other, so without this a
+// collection labelled "kg" prices happily against a card labelled "kg" and the
+// platform has no idea what either of them meant.
+func TestACollectionInAnUnknownUnitIsRefusedBeforeItIsCompared(t *testing.T) {
+	card := chartCard()
+	card.Basis = PerKg
+
+	col := Collection{Quantity: pt(12500, 3), Unit: "kg", Fat: pt(40, 1), SNF: pt(85, 1)}
+	if _, err := Price(card, col); !errors.Is(err, ErrUnknownUnit) {
+		t.Errorf("a collection recorded in %q was priced against a card labelled the "+
+			"same way (err = %v); the two agree only in being unreadable", col.Unit, err)
+	}
+
+	// The same collection in a unit the package knows prices normally.
+	col.Unit = PerKg
+	if _, err := Price(card, col); err != nil {
+		t.Errorf("a collection in kilograms against a per-kilogram card was refused: %v", err)
+	}
+}
+
+// unitWord never calls something litres because it is not kilograms.
+func TestUnitWordDoesNotGuess(t *testing.T) {
+	if got := unitWord(PerLitre); got != "litre" {
+		t.Errorf("unitWord(PER_LITRE) = %q", got)
+	}
+	if got := unitWord(PerKg); got != "kilogram" {
+		t.Errorf("unitWord(PER_KG) = %q", got)
+	}
+	if got := unitWord("KILOGRAMS"); got == "litre" {
+		t.Error(`unitWord("KILOGRAMS") = "litre" — a message about a card labelled ` +
+			"in kilograms would tell the reader it is priced per litre")
+	}
+}

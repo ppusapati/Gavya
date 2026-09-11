@@ -493,6 +493,12 @@ func parseTime(s, field string) (time.Time, error) {
 // look like the platform's fault when it is a question for the society.
 func classify(err error) error {
 	switch {
+	case errors.Is(err, ratecard.ErrUnknownBasis), errors.Is(err, ratecard.ErrUnknownUnit):
+		// A unit this platform does not know. Refused rather than read as
+		// litres, which is what happened before: milk is about 1.03 kilograms
+		// to the litre, and three per cent of what a producer is paid is larger
+		// than most divergences this platform exists to find.
+		return connect.NewError(connect.CodeInvalidArgument, err)
 	case errors.Is(err, repository.ErrNotFound):
 		return connect.NewError(connect.CodeNotFound, err)
 	case errors.Is(err, repository.ErrOverlappingCard),
