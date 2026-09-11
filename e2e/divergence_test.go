@@ -8,11 +8,11 @@
 // worth their morning, looks at one, and records what they decided.
 //
 // ListDivergences filters on four things at once — status, classification,
-// producer and a minimum size — and every one of them is optional. That shape
-// is worth pressing on, because a filter written as `$2='' OR status=$2` fails
-// open: when it breaks it returns more than it should, never less, so the
-// divergence the caller was looking for is still in the answer and nothing
-// looks wrong.
+// producer and a minimum size — and every one of them is optional. Each is
+// written as "this parameter is empty, or the column equals it", and a filter
+// shaped that way fails open: when it breaks it returns more than it should,
+// never less, so the divergence the caller was looking for is still in the
+// answer and nothing looks wrong.
 package e2e
 
 import (
@@ -155,10 +155,10 @@ func adjudicated(t *testing.T, p *platform, tenant, producer, external, shadow, 
 // be narrowed by.
 //
 // Three divergences in one tenant, differing in producer, in classification and
-// in size, so every filter has something it must exclude. The four filters fail
-// open — `$2='' OR status=$2` returns everything when it breaks — so a test
-// that only checked the wanted row was present would pass against all four of
-// them broken at once.
+// in size, so every filter has something it must exclude. All four fail open —
+// each returns everything when it breaks, never nothing — so a test that only
+// checked the wanted row was present would pass against all four of them broken
+// at once.
 func TestADivergenceIsFoundByIdAndTheQueueNarrowsByEachFilter(t *testing.T) {
 	p := startPlatform(t)
 	ctx := context.Background()
