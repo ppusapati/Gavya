@@ -946,7 +946,8 @@ type updateSKUPriceReq struct {
 	UpdatedBy string `json:"updated_by"`
 }
 
-// idTenantReq is what the catalog's read methods take.
+// idTenantReq is what a read method taking an id and a tenant takes. The
+// catalogue, inventory and several others share the shape.
 type idTenantReq struct {
 	ID       string `json:"id"`
 	TenantID string `json:"tenant_id"`
