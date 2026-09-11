@@ -380,7 +380,12 @@ type createFarmReq struct {
 
 type farmResp struct {
 	Farm *struct {
-		ID string `json:"id"`
+		ID       string `json:"id"`
+		Name     string `json:"name"`
+		Code     string `json:"code"`
+		City     string `json:"city"`
+		Capacity int    `json:"capacity"`
+		Status   string `json:"status"`
 	} `json:"farm"`
 }
 

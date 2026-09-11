@@ -516,6 +516,7 @@ func (p *platform) inventory() *svcclient.Client { return p.clients["inventory-s
 // same name cannot exist beside it.
 func (p *platform) tenantSvcClient() *svcclient.Client { return p.clients["tenant-service"] }
 func (p *platform) audit() *svcclient.Client           { return p.clients["audit-service"] }
+func (p *platform) file() *svcclient.Client            { return p.clients["file-service"] }
 func (p *platform) billing() *svcclient.Client         { return p.clients["billing-service"] }
 func (p *platform) cattleMarket() *svcclient.Client    { return p.clients["cattle-market-service"] }
 func (p *platform) breeding() *svcclient.Client        { return p.clients["breeding-service"] }

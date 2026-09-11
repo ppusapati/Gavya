@@ -590,3 +590,370 @@ func TestAnAnimalsMedicineHistoryIsItsOwn(t *testing.T) {
 			"treated", len(theirs.Treatments))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// tenant, and product-catalog's catalogue
+// ---------------------------------------------------------------------------
+
+type updateTenantReq struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	ContactEmail string `json:"contact_email"`
+	Country      string `json:"country"`
+	Timezone     string `json:"timezone"`
+	Currency     string `json:"currency"`
+	MaxUsers     int    `json:"max_users"`
+	MaxCattle    int    `json:"max_cattle"`
+	UpdatedBy    string `json:"updated_by"`
+}
+
+type idOnlyReq struct {
+	ID string `json:"id"`
+}
+
+type listTenantsResp struct {
+	Tenants []*struct {
+		ID   string `json:"id"`
+		Slug string `json:"slug"`
+	} `json:"tenants"`
+}
+
+type upsertSettingReq struct {
+	TenantID  string `json:"tenant_id"`
+	Key       string `json:"key"`
+	Value     string `json:"value"`
+	DataType  string `json:"data_type"`
+	CreatedBy string `json:"created_by"`
+}
+
+type settingResp struct {
+	Setting *struct {
+		ID    string `json:"id"`
+		Key   string `json:"key"`
+		Value string `json:"value"`
+	} `json:"setting"`
+}
+
+type listSettingsResp struct {
+	Settings []*struct {
+		ID    string `json:"id"`
+		Key   string `json:"key"`
+		Value string `json:"value"`
+	} `json:"settings"`
+}
+
+func aTenant(t *testing.T, p *platform) *tenantResp {
+	t.Helper()
+	slug := newID("soc")
+	out, err := svcclient.Call[createTenantReq, tenantResp](
+		context.Background(), p.tenantSvcClient(), tenantSvc+"/CreateTenant",
+		createTenantReq{Name: slug, Slug: slug, Plan: "basic",
+			ContactEmail: slug + "@example.test", Country: "IN",
+			Timezone: "Asia/Kolkata", Currency: "INR", CreatedBy: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	return out
+}
+
+// A tenant reads back, and updating it does not change the currency.
+//
+// The currency is fixed at creation because everything recorded against the
+// tenant afterwards is read in it. UpdateTenant takes a currency field, which is
+// the shape of a request that could change one — so what it does with it is
+// worth pinning rather than assuming.
+func TestUpdatingATenantCannotChangeWhatItRecordsIn(t *testing.T) {
+	p := startPlatform(t)
+	made := aTenant(t, p)
+
+	got, err := svcclient.Call[idOnlyReq, tenantResp](
+		context.Background(), p.tenantSvcClient(), tenantSvc+"/GetTenant",
+		idOnlyReq{ID: made.Tenant.ID}, p.opts())
+	if err != nil {
+		t.Fatalf("get tenant: %v", err)
+	}
+	if got.Tenant.Currency != "INR" || got.Tenant.CurrencyScale != 2 {
+		t.Fatalf("the tenant reads back as %s at %d decimals",
+			got.Tenant.Currency, got.Tenant.CurrencyScale)
+	}
+
+	// Naming a different one is refused outright. Written with an early return
+	// on error this test asserted nothing at all: the update is refused, so the
+	// branch that checks the currency never ran.
+	if _, err := svcclient.Call[updateTenantReq, tenantResp](
+		context.Background(), p.tenantSvcClient(), tenantSvc+"/UpdateTenant",
+		updateTenantReq{ID: made.Tenant.ID, Name: "renamed",
+			ContactEmail: "new@example.test", Country: "IN",
+			Timezone: "Asia/Kolkata", Currency: "JPY",
+			UpdatedBy: "e2e"}, p.opts()); err == nil {
+		t.Error("an update moved the tenant to JPY; every amount already recorded " +
+			"against it was written in rupees and would be read as yen, with nothing " +
+			"saying when the meaning changed")
+	}
+
+	// And an update that carries no currency changes what it was asked to and
+	// leaves the currency where it was. A request with the field empty must not
+	// be read as one asking to clear it.
+	updated, err := svcclient.Call[updateTenantReq, tenantResp](
+		context.Background(), p.tenantSvcClient(), tenantSvc+"/UpdateTenant",
+		updateTenantReq{ID: made.Tenant.ID, Name: "renamed",
+			ContactEmail: "new@example.test", Country: "IN",
+			Timezone: "Asia/Kolkata", UpdatedBy: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("update tenant: %v", err)
+	}
+	if updated.Tenant.Currency != "INR" || updated.Tenant.CurrencyScale != 2 {
+		t.Errorf("an update carrying no currency left the tenant recording %s at %d "+
+			"decimals, want INR at 2", updated.Tenant.Currency, updated.Tenant.CurrencyScale)
+	}
+}
+
+// A tenant appears in the listing, and its settings are its own.
+func TestATenantsSettingsAreItsOwn(t *testing.T) {
+	p := startPlatform(t)
+	mine, theirs := aTenant(t, p), aTenant(t, p)
+
+	all, err := svcclient.Call[struct{}, listTenantsResp](
+		context.Background(), p.tenantSvcClient(), tenantSvc+"/ListTenants",
+		struct{}{}, p.opts())
+	if err != nil {
+		t.Fatalf("list tenants: %v", err)
+	}
+	var found bool
+	for _, tn := range all.Tenants {
+		if tn.ID == mine.Tenant.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("a tenant that was just created is not in the listing")
+	}
+
+	set, err := svcclient.Call[upsertSettingReq, settingResp](
+		context.Background(), p.tenantSvcClient(), tenantSvc+"/UpsertTenantSetting",
+		upsertSettingReq{TenantID: mine.Tenant.ID, Key: "collection_shift_cutoff",
+			Value: "09:30", DataType: "string", CreatedBy: "e2e"},
+		svcclient.CallOptions{Tenant: mine.Tenant.ID, Actor: "e2e"})
+	if err != nil {
+		t.Fatalf("upsert setting: %v", err)
+	}
+	if set.Setting.Value != "09:30" {
+		t.Errorf("the setting reads back as %q", set.Setting.Value)
+	}
+
+	// Upserting the same key again changes the value rather than adding a second
+	// row. Two rows for one setting is a setting with two answers.
+	again, err := svcclient.Call[upsertSettingReq, settingResp](
+		context.Background(), p.tenantSvcClient(), tenantSvc+"/UpsertTenantSetting",
+		upsertSettingReq{TenantID: mine.Tenant.ID, Key: "collection_shift_cutoff",
+			Value: "10:00", DataType: "string", CreatedBy: "e2e"},
+		svcclient.CallOptions{Tenant: mine.Tenant.ID, Actor: "e2e"})
+	if err != nil {
+		t.Fatalf("upsert the same setting: %v", err)
+	}
+	if again.Setting.Value != "10:00" {
+		t.Errorf("the setting reads back as %q after being changed", again.Setting.Value)
+	}
+
+	list, err := svcclient.Call[tenantReq, listSettingsResp](
+		context.Background(), p.tenantSvcClient(), tenantSvc+"/ListTenantSettings",
+		tenantReq{TenantID: mine.Tenant.ID},
+		svcclient.CallOptions{Tenant: mine.Tenant.ID, Actor: "e2e"})
+	if err != nil {
+		t.Fatalf("list settings: %v", err)
+	}
+	n := 0
+	for _, s := range list.Settings {
+		if s.Key == "collection_shift_cutoff" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("one key holds %d settings, want 1 — a setting with two rows is a "+
+			"setting with two answers and no way to tell which is in force", n)
+	}
+
+	// And the other tenant has none of them.
+	other, err := svcclient.Call[tenantReq, listSettingsResp](
+		context.Background(), p.tenantSvcClient(), tenantSvc+"/ListTenantSettings",
+		tenantReq{TenantID: theirs.Tenant.ID},
+		svcclient.CallOptions{Tenant: theirs.Tenant.ID, Actor: "e2e"})
+	if err == nil && len(other.Settings) > 0 {
+		t.Errorf("a second tenant holds %d settings it never set", len(other.Settings))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// product-catalog: the catalogue above the SKUs
+// ---------------------------------------------------------------------------
+
+type createBrandReq struct {
+	TenantID  string `json:"tenant_id"`
+	Name      string `json:"name"`
+	Slug      string `json:"slug"`
+	LogoURL   string `json:"logo_url"`
+	CreatedBy string `json:"created_by"`
+}
+
+type brandResp struct {
+	Brand *struct {
+		ID      string `json:"id"`
+		Name    string `json:"name"`
+		Slug    string `json:"slug"`
+		LogoURL string `json:"logo_url"`
+	} `json:"brand"`
+}
+
+type listBrandsResp struct {
+	Brands []*struct {
+		ID   string `json:"id"`
+		Slug string `json:"slug"`
+	} `json:"brands"`
+}
+
+type listProductsReq struct {
+	TenantID    string `json:"tenant_id"`
+	ProductType string `json:"product_type"`
+	Status      string `json:"status"`
+}
+
+type productListResp struct {
+	Products []*struct {
+		ID          string `json:"id"`
+		ProductType string `json:"product_type"`
+		Status      string `json:"status"`
+	} `json:"products"`
+}
+
+type listProductSKUsReq struct {
+	ProductID string `json:"product_id"`
+	TenantID  string `json:"tenant_id"`
+}
+
+type listSKUsResp struct {
+	SKUs []*struct {
+		ID        string `json:"id"`
+		ProductID string `json:"product_id"`
+		Price     string `json:"price"`
+		Currency  string `json:"currency"`
+	} `json:"skus"`
+}
+
+// A brand's slug is unique within a tenant, and its logo survives the round trip.
+//
+// LogoURL is the field that found the wire-format defect worth naming: with no
+// json tag it went out as "LogoURL", and a client asking for logo_url read
+// nothing.
+func TestABrandsSlugIsUniqueWithinATenant(t *testing.T) {
+	p := startPlatform(t)
+	slug := newID("brd")
+
+	made, err := svcclient.Call[createBrandReq, brandResp](
+		context.Background(), p.catalog(), catalogSvc+"/CreateBrand",
+		createBrandReq{TenantID: p.tenant, Name: "Amul", Slug: slug,
+			LogoURL: "https://example.test/amul.png", CreatedBy: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("create brand: %v", err)
+	}
+	if made.Brand.LogoURL != "https://example.test/amul.png" {
+		t.Errorf("the logo url came back as %q", made.Brand.LogoURL)
+	}
+
+	if _, err := svcclient.Call[createBrandReq, brandResp](
+		context.Background(), p.catalog(), catalogSvc+"/CreateBrand",
+		createBrandReq{TenantID: p.tenant, Name: "Amul again", Slug: slug,
+			CreatedBy: "e2e"}, p.opts()); err == nil {
+		t.Error("two brands were created with the same slug; a slug is how a brand is " +
+			"addressed and two of them is two brands nobody can tell apart")
+	}
+
+	list, err := svcclient.Call[tenantReq, listBrandsResp](
+		context.Background(), p.catalog(), catalogSvc+"/ListBrands",
+		tenantReq{TenantID: p.tenant}, p.opts())
+	if err != nil {
+		t.Fatalf("list brands: %v", err)
+	}
+	var found bool
+	for _, b := range list.Brands {
+		if b.ID == made.Brand.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("a brand that was just created is not in the list")
+	}
+}
+
+// Listing products filters by type and status only when asked.
+//
+// ListProducts once compared product_type with LIKE against a column compared
+// for equality, so it always came back empty. An unset filter means "any", not
+// "match the empty string".
+func TestListingProductsFiltersOnlyWhenAsked(t *testing.T) {
+	p := startPlatform(t)
+
+	cat, err := svcclient.Call[createCategoryReq, categoryResp](
+		context.Background(), p.catalog(), catalogSvc+"/CreateCategory",
+		createCategoryReq{TenantID: p.tenant, Name: newID("cat"), Slug: newID("cat"),
+			CreatedBy: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("create category: %v", err)
+	}
+	for _, kind := range []string{"feed", "feed", "medicine"} {
+		slug := newID("prd")
+		if _, err := svcclient.Call[createProductReq, productResp](
+			context.Background(), p.catalog(), catalogSvc+"/CreateProduct",
+			createProductReq{TenantID: p.tenant, CategoryID: cat.Category.ID,
+				Name: slug, Slug: slug, ProductType: kind, Status: "active",
+				CreatedBy: "e2e"}, p.opts()); err != nil {
+			t.Fatalf("create a %s product: %v", kind, err)
+		}
+	}
+
+	all, err := svcclient.Call[listProductsReq, productListResp](
+		context.Background(), p.catalog(), catalogSvc+"/ListProducts",
+		listProductsReq{TenantID: p.tenant}, p.opts())
+	if err != nil {
+		t.Fatalf("list products: %v", err)
+	}
+	if len(all.Products) < 3 {
+		t.Fatalf("an unfiltered list holds %d of at least 3 products; an unset filter "+
+			"means \"any\", not \"match the empty string\"", len(all.Products))
+	}
+
+	feed, err := svcclient.Call[listProductsReq, productListResp](
+		context.Background(), p.catalog(), catalogSvc+"/ListProducts",
+		listProductsReq{TenantID: p.tenant, ProductType: "feed"}, p.opts())
+	if err != nil {
+		t.Fatalf("list feed products: %v", err)
+	}
+	if len(feed.Products) >= len(all.Products) {
+		t.Errorf("filtering by type returned %d of %d — the filter did not filter",
+			len(feed.Products), len(all.Products))
+	}
+	for _, pr := range feed.Products {
+		if pr.ProductType != "feed" {
+			t.Errorf("a %s product came back in the feed list", pr.ProductType)
+		}
+	}
+}
+
+// A product's SKUs are its own, and their prices come back exact.
+func TestAProductsSKUsAreItsOwn(t *testing.T) {
+	p := startPlatform(t)
+	mine := aSKU(t, p, "INR", "54.00")
+	other := aSKU(t, p, "INR", "61.50")
+
+	got, err := svcclient.Call[idTenantReq, skuResp](
+		context.Background(), p.catalog(), catalogSvc+"/GetSKU",
+		idTenantReq{ID: mine.SKU.ID, TenantID: p.tenant}, p.opts())
+	if err != nil {
+		t.Fatalf("get sku: %v", err)
+	}
+	if got.SKU.Price != "54.00" {
+		t.Errorf("the price reads back as %s, want 54.00", got.SKU.Price)
+	}
+	if other.SKU.ID == mine.SKU.ID {
+		t.Fatal("two SKUs were created with one id")
+	}
+}
