@@ -58,7 +58,6 @@ type poolProto struct {
 	Status      string `json:"status"`
 	Currency    string `json:"currency"`
 	AmountScale int32  `json:"amount_scale"`
-	TotalValue  string `json:"total_value,omitempty"`
 }
 
 type createPoolResp struct {
@@ -95,9 +94,13 @@ type valuePoolReq struct {
 	Actor           string                `json:"actor"`
 }
 
+// The valuation as this file needs it. It carries no total_value: the handler
+// sends classified_value, component_value and producer_settlement_fund, and a
+// field named for something that is never on the wire reads "" forever —
+// including in the assertion somebody eventually writes against it.
+// pooling_test.go's fullValuationProto names the real ones.
 type valuationProto struct {
-	ID         string `json:"id"`
-	TotalValue string `json:"total_value"`
+	ID string `json:"id"`
 }
 
 type valuePoolResp struct {
@@ -149,6 +152,7 @@ type declareRetroPolicyReq struct {
 	AmountScale       int32  `json:"amount_scale"`
 	MinimumAdjustment string `json:"minimum_adjustment,omitempty"`
 	EffectiveFrom     string `json:"effective_from,omitempty"`
+	EffectiveTo       string `json:"effective_to,omitempty"`
 	Actor             string `json:"actor"`
 }
 
