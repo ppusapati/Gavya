@@ -98,14 +98,17 @@ func TestTheWayOutHasToBeTypedOut(t *testing.T) {
 //
 // It would otherwise read as "no sslmode", be refused for the wrong reason, and
 // send somebody to look at their certificates when what they have is an unset
-// variable.
-func TestAnEmptyURLSaysItIsEmpty(t *testing.T) {
+// variable. Since no service compiles in a default any longer, this is the
+// message a misconfigured deployment actually gets.
+func TestAnEmptyURLNamesTheSetting(t *testing.T) {
 	t.Setenv(InsecureEnv, InsecurePhrase)
 	err := checkSSLMode("")
 	if err == nil {
 		t.Fatal("an empty database URL was accepted")
 	}
-	if !strings.Contains(err.Error(), "empty") {
-		t.Errorf("the refusal does not say the URL is empty: %v", err)
+	// It has to name the setting. "the URL is empty" sends somebody to look at
+	// their certificates; DATABASE_URL sends them to the one line that is wrong.
+	if !strings.Contains(err.Error(), "DATABASE_URL") {
+		t.Errorf("the refusal does not name the setting: %v", err)
 	}
 }

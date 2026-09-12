@@ -918,3 +918,78 @@ func contains(list []string, s string) bool {
 	}
 	return false
 }
+
+// No service compiles in a credential, and none defaults its database.
+//
+// Twenty-two of them defaulted DATABASE_URL to
+// postgres://postgres:secret@localhost:5432/dairy?sslmode=disable and six to the
+// same thing without the password. Two separate problems in one line: a password
+// in every binary this repository builds, and a service that starts without
+// being told where its database is and connects to whatever is on localhost —
+// which on a developer's machine is their own database and in a container is
+// nothing, so the failure mode differs by where it runs.
+//
+// It is now unset by default and libs/integrity/tenantdb refuses an empty URL,
+// naming the setting. This is the check that it stays that way: a default is one
+// line, it is convenient, and it is exactly what twenty-eight services already
+// copied from each other once.
+//
+// RUN WITH -count=1. These files are in other modules.
+func TestNoServiceCompilesInACredentialOrADatabase(t *testing.T) {
+	root := repoRoot(t)
+	var configs []string
+	for _, pattern := range []string{
+		filepath.Join(root, "services", "*", "internal", "config", "*.go"),
+		filepath.Join(root, "services", "*", "config", "*.go"),
+	} {
+		found, err := filepath.Glob(pattern)
+		if err != nil {
+			t.Fatal(err)
+		}
+		configs = append(configs, found...)
+	}
+	if len(configs) < 20 {
+		t.Fatalf("found only %d config files; the globs have probably stopped "+
+			"matching, and a check that finds nothing passes", len(configs))
+	}
+
+	// A URL literal carrying user:password@ — the shape of a credential,
+	// whatever the setting is called.
+	credential := regexp.MustCompile(`"[a-z][a-z0-9+.-]*://[^"/@\s]+:[^"/@\s]+@`)
+	// And any default at all for the database, with or without one.
+	defaulted := regexp.MustCompile(`getEnv\(\s*"DATABASE_URL"\s*,\s*"[^"]`)
+
+	var withCredential, withDefault []string
+	for _, path := range configs {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		rel, _ := filepath.Rel(root, path)
+		if m := credential.Find(src); m != nil {
+			withCredential = append(withCredential, rel+": "+string(m)+"...")
+		}
+		if defaulted.Match(src) {
+			withDefault = append(withDefault, rel)
+		}
+	}
+	sort.Strings(withCredential)
+	sort.Strings(withDefault)
+
+	if len(withCredential) > 0 {
+		t.Errorf("%d config files carry a credential in a literal:\n  %s\n"+
+			"It ends up in every binary built from this repository, and in the "+
+			"source history whatever is done to it later.",
+			len(withCredential), strings.Join(withCredential, "\n  "))
+	}
+	if len(withDefault) > 0 {
+		t.Errorf("%d services default DATABASE_URL:\n  %s\n"+
+			"A service started without it then connects somewhere rather than "+
+			"saying it was not configured, and which somewhere depends on the machine.",
+			len(withDefault), strings.Join(withDefault, "\n  "))
+	}
+	t.Logf("checked %d config files", len(configs))
+}

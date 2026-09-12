@@ -54,6 +54,9 @@ type Repository interface {
 	ReverseResolve(ctx context.Context, tenantID string, kind domain.EntityKind, entityID string) ([]*domain.ExternalIdentity, error)
 	SupersedeIdentity(ctx context.Context, tenantID, id, supersededBy string) error
 	ListIdentities(ctx context.Context, tenantID, sourceSystemID string, limit, offset int) ([]*domain.ExternalIdentity, error)
+	// IdentityHistory returns every mapping ever recorded for one external
+	// identifier, retired ones included. Every other read here filters them out.
+	IdentityHistory(ctx context.Context, tenantID, sourceSystemID string, kind domain.EntityKind, externalID string) ([]*domain.ExternalIdentity, error)
 
 	CreatePolicy(ctx context.Context, p *domain.CollectionIdentityPolicy) (*domain.CollectionIdentityPolicy, error)
 	GetEffectivePolicy(ctx context.Context, tenantID string, at time.Time) (*domain.CollectionIdentityPolicy, error)
@@ -125,6 +128,25 @@ func (r *repo) SupersedeIdentity(ctx context.Context, tenantID, id, supersededBy
 		return ErrNotFound
 	}
 	return nil
+}
+
+// IdentityHistory returns every mapping for an external identifier, including
+// the retired ones.
+//
+// The only read here that does not filter superseded_at. That filter is right
+// everywhere else — a retired mapping must not resolve anything — but it meant
+// the history was written to a column no endpoint returned, so the question a
+// member actually asks had no answer: this collection was attributed to me, why.
+// Answering it needs the mapping that was in force when the record was ingested,
+// and that mapping is exactly the one somebody has since retired.
+//
+// Ordered by when the mapping applied, then by when it was recorded, so two
+// mappings covering the same period read in the order they were asserted.
+func (r *repo) IdentityHistory(ctx context.Context, tenantID, sourceSystemID string, kind domain.EntityKind, externalID string) ([]*domain.ExternalIdentity, error) {
+	const q = `SELECT ` + identityCols + ` FROM external_identities
+		WHERE tenant_id=$1 AND source_system_id=$2 AND entity_kind=$3 AND external_id=$4
+		ORDER BY valid_from, recorded_at`
+	return queryIdentities(ctx, r.db, q, tenantID, sourceSystemID, string(kind), externalID)
 }
 
 func (r *repo) ListIdentities(ctx context.Context, tenantID, sourceSystemID string, limit, offset int) ([]*domain.ExternalIdentity, error) {

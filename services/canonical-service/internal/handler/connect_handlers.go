@@ -46,6 +46,10 @@ type IdentityProto struct {
 	ValidTo        string  `json:"valid_to"`
 	RecordedAt     string  `json:"recorded_at"`
 	SupersededAt   string  `json:"superseded_at,omitempty"`
+	// And who retired it. The column has been written since the table existed
+	// and this shape never carried it, so a retired mapping could say when it
+	// was retired and never by whom — which is half of what the question is for.
+	SupersededBy string `json:"superseded_by,omitempty"`
 }
 
 type ResolveIdentityRequest struct {
@@ -77,6 +81,20 @@ type ListIdentitiesRequest struct {
 	Offset         int32  `json:"offset"`
 }
 type ListIdentitiesResponse struct {
+	Identities []*IdentityProto `json:"identities"`
+}
+
+// GetIdentityHistoryRequest asks what one external identifier has ever meant.
+//
+// The same four fields that identify a mapping, and no as_of: the point is every
+// instant rather than one of them.
+type GetIdentityHistoryRequest struct {
+	TenantID       string `json:"tenant_id"`
+	SourceSystemID string `json:"source_system_id"`
+	EntityKind     string `json:"entity_kind"`
+	ExternalID     string `json:"external_id"`
+}
+type GetIdentityHistoryResponse struct {
 	Identities []*IdentityProto `json:"identities"`
 }
 
@@ -220,6 +238,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	route("ResolveIdentity", connectjson.Unary(h.ResolveIdentity))
 	route("ReverseResolve", connectjson.Unary(h.ReverseResolve))
 	route("ListIdentities", connectjson.Unary(h.ListIdentities))
+	route("GetIdentityHistory", connectjson.Unary(h.GetIdentityHistory))
 	route("RetireIdentity", connectjson.Unary(h.RetireIdentity))
 	route("DeclarePolicy", connectjson.Unary(h.DeclarePolicy))
 	route("GetEffectivePolicy", connectjson.Unary(h.GetEffectivePolicy))
@@ -288,6 +307,23 @@ func (h *Handler) ReverseResolve(ctx context.Context, req *connect.Request[Rever
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	return connect.NewResponse(&ReverseResolveResponse{Identities: toIdentityProtos(list)}), nil
+}
+
+// GetIdentityHistory returns every mapping for an identifier, retired included.
+//
+// Not a variant of ResolveIdentity with a flag. Resolving asks what an
+// identifier means and must never answer with a retired mapping; this asks what
+// it has meant, and must answer with all of them. One endpoint doing both,
+// switched by a boolean, is a resolve that returns a retired mapping the first
+// time somebody passes the wrong value.
+func (h *Handler) GetIdentityHistory(ctx context.Context, req *connect.Request[GetIdentityHistoryRequest]) (*connect.Response[GetIdentityHistoryResponse], error) {
+	m := req.Msg
+	list, err := h.svc.IdentityHistory(ctx, m.TenantID, m.SourceSystemID,
+		domain.EntityKind(m.EntityKind), m.ExternalID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	return connect.NewResponse(&GetIdentityHistoryResponse{Identities: toIdentityProtos(list)}), nil
 }
 
 func (h *Handler) ListIdentities(ctx context.Context, req *connect.Request[ListIdentitiesRequest]) (*connect.Response[ListIdentitiesResponse], error) {
@@ -473,6 +509,7 @@ func toIdentityProto(i *domain.ExternalIdentity) *IdentityProto {
 	}
 	if i.SupersededAt != nil {
 		p.SupersededAt = i.SupersededAt.Format(time.RFC3339)
+		p.SupersededBy = i.SupersededBy
 	}
 	return p
 }

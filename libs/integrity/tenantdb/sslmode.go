@@ -92,7 +92,12 @@ func checkSSLMode(dsn string) error {
 func sslModeOf(dsn string) (string, error) {
 	trimmed := strings.TrimSpace(dsn)
 	if trimmed == "" {
-		return "", fmt.Errorf("tenantdb: the database URL is empty")
+		return "", fmt.Errorf("tenantdb: no database URL.\n" +
+			"Every service in this platform reads it from DATABASE_URL, and none of " +
+			"them has a default any more: they used to compile in " +
+			"postgres://postgres:secret@localhost:5432/dairy, so a service started " +
+			"without this setting connected to whatever was on localhost instead of " +
+			"saying it had not been configured")
 	}
 
 	if strings.HasPrefix(trimmed, "postgres://") || strings.HasPrefix(trimmed, "postgresql://") {

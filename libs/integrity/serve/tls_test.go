@@ -54,9 +54,12 @@ func TestAConfiguredCertificateIsActuallyServed(t *testing.T) {
 
 	body, _ := io.ReadAll(resp.Body)
 	// Every service speaks HTTP/2 in plaintext through the h2c wrapper, which
-	// only handles the cleartext upgrade. Without ALPN configured the server
-	// negotiates HTTP/1.1 and the protocol quietly changes on the day somebody
-	// turns TLS on.
+	// handles only the cleartext upgrade, so the TLS listener has to negotiate h2
+	// by ALPN or the protocol quietly changes on the day somebody turns TLS on.
+	//
+	// net/http arranges that on its own for a TLS server — measured, by removing
+	// the explicit http2.ConfigureServer call and watching this still pass — so
+	// what this pins is the outcome rather than the line that produces it.
 	if got := string(body); got != "HTTP/2.0" {
 		t.Errorf("the TLS listener negotiated %s, not HTTP/2", got)
 	}

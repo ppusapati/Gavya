@@ -34,7 +34,18 @@ func Load() *Config {
 	return &Config{
 		ServiceName: getEnv("SERVICE_NAME", "observation-service"),
 		ServerAddr:  getEnv("SERVER_ADDR", ports.Addr(ports.Observation)),
-		DatabaseURL: getEnv("DATABASE_URL", "postgres://postgres:secret@localhost:5432/dairy?sslmode=disable"),
+		// No default, deliberately.
+		//
+		// This was postgres://postgres:secret@localhost:5432/dairy?sslmode=disable
+		// in twenty-eight services: a password in a compiled binary, and a
+		// connection to whatever happened to be on localhost. A service started
+		// without DATABASE_URL did not fail — it connected somewhere, and which
+		// somewhere depended on the machine.
+		//
+		// Empty is refused by libs/integrity/tenantdb, which every service opens
+		// its pool through, so a missing setting is a refusal to start that names
+		// itself rather than a connection to the wrong database.
+		DatabaseURL: os.Getenv("DATABASE_URL"),
 		// No default. A deployment that has not said which measurement-control
 		// law it operates under would otherwise be given India's, and every
 		// eligibility verdict it issued would cite an Act that does not apply

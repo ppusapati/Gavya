@@ -77,8 +77,9 @@ var table = map[string]Permission{
 	// canonical.v1.CanonicalService
 	"canonical.v1.CanonicalService/MapIdentity":        IdentityWrite,
 	"canonical.v1.CanonicalService/ResolveIdentity":    IdentityRead,
-	"canonical.v1.CanonicalService/ReverseResolve":     IdentityWrite,
+	"canonical.v1.CanonicalService/ReverseResolve":     IdentityRead,
 	"canonical.v1.CanonicalService/ListIdentities":     IdentityRead,
+	"canonical.v1.CanonicalService/GetIdentityHistory": IdentityRead,
 	"canonical.v1.CanonicalService/RetireIdentity":     IdentityAdmin,
 	"canonical.v1.CanonicalService/DeclarePolicy":      IdentityWrite,
 	"canonical.v1.CanonicalService/GetEffectivePolicy": IdentityRead,

@@ -75,9 +75,28 @@ func (s *Service) ListIdentities(ctx context.Context, tenantID, sourceSystemID s
 	return s.repo.ListIdentities(ctx, tenantID, sourceSystemID, clampLimit(limit), clampOffset(offset))
 }
 
-// RetireIdentity closes a mapping that was wrong or has been replaced. The row
-// stays readable: a settlement computed under the old mapping must remain
-// explainable.
+// IdentityHistory returns every mapping ever recorded for one external
+// identifier, retired ones included.
+//
+// Every other read of external_identities filters superseded_at IS NULL, which
+// is right — a retired mapping must never resolve anything. The consequence was
+// that the history was written to columns nothing returned, and the question a
+// member actually asks had no answer through the API: this collection was
+// attributed to me, why. The mapping that answers it is the retired one.
+func (s *Service) IdentityHistory(ctx context.Context, tenantID, sourceSystemID string, kind domain.EntityKind, externalID string) ([]*domain.ExternalIdentity, error) {
+	if sourceSystemID == "" || externalID == "" {
+		return nil, errors.New("source_system_id and external_id are both required: " +
+			"an identifier is only unique within the system that issued it")
+	}
+	return s.repo.IdentityHistory(ctx, tenantID, sourceSystemID, kind, externalID)
+}
+
+// RetireIdentity closes a mapping that was wrong or has been replaced.
+//
+// The row stays. This comment used to say it stays "readable", which it was not:
+// every read filtered it out, so a settlement computed under the old mapping was
+// explainable only to somebody with a database console. IdentityHistory above is
+// what makes the sentence true.
 func (s *Service) RetireIdentity(ctx context.Context, tenantID, id, actor string) error {
 	if actor == "" {
 		return errors.New("actor is required")

@@ -44,9 +44,21 @@ type fullIdentityProto struct {
 	EntityID       string `json:"entity_id"`
 	Method         string `json:"method"`
 	SupersededAt   string `json:"superseded_at,omitempty"`
+	SupersededBy   string `json:"superseded_by,omitempty"`
 }
 
 type listIdentitiesResp struct {
+	Identities []*fullIdentityProto `json:"identities"`
+}
+
+type getIdentityHistoryReq struct {
+	TenantID       string `json:"tenant_id"`
+	SourceSystemID string `json:"source_system_id"`
+	EntityKind     string `json:"entity_kind"`
+	ExternalID     string `json:"external_id"`
+}
+
+type getIdentityHistoryResp struct {
 	Identities []*fullIdentityProto `json:"identities"`
 }
 
@@ -524,5 +536,128 @@ func TestTheCanonicalPolicyInForceIsTheOneCoveringTheMoment(t *testing.T) {
 	if listed.Policies[1].EffectiveTo == "" {
 		t.Error("the superseded policy is listed with no end to its window, so " +
 			"nothing says when it stopped applying")
+	}
+}
+
+// A retired mapping can still be read back, and says who retired it.
+//
+// This is the question a member actually asks: this collection was attributed to
+// me, why. Answering it needs the mapping that was in force when the record was
+// ingested — and the reason anybody is asking is usually that somebody has since
+// noticed the mapping was wrong and retired it. The one mapping that explains the
+// figure is the one every other read filters out.
+//
+// The row was always there. superseded_at and superseded_by have been written
+// since the table existed, RetireIdentity's own comment said "the row stays
+// readable", and no endpoint returned it: readable meant readable with a
+// database console. GetIdentityHistory is the endpoint that makes the sentence
+// true.
+func TestARetiredMappingCanStillBeReadBackAndNamesWhoRetiredIt(t *testing.T) {
+	p := startPlatform(t)
+	ctx := context.Background()
+
+	tenant := newID("ten")
+	opts := actingAs(tenant, "e2e")
+	source := newID("src")
+
+	// One code, two producers, one after the other — a member number reissued,
+	// which is the ordinary reason a society has two mappings for one code.
+	mapOne := func(entity, from, to string) *identityProto {
+		t.Helper()
+		req := mapIdentityReq{
+			TenantID: tenant, SourceSystemID: source, EntityKind: "PRODUCER",
+			ExternalID: "P-001", EntityID: entity, Method: "MANUAL",
+			ValidFrom: from, Actor: "e2e",
+		}
+		req.ValidTo = to
+		out, err := svcclient.Call[mapIdentityReq, mapIdentityResp](ctx, p.canonical(),
+			canonicalSvc+"/MapIdentity", req, opts)
+		if err != nil {
+			t.Fatalf("MapIdentity %s: %v", entity, err)
+		}
+		return out.Identity
+	}
+
+	first := mapOne(newID("ent"), "2020-01-01T00:00:00Z", "2023-01-01T00:00:00Z")
+	second := mapOne(newID("ent"), "2023-01-01T00:00:00Z", "")
+
+	// The first was wrong, and is withdrawn by a named person.
+	if _, err := svcclient.Call[retireIdentityReq, struct{}](ctx, p.canonical(),
+		canonicalSvc+"/RetireIdentity", retireIdentityReq{
+			TenantID: tenant, ID: first.ID, Actor: "US_SECRETARY",
+		}, opts); err != nil {
+		t.Fatalf("RetireIdentity: %v", err)
+	}
+
+	// It is gone from every read that resolves, which is right.
+	live, err := svcclient.Call[listIdentitiesReq, listIdentitiesResp](ctx, p.canonical(),
+		canonicalSvc+"/ListIdentities", listIdentitiesReq{
+			TenantID: tenant, SourceSystemID: source, Limit: 50,
+		}, opts)
+	if err != nil {
+		t.Fatalf("ListIdentities: %v", err)
+	}
+	for _, i := range live.Identities {
+		if i.ID == first.ID {
+			t.Fatal("a retired mapping is still in the listing, so this test is " +
+				"not showing what it claims to")
+		}
+	}
+
+	// And present in the history, which is the whole point.
+	history, err := svcclient.Call[getIdentityHistoryReq, getIdentityHistoryResp](ctx, p.canonical(),
+		canonicalSvc+"/GetIdentityHistory", getIdentityHistoryReq{
+			TenantID: tenant, SourceSystemID: source,
+			EntityKind: "PRODUCER", ExternalID: "P-001",
+		}, opts)
+	if err != nil {
+		t.Fatalf("GetIdentityHistory: %v", err)
+	}
+
+	byID := map[string]*fullIdentityProto{}
+	for _, i := range history.Identities {
+		byID[i.ID] = i
+	}
+	retired, found := byID[first.ID]
+	if !found {
+		t.Fatalf("the retired mapping is not in the history of P-001: %d entries, "+
+			"and a settlement computed under it cannot be explained through this API",
+			len(history.Identities))
+	}
+	if _, found := byID[second.ID]; !found {
+		t.Error("the live mapping is missing from the history, so this returns the " +
+			"retired ones instead of all of them")
+	}
+
+	if retired.SupersededAt == "" {
+		t.Error("the retired mapping does not say when it was retired")
+	}
+	if retired.SupersededBy != "US_SECRETARY" {
+		t.Errorf("the retired mapping says it was retired by %q, and US_SECRETARY "+
+			"did it\nWhen something was withdrawn without who withdrew it is half "+
+			"an answer to a question about money.", retired.SupersededBy)
+	}
+
+	// Ordered by the period the mapping applied to, so a reader follows what the
+	// code meant over time rather than the order rows happen to come back in.
+	if len(history.Identities) >= 2 {
+		if history.Identities[0].ID != first.ID {
+			t.Error("the history does not start with the earliest mapping")
+		}
+	}
+
+	// And it stays inside the tenant, like everything else here.
+	stranger := actingAs(newID("ten"), "e2e")
+	other, err := svcclient.Call[getIdentityHistoryReq, getIdentityHistoryResp](ctx, p.canonical(),
+		canonicalSvc+"/GetIdentityHistory", getIdentityHistoryReq{
+			TenantID: stranger.Tenant, SourceSystemID: source,
+			EntityKind: "PRODUCER", ExternalID: "P-001",
+		}, stranger)
+	if err != nil {
+		t.Fatalf("GetIdentityHistory for another tenant: %v", err)
+	}
+	if len(other.Identities) != 0 {
+		t.Errorf("another tenant reads %d of this society's mappings through the "+
+			"history endpoint", len(other.Identities))
 	}
 }
