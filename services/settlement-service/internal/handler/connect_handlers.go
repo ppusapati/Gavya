@@ -47,6 +47,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	route("ApprovePayable", connectjson.Unary(h.ApprovePayable))
 
 	route("GetProducerStatement", connectjson.Unary(h.GetProducerStatement))
+	route("ExplainPayable", connectjson.Unary(h.ExplainPayable))
 	route("PrintProducerStatement", connectjson.Unary(h.PrintProducerStatement))
 	route("PrintCycleStatements", connectjson.Unary(h.PrintCycleStatements))
 }
@@ -667,6 +668,220 @@ func parseDate(s, field string) (time.Time, error) {
 }
 
 // classify maps a failure onto the code that describes it.
+
+// ---------------------------------------------------------------------------
+// Explaining a payment
+// ---------------------------------------------------------------------------
+
+type ExplainPayableRequest struct {
+	TenantID string `json:"tenant_id"`
+	ID       string `json:"id"`
+}
+
+// ExplanationProto is a payable traced to what produced it.
+//
+// Every figure is a string in the form it should be read in, as on the
+// statement. The findings are the part a reader is owed in words: where the
+// paid figure and the delivery no longer agree, where a mapping was withdrawn,
+// and what could not be consulted at all.
+type ExplanationProto struct {
+	Payable *PayableProto `json:"payable"`
+	Cycle   *CycleProto   `json:"cycle"`
+
+	Lines      []ExplainedLineProto      `json:"lines"`
+	Deductions []StatementDeductionProto `json:"deductions"`
+	RateCards  []RateCardUseProto        `json:"rate_cards"`
+	Identities []IdentityTraceProto      `json:"identities"`
+
+	Findings  []string       `json:"findings"`
+	Consulted ConsultedProto `json:"consulted"`
+}
+
+type ConsultedProto struct {
+	Procurement       bool   `json:"procurement"`
+	Canonical         bool   `json:"canonical"`
+	ProcurementWhyNot string `json:"procurement_why_not,omitempty"`
+	CanonicalWhyNot   string `json:"canonical_why_not,omitempty"`
+}
+
+type ExplainedLineProto struct {
+	// Paid is the line as this cycle gathered it.
+	Paid StatementLineProto `json:"paid"`
+	// Current is the delivery as procurement prices it now. Absent when
+	// procurement could not be read.
+	Current *CollectionVersionProto `json:"current,omitempty"`
+	// Versions is every version of the delivery, oldest first.
+	Versions           []CollectionVersionProto `json:"versions,omitempty"`
+	PaidMatchesCurrent bool                     `json:"paid_matches_current"`
+}
+
+type CollectionVersionProto struct {
+	ID          string `json:"id"`
+	CollectedOn string `json:"collected_on"`
+	Shift       string `json:"shift"`
+
+	Quantity     string `json:"quantity"`
+	QuantityUnit string `json:"quantity_unit"`
+	Fat          string `json:"fat,omitempty"`
+	SNF          string `json:"snf,omitempty"`
+
+	RateCardID  string `json:"rate_card_id"`
+	Rate        string `json:"rate,omitempty"`
+	Amount      string `json:"amount"`
+	Explanation string `json:"explanation"`
+
+	OriginKind     string `json:"origin_kind"`
+	SourceSystemID string `json:"source_system_id,omitempty"`
+	SourceRecordID string `json:"source_record_id,omitempty"`
+
+	CreatedAt        string `json:"created_at,omitempty"`
+	SupersededAt     string `json:"superseded_at,omitempty"`
+	SupersededBy     string `json:"superseded_by,omitempty"`
+	Supersedes       string `json:"supersedes,omitempty"`
+	CorrectionReason string `json:"correction_reason,omitempty"`
+}
+
+type RateCardUseProto struct {
+	ID          string `json:"id"`
+	Name        string `json:"name,omitempty"`
+	Kind        string `json:"kind,omitempty"`
+	Basis       string `json:"basis,omitempty"`
+	Currency    string `json:"currency,omitempty"`
+	ValidFrom   string `json:"valid_from,omitempty"`
+	ValidTo     string `json:"valid_to,omitempty"`
+	LinesPriced int    `json:"lines_priced"`
+	Unreadable  string `json:"unreadable,omitempty"`
+}
+
+type IdentityTraceProto struct {
+	SourceSystemID string                 `json:"source_system_id"`
+	ExternalID     string                 `json:"external_id"`
+	Lines          int                    `json:"lines"`
+	Mappings       []IdentityMappingProto `json:"mappings"`
+}
+
+type IdentityMappingProto struct {
+	ID           string `json:"id"`
+	EntityID     string `json:"entity_id"`
+	Method       string `json:"method"`
+	Note         string `json:"note,omitempty"`
+	ValidFrom    string `json:"valid_from"`
+	ValidTo      string `json:"valid_to"`
+	RecordedAt   string `json:"recorded_at"`
+	SupersededAt string `json:"superseded_at,omitempty"`
+	SupersededBy string `json:"superseded_by,omitempty"`
+}
+
+// ExplainPayable traces one payable to the deliveries, rate cards and identity
+// mappings that produced it, and says where they no longer agree.
+func (h *Handler) ExplainPayable(ctx context.Context, req *connect.Request[ExplainPayableRequest]) (*connect.Response[ExplanationProto], error) {
+	ex, err := h.svc.Explain(ctx, req.Msg.TenantID, req.Msg.ID)
+	if err != nil {
+		return nil, classify(err)
+	}
+	return connect.NewResponse(fromExplanation(ex)), nil
+}
+
+func fromExplanation(ex *service.Explanation) *ExplanationProto {
+	out := &ExplanationProto{
+		Payable:  fromPayable(ex.Payable),
+		Findings: ex.Findings,
+		Consulted: ConsultedProto{
+			Procurement: ex.Consulted.Procurement, Canonical: ex.Consulted.Canonical,
+			ProcurementWhyNot: ex.Consulted.ProcurementWhyNot,
+			CanonicalWhyNot:   ex.Consulted.CanonicalWhyNot,
+		},
+		// Never nil on the wire: an explanation with nothing to report says so
+		// with an empty list, not with a missing field a client has to guess at.
+		Lines:      []ExplainedLineProto{},
+		Deductions: []StatementDeductionProto{},
+		RateCards:  []RateCardUseProto{},
+		Identities: []IdentityTraceProto{},
+	}
+	if out.Findings == nil {
+		out.Findings = []string{}
+	}
+	if ex.Cycle != nil {
+		out.Cycle = fromCycle(ex.Cycle)
+	}
+	for _, el := range ex.Lines {
+		l := el.Line
+		lp := ExplainedLineProto{
+			Paid: StatementLineProto{
+				CollectedOn: l.CollectedOn.UTC().Format("2006-01-02"), Shift: l.Shift,
+				Quantity: l.Quantity, QuantityUnit: l.QuantityUnit, Rate: l.Rate,
+				Amount: l.Amount.String(), CollectionID: l.CollectionID,
+			},
+			PaidMatchesCurrent: el.PaidMatchesCurrent,
+		}
+		if el.Current != nil {
+			c := fromVersion(*el.Current)
+			lp.Current = &c
+		}
+		for _, v := range el.Versions {
+			lp.Versions = append(lp.Versions, fromVersion(v))
+		}
+		out.Lines = append(out.Lines, lp)
+	}
+	for _, d := range ex.Deductions {
+		out.Deductions = append(out.Deductions, StatementDeductionProto{
+			Kind: string(d.Kind), Reference: d.Reference, Amount: d.Amount.String(),
+		})
+	}
+	for _, u := range ex.RateCards {
+		rp := RateCardUseProto{ID: u.ID, LinesPriced: u.LinesPriced, Unreadable: u.Unreadable}
+		if u.Card != nil {
+			rp.Name, rp.Kind, rp.Basis, rp.Currency = u.Card.Name, u.Card.Kind, u.Card.Basis, u.Card.Currency
+			rp.ValidFrom = u.Card.ValidFrom.UTC().Format(time.RFC3339)
+			if u.Card.ValidTo != nil {
+				rp.ValidTo = u.Card.ValidTo.UTC().Format(time.RFC3339)
+			}
+		}
+		out.RateCards = append(out.RateCards, rp)
+	}
+	for _, tr := range ex.Identities {
+		tp := IdentityTraceProto{
+			SourceSystemID: tr.SourceSystemID, ExternalID: tr.ExternalID, Lines: tr.Lines,
+			Mappings: []IdentityMappingProto{},
+		}
+		for _, m := range tr.Mappings {
+			mp := IdentityMappingProto{
+				ID: m.ID, EntityID: m.EntityID, Method: m.Method, Note: m.Note,
+				ValidFrom:    m.ValidFrom.UTC().Format(time.RFC3339),
+				ValidTo:      m.ValidTo.UTC().Format(time.RFC3339),
+				RecordedAt:   m.RecordedAt.UTC().Format(time.RFC3339),
+				SupersededBy: m.SupersededBy,
+			}
+			if m.SupersededAt != nil {
+				mp.SupersededAt = m.SupersededAt.UTC().Format(time.RFC3339)
+			}
+			tp.Mappings = append(tp.Mappings, mp)
+		}
+		out.Identities = append(out.Identities, tp)
+	}
+	return out
+}
+
+func fromVersion(v procurement.Version) CollectionVersionProto {
+	p := CollectionVersionProto{
+		ID: v.ID, CollectedOn: v.CollectedOn.UTC().Format("2006-01-02"), Shift: v.Shift,
+		Quantity: v.Quantity, QuantityUnit: v.QuantityUnit, Fat: v.Fat, SNF: v.SNF,
+		RateCardID: v.RateCardID, Rate: v.Rate, Amount: v.Amount.String(),
+		Explanation:    v.Explanation,
+		OriginKind:     v.OriginKind,
+		SourceSystemID: v.SourceSystemID, SourceRecordID: v.SourceRecordID,
+		SupersededBy: v.SupersededBy, Supersedes: v.Supersedes,
+		CorrectionReason: v.CorrectionReason,
+	}
+	if !v.CreatedAt.IsZero() {
+		p.CreatedAt = v.CreatedAt.UTC().Format(time.RFC3339)
+	}
+	if v.SupersededAt != nil {
+		p.SupersededAt = v.SupersededAt.UTC().Format(time.RFC3339)
+	}
+	return p
+}
+
 func classify(err error) error {
 	var wrongStatus *domain.ErrWrongStatus
 	var orphaned *procurement.ErrMilkBelongsToNoSociety

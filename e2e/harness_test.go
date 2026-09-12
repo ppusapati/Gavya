@@ -101,9 +101,15 @@ var services = []service{
 	// producer earned zero.
 	{
 		name: "settlement-service", database: "e2e_settlement",
-		schema:   "services/settlement-service/internal/db/schema.sql",
-		needs:    []string{"procurement-service"},
-		envOfDep: map[string]string{"procurement-service": "PROCUREMENT_URL"},
+		schema: "services/settlement-service/internal/db/schema.sql",
+		needs:  []string{"procurement-service", "canonical-service"},
+		envOfDep: map[string]string{
+			"procurement-service": "PROCUREMENT_URL",
+			// For explaining a payment: what an imported member number meant,
+			// retired mappings included. canonical-service is declared first in
+			// this list, which is what the needs check above asks for.
+			"canonical-service": "CANONICAL_URL",
+		},
 	},
 	// Material flow is the physical layer balance-service was missing: a node
 	// is a cooler with a code and a tanker with a registration rather than a

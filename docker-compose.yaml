@@ -432,6 +432,10 @@ services:
       # Not encrypted, and this says so. The PostgreSQL is a container beside this one on a private compose network. Point DATABASE_URL at a database anywhere else and this line has to go: set sslmode=verify-full instead.
       GAVYA_INSECURE_DATABASE: "plaintext-to-the-database-is-acceptable-here"
       PROCUREMENT_URL: "http://procurement-service:8103"
+      # Where the history of an imported member number is read from, when a
+      # payment is explained. Optional: without it the explanation says that
+      # identity history was not consulted, rather than looking complete.
+      CANONICAL_URL: "http://canonical-service:8093"
     depends_on:
       postgres:
         condition: service_healthy

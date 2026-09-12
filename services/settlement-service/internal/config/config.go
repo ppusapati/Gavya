@@ -20,6 +20,15 @@ type Config struct {
 	// say why.
 	ProcurementURL string
 
+	// CanonicalURL is where the history of what an imported member number has
+	// meant comes from, for explaining a payment.
+	//
+	// Optional, and its absence is reported rather than hidden: an explanation
+	// produced without it says in so many words that identity history was not
+	// consulted. The money trace is still worth having without the identity
+	// trace; what would not be worth having is one that looked complete.
+	CanonicalURL string
+
 	// ServiceIdentity is who this service is when it calls another one. A
 	// service borrowing a person's name produces an audit trail that attributes
 	// its actions to somebody who was not there.
@@ -43,6 +52,7 @@ func Load() *Config {
 		// itself rather than a connection to the wrong database.
 		DatabaseURL:     os.Getenv("DATABASE_URL"),
 		ProcurementURL:  os.Getenv("PROCUREMENT_URL"),
+		CanonicalURL:    os.Getenv("CANONICAL_URL"),
 		ServiceIdentity: getEnv("SERVICE_IDENTITY", "SVC_SETTLEMENT"),
 	}
 }

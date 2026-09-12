@@ -145,8 +145,11 @@ services:
       SETTLEMENT_SERVICE_URL: "http://127.0.0.1:8080"
       SHADOW_SETTLEMENT_SERVICE_URL: "http://127.0.0.1:8080"
 
-      # Settlement's reader over procurement, which is also this process.
+      # Settlement's readers over procurement and canonical — both also this
+      # process. Procurement for the collections a cycle gathers; canonical for
+      # what an imported member number has meant, when a payment is explained.
       PROCUREMENT_URL: "http://127.0.0.1:8080"
+      CANONICAL_URL: "http://127.0.0.1:8080"
       # And the identity it reads as. Settlement reads collections on its own
       # behalf rather than as whoever pressed the button, so the trail needs a
       # name for it; unset, every gather is attributed to nothing.

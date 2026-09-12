@@ -229,7 +229,13 @@ type PricedCollectionProto struct {
 
 	Explanation string `json:"explanation"`
 
-	OriginKind     string `json:"origin_kind"`
+	OriginKind string `json:"origin_kind"`
+	// SourceSystemID is which system an imported delivery came from. The column
+	// has been written since imports existed and this shape never carried it, so
+	// a reader could see a delivery was imported and not from where — which is
+	// the half that identifies the producer: a member number means nothing
+	// without the system that issued it.
+	SourceSystemID string `json:"source_system_id,omitempty"`
 	SourceRecordID string `json:"source_record_id,omitempty"`
 	CreatedAt      string `json:"created_at"`
 	CreatedBy      string `json:"created_by"`
@@ -453,7 +459,7 @@ func fromCollection(c *domain.PricedCollection) *PricedCollectionProto {
 		Currency:   c.Amount.Currency, AmountScale: c.Amount.Scale,
 		Amount: c.Amount.String(), AmountMinorUnits: c.Amount.Value,
 		Explanation: c.Explanation,
-		OriginKind:  string(c.Origin.Kind), SourceRecordID: c.SourceRecordID,
+		OriginKind:  string(c.Origin.Kind), SourceSystemID: c.SourceSystemID, SourceRecordID: c.SourceRecordID,
 		CreatedAt: c.CreatedAt.UTC().Format(time.RFC3339), CreatedBy: c.CreatedBy,
 	}
 	if c.Rate.Numerator != 0 {

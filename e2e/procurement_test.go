@@ -79,7 +79,15 @@ type recordCollectionReq struct {
 	QuantityUnit string     `json:"quantity_unit"`
 	Fat          pointProto `json:"fat,omitempty"`
 	SNF          pointProto `json:"snf,omitempty"`
-	Actor        string     `json:"actor"`
+	// Where an imported delivery came from. Left empty for milk the society
+	// recorded itself, which is what every test before the payment explanation
+	// did; set, it is what lets an explanation ask canonical what the member
+	// number meant.
+	OriginKind     string `json:"origin_kind,omitempty"`
+	SourceSystemID string `json:"source_system_id,omitempty"`
+	ImportBatchID  string `json:"import_batch_id,omitempty"`
+	SourceRecordID string `json:"source_record_id,omitempty"`
+	Actor          string `json:"actor"`
 }
 
 type pricedCollectionProto struct {

@@ -37,6 +37,10 @@ type Service struct {
 	ids   IDs
 	clock Clock
 	log   Logger
+
+	// explain is what Explain reads other services through. Optional; see
+	// WithExplainers.
+	explain Explainers
 }
 
 func New(r repository.Repository, milk Collections, ids IDs, clock Clock, log Logger) *Service {

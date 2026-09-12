@@ -343,6 +343,7 @@ var table = map[string]Permission{
 	"settlement.v1.SettlementService/RaiseAdjustment":        SettlementWrite,
 	"settlement.v1.SettlementService/ApprovePayable":         SettlementApprove,
 	"settlement.v1.SettlementService/GetProducerStatement":   SettlementRead,
+	"settlement.v1.SettlementService/ExplainPayable":         SettlementRead,
 	"settlement.v1.SettlementService/PrintProducerStatement": SettlementRead,
 	"settlement.v1.SettlementService/PrintCycleStatements":   SettlementRead,
 

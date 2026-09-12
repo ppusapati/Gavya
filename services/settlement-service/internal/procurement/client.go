@@ -190,3 +190,199 @@ func convert(p collectionProto) (Collection, error) {
 		Amount: amount,
 	}, nil
 }
+
+// ---------------------------------------------------------------------------
+// Explaining a figure: every version of a delivery, and the card it was priced by
+// ---------------------------------------------------------------------------
+
+const (
+	collectionVersions = "/" + serviceName + "/GetCollectionVersions"
+	getRateCard        = "/" + serviceName + "/GetRateCard"
+)
+
+// Version is one version of a priced delivery: what it came to, why, and
+// whether it has since been restated.
+type Version struct {
+	ID          string
+	ProducerRef string
+	CollectedOn time.Time
+	Shift       string
+
+	Quantity     string
+	QuantityUnit string
+	Fat, SNF     string
+
+	RateCardID string
+	Rate       string
+	Amount     money.Money
+
+	// Explanation is procurement's own account of how the amount was arrived
+	// at, written when it priced the delivery. Carried through verbatim: a
+	// second explanation composed here would be a second thing to disagree.
+	Explanation string
+
+	OriginKind     string
+	SourceSystemID string
+	SourceRecordID string
+
+	CreatedAt        time.Time
+	SupersededAt     *time.Time
+	SupersededBy     string
+	Supersedes       string
+	CorrectionReason string
+}
+
+// RateCard is as much of a rate card as an explanation needs: enough to name
+// it and say what kind of pricing it was, not enough to re-price anything.
+type RateCard struct {
+	ID       string
+	Name     string
+	Kind     string
+	Basis    string
+	Currency string
+
+	ValidFrom time.Time
+	ValidTo   *time.Time
+}
+
+type byIDRequest struct {
+	TenantID string `json:"tenant_id"`
+	ID       string `json:"id"`
+}
+
+type versionProto struct {
+	ID          string `json:"id"`
+	ProducerRef string `json:"producer_ref"`
+	CollectedOn string `json:"collected_on"`
+	Shift       string `json:"shift"`
+
+	Quantity     pointProto `json:"quantity"`
+	QuantityUnit string     `json:"quantity_unit"`
+	Fat          pointProto `json:"fat"`
+	SNF          pointProto `json:"snf"`
+
+	RateCardID string `json:"rate_card_id"`
+	Rate       string `json:"rate"`
+
+	Currency         string `json:"currency"`
+	AmountScale      int32  `json:"amount_scale"`
+	AmountMinorUnits int64  `json:"amount_minor_units"`
+
+	Explanation string `json:"explanation"`
+
+	OriginKind     string `json:"origin_kind"`
+	SourceSystemID string `json:"source_system_id"`
+	SourceRecordID string `json:"source_record_id"`
+	CreatedAt      string `json:"created_at"`
+
+	SupersededAt     string `json:"superseded_at"`
+	SupersededBy     string `json:"superseded_by"`
+	Supersedes       string `json:"supersedes"`
+	CorrectionReason string `json:"correction_reason"`
+}
+
+type versionsResponse struct {
+	Versions []versionProto `json:"versions"`
+}
+
+type rateCardProto struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Kind      string `json:"kind"`
+	Basis     string `json:"basis"`
+	Currency  string `json:"currency"`
+	ValidFrom string `json:"valid_from"`
+	ValidTo   string `json:"valid_to"`
+}
+
+type rateCardResponse struct {
+	RateCard *rateCardProto `json:"rate_card"`
+}
+
+// Versions returns every version of one delivery, oldest first.
+//
+// This is what makes a paid figure explainable after the delivery has been
+// corrected. The cycle line holds what was paid; this holds what procurement
+// says now and every step between, each with the reason it was restated.
+func (c *Client) Versions(ctx context.Context, tenantID, collectionID string) ([]Version, error) {
+	resp, err := svcclient.Call[byIDRequest, versionsResponse](ctx, c.svc, collectionVersions,
+		byIDRequest{TenantID: tenantID, ID: collectionID}, c.opts())
+	if err != nil {
+		return nil, fmt.Errorf("read the versions of collection %s from procurement: %w", collectionID, err)
+	}
+	out := make([]Version, 0, len(resp.Versions))
+	for _, p := range resp.Versions {
+		v, err := convertVersion(p)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+// RateCard names the card a delivery was priced against.
+func (c *Client) RateCard(ctx context.Context, tenantID, id string) (*RateCard, error) {
+	resp, err := svcclient.Call[byIDRequest, rateCardResponse](ctx, c.svc, getRateCard,
+		byIDRequest{TenantID: tenantID, ID: id}, c.opts())
+	if err != nil {
+		return nil, fmt.Errorf("read rate card %s from procurement: %w", id, err)
+	}
+	if resp.RateCard == nil {
+		return nil, fmt.Errorf("procurement returned no rate card for %s", id)
+	}
+	p := resp.RateCard
+	from, err := time.Parse(time.RFC3339, p.ValidFrom)
+	if err != nil {
+		return nil, fmt.Errorf("rate card %s: valid_from %q is not a time", id, p.ValidFrom)
+	}
+	card := &RateCard{
+		ID: p.ID, Name: p.Name, Kind: p.Kind, Basis: p.Basis, Currency: p.Currency,
+		ValidFrom: from.UTC(),
+	}
+	if p.ValidTo != "" {
+		to, err := time.Parse(time.RFC3339, p.ValidTo)
+		if err != nil {
+			return nil, fmt.Errorf("rate card %s: valid_to %q is not a time", id, p.ValidTo)
+		}
+		to = to.UTC()
+		card.ValidTo = &to
+	}
+	return card, nil
+}
+
+func convertVersion(p versionProto) (Version, error) {
+	when, err := time.Parse("2006-01-02", p.CollectedOn)
+	if err != nil {
+		return Version{}, fmt.Errorf("collection %s: collected_on %q is not a date", p.ID, p.CollectedOn)
+	}
+	amount, err := money.New(p.AmountMinorUnits, p.AmountScale, p.Currency)
+	if err != nil {
+		return Version{}, fmt.Errorf("collection %s: %w", p.ID, err)
+	}
+	v := Version{
+		ID: p.ID, ProducerRef: p.ProducerRef, CollectedOn: when.UTC(), Shift: p.Shift,
+		Quantity: p.Quantity.Value, QuantityUnit: p.QuantityUnit,
+		Fat: p.Fat.Value, SNF: p.SNF.Value,
+		RateCardID: p.RateCardID, Rate: p.Rate, Amount: amount,
+		Explanation:    p.Explanation,
+		OriginKind:     p.OriginKind,
+		SourceSystemID: p.SourceSystemID, SourceRecordID: p.SourceRecordID,
+		SupersededBy: p.SupersededBy, Supersedes: p.Supersedes,
+		CorrectionReason: p.CorrectionReason,
+	}
+	if p.CreatedAt != "" {
+		if t, err := time.Parse(time.RFC3339, p.CreatedAt); err == nil {
+			v.CreatedAt = t.UTC()
+		}
+	}
+	if p.SupersededAt != "" {
+		t, err := time.Parse(time.RFC3339, p.SupersededAt)
+		if err != nil {
+			return Version{}, fmt.Errorf("collection %s: superseded_at %q is not a time", p.ID, p.SupersededAt)
+		}
+		t = t.UTC()
+		v.SupersededAt = &t
+	}
+	return v, nil
+}

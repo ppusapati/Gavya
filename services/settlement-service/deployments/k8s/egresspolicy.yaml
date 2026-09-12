@@ -60,11 +60,18 @@ spec:
         - protocol: TCP
           port: 5432
 
-    # procurement-service.
+    # canonical-service, procurement-service.
     #
     # Derived from the *_URL settings this service's own config reads. The test
     # in services/gateway-service/handler compares the two, so a call added in
     # code and not here is a failing build rather than a timeout in the cluster.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: canonical-service
+      ports:
+        - protocol: TCP
+          port: 8093
     - to:
         - podSelector:
             matchLabels:

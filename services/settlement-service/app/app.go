@@ -23,6 +23,7 @@ import (
 	"github.com/ppusapati/gavya/libs/integrity/tenantctx"
 	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
 
+	"github.com/ppusapati/gavya/services/settlement-service/internal/canonical"
 	"github.com/ppusapati/gavya/services/settlement-service/internal/config"
 	"github.com/ppusapati/gavya/services/settlement-service/internal/handler"
 	"github.com/ppusapati/gavya/services/settlement-service/internal/procurement"
@@ -52,8 +53,9 @@ func Build(ctx context.Context, log *p9log.Helper) (serve.Registrar, *pgxpool.Po
 	// naming the missing setting rather than reporting a fortnight in which
 	// nobody earned anything.
 	var milk service.Collections
+	var readers *scoped
 	if cfg.ProcurementURL != "" {
-		milk = &scoped{
+		readers = &scoped{
 			client: svcclient.New(svcclient.Config{
 				BaseURL: cfg.ProcurementURL,
 				// A settlement reads thousands of rows in pages, so a page is
@@ -67,11 +69,29 @@ func Build(ctx context.Context, log *p9log.Helper) (serve.Registrar, *pgxpool.Po
 			}),
 			identity: cfg.ServiceIdentity,
 		}
+		milk = readers
 	} else {
 		log.Infof("PROCUREMENT_URL is not set: this service will refuse to gather")
 	}
 
+	// The reader over canonical, for explaining a payment. Optional, and only
+	// meaningful beside procurement: an explanation with no collections has
+	// nothing to look identities up for.
+	if readers != nil && cfg.CanonicalURL != "" {
+		readers.canonical = svcclient.New(svcclient.Config{
+			BaseURL:     cfg.CanonicalURL,
+			Timeout:     10 * time.Second,
+			MaxAttempts: 3,
+		})
+	} else if cfg.CanonicalURL == "" {
+		log.Infof("CANONICAL_URL is not set: an explained payment will say identity " +
+			"history was not consulted")
+	}
+
 	svc := service.New(repo, milk, sys.IDs{}, sys.Clock{}, log)
+	if readers != nil {
+		svc.WithExplainers(readers)
+	}
 	return handler.New(svc), pool, nil
 }
 
@@ -88,9 +108,14 @@ func Build(ctx context.Context, log *p9log.Helper) (serve.Registrar, *pgxpool.Po
 type scoped struct {
 	client   *svcclient.Client
 	identity string
+	// canonical is the second reader, for identity history. Nil when not
+	// configured, in which case IdentityHistory says so rather than guessing.
+	canonical *svcclient.Client
 }
 
-func (s *scoped) Collections(ctx context.Context, tenantID, societyCode string, from, to time.Time) ([]procurement.Collection, error) {
+// options is what every outbound call from this service carries: the verified
+// tenant, a fresh request id, and this service's own identity and permissions.
+func (s *scoped) options(ctx context.Context, tenantID string) func() svcclient.CallOptions {
 	// The tenant on the context is the verified one, put there by the handler
 	// from the transport. It outranks the id in the request body for the same
 	// reason it does everywhere else: the body is what the caller asked for and
@@ -99,7 +124,7 @@ func (s *scoped) Collections(ctx context.Context, tenantID, societyCode string, 
 	if t, err := tenantctx.From(ctx); err == nil && t != "" {
 		tenant = t
 	}
-	reader := procurement.New(s.client, func() svcclient.CallOptions {
+	return func() svcclient.CallOptions {
 		return svcclient.CallOptions{
 			TenantID: tenant, Tenant: tenant,
 			RequestID: ulidpkg.New().String(),
@@ -119,6 +144,24 @@ func (s *scoped) Collections(ctx context.Context, tenantID, societyCode string, 
 			// button.
 			Permissions: authz.Roles()["service"].Permissions.String(),
 		}
-	})
-	return reader.Collections(ctx, tenantID, societyCode, from, to)
+	}
+}
+
+func (s *scoped) Collections(ctx context.Context, tenantID, societyCode string, from, to time.Time) ([]procurement.Collection, error) {
+	return procurement.New(s.client, s.options(ctx, tenantID)).Collections(ctx, tenantID, societyCode, from, to)
+}
+
+func (s *scoped) Versions(ctx context.Context, tenantID, collectionID string) ([]procurement.Version, error) {
+	return procurement.New(s.client, s.options(ctx, tenantID)).Versions(ctx, tenantID, collectionID)
+}
+
+func (s *scoped) RateCard(ctx context.Context, tenantID, id string) (*procurement.RateCard, error) {
+	return procurement.New(s.client, s.options(ctx, tenantID)).RateCard(ctx, tenantID, id)
+}
+
+func (s *scoped) IdentityHistory(ctx context.Context, tenantID, sourceSystemID, externalID string) ([]canonical.Mapping, error) {
+	if s.canonical == nil {
+		return nil, service.ErrNoCanonical
+	}
+	return canonical.New(s.canonical, s.options(ctx, tenantID)).History(ctx, tenantID, sourceSystemID, externalID)
 }
