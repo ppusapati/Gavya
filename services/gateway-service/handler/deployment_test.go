@@ -173,11 +173,21 @@ func readRepoFile(t *testing.T, rel string) string {
 // A service with no Kubernetes manifests is one that cannot be deployed at all,
 // and nothing else in the repository says so.
 //
-// Six were missing when this was written, and the check that first looked for
-// them found one — because it tested that the directory existed rather than that
-// it held anything, and several existed empty. A check that looks in the wrong
-// place reports success while doing nothing, which is the thing this file is
-// about.
+// This check has now been wrong twice, in the same way, and the second time is
+// the more interesting.
+//
+// Six services were missing when it was written, and the first version found
+// one: it tested that the directory existed rather than that it held anything,
+// and several existed empty. Fixed to count files.
+//
+// Counting files was still wrong. Every service had a deployment.yaml and
+// fifteen had no service.yaml, so every one of them passed — and a Deployment
+// with no Service receives no traffic at all. The pods run, the probes pass, and
+// nothing can reach them. "Has some manifest" is not the property; "has the ones
+// that make it reachable" is.
+//
+// Both versions reported success while doing nothing, which is the thing this
+// file is about.
 func TestEveryServiceHasKubernetesManifests(t *testing.T) {
 	root := repoRoot(t)
 	entries, err := os.ReadDir(filepath.Join(root, "services"))
@@ -185,7 +195,7 @@ func TestEveryServiceHasKubernetesManifests(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var missing, empty []string
+	var missing, empty, unreachable []string
 	for _, e := range entries {
 		if !e.IsDir() || e.Name() == modulith {
 			continue
@@ -200,6 +210,25 @@ func TestEveryServiceHasKubernetesManifests(t *testing.T) {
 		case len(files) == 0:
 			empty = append(empty, e.Name())
 		}
+
+		// The two that decide whether anything can reach it.
+		for _, kind := range []struct{ file, why string }{
+			{"deployment.yaml", "nothing runs"},
+			{"service.yaml", "the pods run and nothing can reach them"},
+		} {
+			if !dirExists(dir) {
+				break
+			}
+			if _, err := os.Stat(filepath.Join(dir, kind.file)); err != nil {
+				unreachable = append(unreachable,
+					e.Name()+" has no "+kind.file+", so "+kind.why)
+			}
+		}
+	}
+	sort.Strings(unreachable)
+	if len(unreachable) > 0 {
+		t.Errorf("%d services are not deployable:\n  %s",
+			len(unreachable), strings.Join(unreachable, "\n  "))
 	}
 	sort.Strings(missing)
 	sort.Strings(empty)

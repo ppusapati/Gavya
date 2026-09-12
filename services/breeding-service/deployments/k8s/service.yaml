@@ -1,0 +1,22 @@
+# Heat, insemination, pregnancy, calving.
+#
+# A Deployment with no Service receives no traffic: the pods run, the probes
+# pass, and nothing can reach them. Fifteen services were in that state — this
+# was one — because the check that looked for manifests asked whether the
+# directory held any file rather than whether it held the ones that matter.
+apiVersion: v1
+kind: Service
+metadata:
+  name: breeding-service
+spec:
+  selector:
+    app: breeding-service
+  ports:
+  - port: 80
+    targetPort: 8080
+  # ClusterIP, not LoadBalancer. Every service here takes the tenant and the
+  # permissions it acts on from headers the gateway sets, so a service reachable
+  # from outside the cluster is a service anybody can impersonate any tenant
+  # against. Only the gateway should ever be exposed, and it should be exposed by
+  # an Ingress rather than by changing this line.
+  type: ClusterIP
