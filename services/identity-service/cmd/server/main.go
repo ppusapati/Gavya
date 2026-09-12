@@ -49,8 +49,9 @@ func main() {
 	srv.Handler = app.LimitSignIn(srv.Handler)
 
 	go func() {
-		log.Infof("%s listening on %s", cfg.ServiceName, cfg.ServerAddr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := serve.Run(srv, func(what string) {
+			log.Infof("%s %s", cfg.ServiceName, what)
+		}); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Errorf("listen: %v", err)
 			os.Exit(1)
 		}

@@ -151,8 +151,9 @@ func main() {
 		gw.CORS(gw.Middleware(authz.Guard(identityapp.LimitSignIn(mux)))), metrics)
 
 	go func() {
-		log.Infof("gavya listening on %s", gwcfg.ServerAddr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := serve.Run(srv, func(what string) {
+			log.Infof("gavya %s", what)
+		}); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Errorf("listen: %v", err)
 			os.Exit(1)
 		}

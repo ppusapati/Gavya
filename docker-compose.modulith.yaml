@@ -70,7 +70,43 @@ services:
       SERVER_ADDR: ":8080"
       LOG_LEVEL: info
 
-      DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+      DATABASE_URL: "${DATABASE_URL:-postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable}"
+
+      # The database connection above is not encrypted, and this says so.
+      #
+      # It is the PostgreSQL defined in this same file: a container on this
+      # compose network, reachable from nothing outside it, with no certificate
+      # of its own. Encrypting that link would mean issuing a certificate to a
+      # container so it can talk to a container beside it.
+      #
+      # That reasoning stops being true the moment the database moves. Point
+      # DATABASE_URL at a managed PostgreSQL, an RDS instance or a machine
+      # across a network and this line has to go — every producer's name, every
+      # payment and every password hash crosses that link. Setting
+      # sslmode=verify-full with the server's CA in sslrootcert is what replaces
+      # it; the services refuse to start otherwise, which is the point.
+      GAVYA_INSECURE_DATABASE: "${GAVYA_INSECURE_DATABASE:-plaintext-to-the-database-is-acceptable-here}"
+
+      # TLS on the one published port.
+      #
+      # Unset, this serves plaintext on 8080 and says so at startup. That is
+      # correct behind something that terminates TLS — a reverse proxy, a load
+      # balancer, an ingress — and wrong on a host where 8080 is what people
+      # reach directly, which is the ordinary way this file gets used.
+      #
+      # Point these at a certificate and key mounted into the container and it
+      # serves HTTPS. Set GAVYA_REQUIRE_TLS to make a missing certificate a
+      # refusal to start rather than a line in the log nobody reads twice.
+      GAVYA_TLS_CERT: "${GAVYA_TLS_CERT:-}"
+      GAVYA_TLS_KEY: "${GAVYA_TLS_KEY:-}"
+      GAVYA_REQUIRE_TLS: "${GAVYA_REQUIRE_TLS:-}"
+
+      # How fast one caller may ask, per address. The defaults are 50 a second
+      # with a burst of 200; raise them for a deployment fronting an integration
+      # that pushes a day of collections in a batch. There is no value that
+      # switches the limit off.
+      GAVYA_RATE_PER_SECOND: "${GAVYA_RATE_PER_SECOND:-}"
+      GAVYA_RATE_BURST: "${GAVYA_RATE_BURST:-}"
 
       # Every upstream is this process.
       #

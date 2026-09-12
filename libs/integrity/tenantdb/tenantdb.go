@@ -100,6 +100,12 @@ func Clear(ctx context.Context, conn Execer) error {
 // is consulted, and then returns nothing, so this is the only supported way to
 // connect.
 func NewPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
+	// Before anything connects. Every service in this platform reaches its
+	// database through here, so this is the one place the question "is this
+	// connection encrypted" can be asked once instead of twenty-eight times.
+	if err := checkSSLMode(dsn); err != nil {
+		return nil, err
+	}
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("tenantdb: %w", err)

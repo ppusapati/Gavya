@@ -10,6 +10,8 @@ services:
       - SERVICE_NAME=feed-service
       - SERVER_ADDR=:8080
       - DATABASE_URL=postgres://postgres:secret@postgres:5432/dairy?sslmode=disable
+      # Not encrypted, and this says so. The PostgreSQL is a container beside this one on a private compose network. Point DATABASE_URL at a database anywhere else and this line has to go: set sslmode=verify-full instead.
+      - GAVYA_INSECURE_DATABASE=plaintext-to-the-database-is-acceptable-here
     depends_on:
       - postgres
 

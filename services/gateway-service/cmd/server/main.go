@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"os/signal"
@@ -43,8 +44,9 @@ func main() {
 	srv := serve.Unguarded(cfg.ServerAddr, h.CORS(mux), metrics)
 
 	go func() {
-		log.Infof("gateway-service listening on %s", cfg.ServerAddr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := serve.Run(srv, func(what string) {
+			log.Infof("gateway-service %s", what)
+		}); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("listen: %v", err)
 		}
 	}()

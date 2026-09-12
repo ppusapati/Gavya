@@ -22,6 +22,8 @@ spec:
           envFrom:
             - configMapRef:
                 name: file-service-config
+            - secretRef:
+                name: file-service-secret
           readinessProbe:
             httpGet:
               path: /readyz
@@ -60,7 +62,23 @@ metadata:
 data:
   SERVICE_NAME: file-service
   SERVER_ADDR: ":8095"
-  DATABASE_URL: postgres://postgres:secret@postgres:5432/dairy?sslmode=disable
+  # DATABASE_URL is deliberately not here.
+  #
+  # It was, complete with the password, in a ConfigMap — which is not a
+  # secret store: it is readable by anything in the namespace that can read
+  # ConfigMaps, it lands in `kubectl describe` output, and it is the first
+  # thing copied into a git repository. It also carried sslmode=disable, so
+  # the connection it described was unencrypted.
+  #
+  # It now comes from the Secret file-service-secret, which the deployment
+  # mounts beside this. Create it with a URL that verifies the server:
+  #
+  #   kubectl create secret generic file-service-secret \
+  #     --from-literal=DATABASE_URL='postgres://gavya_app:PASSWORD@postgres:5432/dairy?sslmode=verify-full&sslrootcert=/etc/ssl/certs/pg-ca.crt'
+  #
+  # Anything that can end up in plaintext — disable, allow, prefer, or no
+  # sslmode at all — is refused at startup unless the deployment states the
+  # case with GAVYA_INSECURE_DATABASE.
   STORAGE_PROVIDER: local
   STORAGE_BUCKET: /data/uploads
 ---

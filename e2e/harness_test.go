@@ -33,6 +33,7 @@ import (
 	"github.com/ppusapati/gavya/libs/integrity/authz"
 	"github.com/ppusapati/gavya/libs/integrity/serve"
 	"github.com/ppusapati/gavya/libs/integrity/svcclient"
+	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
 )
 
 // service describes one binary the harness runs.
@@ -374,9 +375,15 @@ func TestMain(m *testing.M) {
 	// its environment from os.Environ. The sign-in limit is deliberately not
 	// raised: it has its own budget, and two tests in onboarding_test.go exist to
 	// meet it.
+	//
+	// The database this suite runs against has no certificate, so the plaintext
+	// case is stated here in the same words a deployment would have to use. It is
+	// deliberately the real phrase and not a test-only escape: a way out that
+	// exists only for tests is a way out nobody has exercised.
 	for _, e := range []struct{ key, value string }{
 		{serve.RateEnv, "100000"},
 		{serve.BurstEnv, "100000"},
+		{tenantdb.InsecureEnv, tenantdb.InsecurePhrase},
 	} {
 		if err := os.Setenv(e.key, e.value); err != nil {
 			fmt.Fprintf(os.Stderr, "could not set %s: %v\n", e.key, err)

@@ -572,3 +572,159 @@ func TestReadinessAsksReadyzAndLivenessAsksHealthz(t *testing.T) {
 	}
 	t.Logf("checked %d deployments", len(files))
 }
+
+// Every compose file in the repository is valid YAML.
+//
+// services/cattle-service/docker-compose.yaml was not, and had not been for as
+// long as it has existed: three healthcheck settings on one line separated by
+// semicolons, which is a shell habit and not YAML. `docker compose up` in that
+// directory fails at parse. Nothing said so, because nothing in this repository
+// had ever read the per-service compose files — they are deployment descriptors,
+// and deployment descriptors are the part that is never exercised until the day
+// somebody runs them.
+//
+// RUN WITH -count=1. These files are outside this module.
+func TestEveryComposeFileParses(t *testing.T) {
+	root := repoRoot(t)
+	var files []string
+	for _, pattern := range []string{
+		filepath.Join(root, "docker-compose*.yaml"),
+		filepath.Join(root, "docker-compose*.yml"),
+		filepath.Join(root, "services", "*", "docker-compose*.yaml"),
+		filepath.Join(root, "services", "*", "docker-compose*.yml"),
+	} {
+		found, err := filepath.Glob(pattern)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, found...)
+	}
+	if len(files) < 10 {
+		t.Fatalf("found only %d compose files; the globs have probably stopped "+
+			"matching, and a check that finds nothing passes", len(files))
+	}
+
+	var broken []string
+	for _, path := range files {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		var doc map[string]any
+		if err := yaml.Unmarshal(src, &doc); err != nil {
+			rel, _ := filepath.Rel(root, path)
+			broken = append(broken, rel+": "+err.Error())
+			continue
+		}
+		if _, ok := doc["services"]; !ok {
+			rel, _ := filepath.Rel(root, path)
+			broken = append(broken, rel+": no services key")
+		}
+	}
+	sort.Strings(broken)
+	if len(broken) > 0 {
+		t.Errorf("%d compose files do not parse:\n  %s",
+			len(broken), strings.Join(broken, "\n  "))
+	}
+	t.Logf("checked %d compose files", len(files))
+}
+
+// A compose file that connects in the clear says so, in the file.
+//
+// Every service in this repository connected with sslmode=disable, and none of
+// it was a decision — it was what the first service was written with and what
+// the next twenty-seven copied. libs/integrity/tenantdb now refuses such a
+// connection unless the deployment states the case in words, and this is the
+// other half: a compose file cannot both keep sslmode=disable and stay silent
+// about it, because a service started from it would not come up.
+//
+// The point is not the variable. It is that the two lines sit together, so
+// somebody pointing DATABASE_URL at a database across a network has the
+// sentence about what that means directly under their cursor.
+//
+// RUN WITH -count=1.
+func TestAComposeFileThatConnectsInTheClearSaysSo(t *testing.T) {
+	root := repoRoot(t)
+	var files []string
+	for _, pattern := range []string{
+		filepath.Join(root, "docker-compose*.yaml"),
+		filepath.Join(root, "services", "*", "docker-compose*.yaml"),
+	} {
+		found, _ := filepath.Glob(pattern)
+		files = append(files, found...)
+	}
+	if len(files) < 10 {
+		t.Fatalf("found only %d compose files; the globs have probably stopped matching", len(files))
+	}
+
+	var silent []string
+	checked := 0
+	for _, path := range files {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		rel, _ := filepath.Rel(root, path)
+
+		var doc struct {
+			Services map[string]struct {
+				Environment yaml.Node `yaml:"environment"`
+			} `yaml:"services"`
+		}
+		if err := yaml.Unmarshal(src, &doc); err != nil {
+			t.Errorf("%s does not parse: %v", rel, err)
+			continue
+		}
+
+		for name, svc := range doc.Services {
+			env := environmentOf(svc.Environment)
+			dsn, connects := env["DATABASE_URL"]
+			if !connects {
+				continue
+			}
+			checked++
+			if !strings.Contains(dsn, "sslmode=disable") &&
+				!strings.Contains(dsn, "sslmode=allow") &&
+				!strings.Contains(dsn, "sslmode=prefer") {
+				continue
+			}
+			if env["GAVYA_INSECURE_DATABASE"] == "" {
+				silent = append(silent, rel+": "+name)
+			}
+		}
+	}
+	sort.Strings(silent)
+	if len(silent) > 0 {
+		t.Errorf("%d services connect in the clear without saying so:\n  %s\n"+
+			"Each would refuse to start: libs/integrity/tenantdb declines an "+
+			"unencrypted connection unless the deployment states the case.",
+			len(silent), strings.Join(silent, "\n  "))
+	}
+	if checked == 0 {
+		t.Error("no service in any compose file has a DATABASE_URL, so this check " +
+			"compared two empty lists")
+	}
+	t.Logf("checked %d services across %d compose files", checked, len(files))
+}
+
+// environmentOf reads compose's two spellings of the environment block.
+//
+// A map (KEY: value) and a list (- KEY=value) mean the same thing to compose,
+// and both are used in this repository. A check that understands one of them
+// passes everything written in the other, silently.
+func environmentOf(node yaml.Node) map[string]string {
+	env := map[string]string{}
+	switch node.Kind {
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			env[node.Content[i].Value] = node.Content[i+1].Value
+		}
+	case yaml.SequenceNode:
+		for _, item := range node.Content {
+			if key, value, found := strings.Cut(item.Value, "="); found {
+				env[key] = value
+			}
+		}
+	}
+	return env
+}
