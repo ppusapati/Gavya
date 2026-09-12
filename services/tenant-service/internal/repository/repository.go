@@ -8,6 +8,9 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ppusapati/gavya/libs/integrity/audit"
+	"github.com/ppusapati/gavya/libs/integrity/sys"
+
 	"github.com/ppusapati/gavya/services/tenant-service/internal/domain"
 )
 
@@ -42,10 +45,14 @@ type Repository interface {
 
 type repo struct {
 	pool *pgxpool.Pool
+	ids  audit.IDs
 }
 
+// serviceName is what this service's audit entries are attributed to.
+const serviceName = "tenant-service"
+
 func New(pool *pgxpool.Pool) Repository {
-	return &repo{pool: pool}
+	return &repo{pool: pool, ids: sys.IDs{}}
 }
 
 type scanner interface {
@@ -104,25 +111,67 @@ func (r *repo) ListTenants(ctx context.Context) ([]*domain.Tenant, error) {
 	return result, rows.Err()
 }
 
+// UpdateTenant rewrites a society's own record, keeping what it said before.
+//
+// The fields here are not administrative detail. currency and timezone decide
+// what every figure in the platform means and when a day starts; max_users and
+// max_cattle decide what the society may do. All of them were overwritten in
+// place, and the row afterwards named whoever last touched it and nothing said
+// what it had been — so a society whose currency changed could not be shown the
+// change, only the result.
 func (r *repo) UpdateTenant(ctx context.Context, t *domain.Tenant) (*domain.Tenant, error) {
-	row := r.pool.QueryRow(ctx,
+	return r.recordedTenantUpdate(ctx, t.ID, "update_tenant",
 		`UPDATE tenants SET name=$2,contact_email=$3,contact_phone=$4,address=$5,country=$6,timezone=$7,currency=$8,max_users=$9,max_cattle=$10,updated_by=$11,updated_at=NOW()
 		 WHERE id=$1 AND deleted_at IS NULL
 		 RETURNING `+tenantCols,
-		t.ID, t.Name, t.ContactEmail, t.ContactPhone, t.Address, t.Country, t.Timezone,
-		t.Currency, t.MaxUsers, t.MaxCattle, t.UpdatedBy,
-	)
-	return scanTenant(row)
+		[]any{t.ID, t.Name, t.ContactEmail, t.ContactPhone, t.Address, t.Country,
+			t.Timezone, t.Currency, t.MaxUsers, t.MaxCattle, t.UpdatedBy})
 }
 
+// UpdateTenantStatus suspends or restores a whole society.
 func (r *repo) UpdateTenantStatus(ctx context.Context, id, status, updatedBy string) (*domain.Tenant, error) {
-	row := r.pool.QueryRow(ctx,
+	return r.recordedTenantUpdate(ctx, id, "update_tenant_status",
 		`UPDATE tenants SET status=$2,updated_by=$3,updated_at=NOW()
 		 WHERE id=$1 AND deleted_at IS NULL
 		 RETURNING `+tenantCols,
-		id, status, updatedBy,
-	)
-	return scanTenant(row)
+		[]any{id, status, updatedBy})
+}
+
+// recordedTenantUpdate applies an update and records both sides of it.
+//
+// The before is the whole row, read under the lock the update will take, and the
+// after is the row the update returns — so the two are the same shape and a
+// reader comparing them sees exactly the fields that moved. Both are written in
+// the transaction that makes the change, so a trail that cannot be written takes
+// the change down with it rather than leaving one without the other.
+func (r *repo) recordedTenantUpdate(ctx context.Context, id, action, query string, args []any) (*domain.Tenant, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	before, err := scanTenant(tx.QueryRow(ctx,
+		`SELECT `+tenantCols+` FROM tenants WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, id))
+	if err != nil {
+		return nil, err
+	}
+
+	after, err := scanTenant(tx.QueryRow(ctx, query, args...))
+	if err != nil {
+		return nil, err
+	}
+
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: action, ResourceType: "tenant", ResourceID: id,
+		Before: before, After: after, ServiceName: serviceName,
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return after, nil
 }
 
 func (r *repo) UpsertTenantSetting(ctx context.Context, s *domain.TenantSetting) (*domain.TenantSetting, error) {

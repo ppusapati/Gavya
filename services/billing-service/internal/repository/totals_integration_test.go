@@ -15,6 +15,8 @@ import (
 
 	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/libs/integrity/money"
+	"github.com/ppusapati/gavya/libs/integrity/tenantctx"
+	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
 	"github.com/ppusapati/gavya/services/billing-service/internal/domain"
 )
 
@@ -56,12 +58,25 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 
-	schema, err := os.ReadFile(filepath.Join("..", "db", "schema.sql"))
-	if err != nil {
-		t.Fatalf("read schema: %v", err)
-	}
-	if _, err := pool.Exec(ctx, string(schema)); err != nil {
-		t.Fatalf("apply schema: %v", err)
+	// This service's own schema, and the audit schema beside it.
+	//
+	// audit_logs lives in audit-service's schema and deployment applies it to
+	// every service's database, because every service writes its trail on its
+	// own connection. This harness applied only the first, so the moment these
+	// paths started recording what they overwrote they failed on a missing
+	// table — a test harness less faithful than production in exactly the place
+	// the change was made.
+	for _, path := range []string{
+		filepath.Join("..", "db", "schema.sql"),
+		filepath.Join("..", "..", "..", "audit-service", "internal", "db", "schema.sql"),
+	} {
+		schema, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if _, err := pool.Exec(ctx, string(schema)); err != nil {
+			t.Fatalf("apply %s: %v", path, err)
+		}
 	}
 	return pool
 }
@@ -88,6 +103,20 @@ type fixture struct {
 	invoice string
 	money   Money
 	taxIncl bool
+}
+
+// acting returns a context carrying what a real request carries.
+//
+// These tests called the repository with a bare context.Background(), which
+// worked for as long as nothing on these paths wrote an audit entry — and an
+// audit entry is the one thing that refuses to be written without a tenant and
+// an actor to attribute it to. A repository test that acts as nobody is testing
+// the path a gateway never produces.
+func (f *fixture) acting() context.Context {
+	return tenantctx.WithActor(
+		tenantdb.WithTenant(context.Background(), f.tenant),
+		tenantctx.Actor{ID: "US_TEST_00000000000000000"},
+	)
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -138,7 +167,7 @@ func (f *fixture) addAt(t *testing.T, quantity, unitPrice float64, rate string) 
 		t.Fatalf("unit price %v: %v", unitPrice, err)
 	}
 	actor := newTestID("usr")
-	return f.repo.AddItemAndRetotal(context.Background(), &domain.InvoiceItem{
+	return f.repo.AddItemAndRetotal(f.acting(), &domain.InvoiceItem{
 		ID:          newTestID("itm"),
 		TenantID:    f.tenant,
 		InvoiceID:   f.invoice,
@@ -321,7 +350,7 @@ func TestAFailedLineLeavesTheInvoiceUntouched(t *testing.T) {
 
 	// A duplicate id cannot be inserted, so the whole transaction must roll back.
 	actor := newTestID("usr")
-	_, err = f.repo.AddItemAndRetotal(context.Background(), &domain.InvoiceItem{
+	_, err = f.repo.AddItemAndRetotal(f.acting(), &domain.InvoiceItem{
 		ID:          first.Item.ID,
 		TenantID:    f.tenant,
 		InvoiceID:   f.invoice,
@@ -349,7 +378,7 @@ func (f *fixture) pay(t *testing.T, amount float64) (*PaymentOutcome, error) {
 		t.Fatalf("amount %v: %v", amount, err)
 	}
 	actor := newTestID("usr")
-	return f.repo.RecordPaymentAndSettle(context.Background(), &domain.Payment{
+	return f.repo.RecordPaymentAndSettle(f.acting(), &domain.Payment{
 		ID:            newTestID("pay"),
 		TenantID:      f.tenant,
 		InvoiceID:     f.invoice,
@@ -420,7 +449,7 @@ func TestConcurrentPaymentsStillSettleTheInvoice(t *testing.T) {
 		t.Fatalf("concurrent payment: %v", err)
 	}
 
-	inv, err := f.repo.GetInvoice(context.Background(), f.invoice, f.tenant)
+	inv, err := f.repo.GetInvoice(f.acting(), f.invoice, f.tenant)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -440,7 +469,7 @@ func TestAlreadySettledInvoicesKeepTheirPaidInstant(t *testing.T) {
 	if _, err := f.pay(t, 118); err != nil {
 		t.Fatal(err)
 	}
-	settled, err := f.repo.GetInvoice(context.Background(), f.invoice, f.tenant)
+	settled, err := f.repo.GetInvoice(f.acting(), f.invoice, f.tenant)
 	if err != nil {
 		t.Fatal(err)
 	}

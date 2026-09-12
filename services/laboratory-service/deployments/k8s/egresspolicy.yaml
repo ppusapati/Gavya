@@ -1,0 +1,61 @@
+# What laboratory-service may reach, and nothing else.
+#
+# Ingress is denied by default for this namespace and re-allowed per service in
+# networkpolicy.yaml beside this. That stops anything reaching a service it has no
+# business calling. This is the other direction: what happens after something
+# here is compromised.
+#
+# Without it a service that has been taken over can reach every other service in
+# the cluster — sending each one whatever tenant and permissions it likes, since
+# that is how they identify a caller — and can reach anything outside the cluster
+# to send what it has read there. An ingress policy alone bounds who can start a
+# conversation, not where the data goes once somebody is inside.
+#
+# # WHAT THIS ASSUMES, AND WHERE IT BREAKS
+#
+# That the database is reachable as a Service named postgres in this namespace.
+# Every DATABASE_URL in this repository says postgres:5432, so that is the
+# topology this repository describes rather than a guess about yours.
+#
+# If the database is a managed PostgreSQL, an RDS instance or anything else
+# outside the cluster, the rule below matches nothing and every query fails the
+# moment this is applied. Replace that one rule with an ipBlock for the address
+# it actually lives at. This is the reason egress is a separate file from
+# ingress: applying it is a decision about your own topology, and getting it
+# wrong is an outage rather than a hole.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: laboratory-service-egress
+  namespace: gavya
+spec:
+  podSelector:
+    matchLabels:
+      app: laboratory-service
+  policyTypes:
+    - Egress
+  egress:
+    # DNS. Every other rule here names a Service, and a Service name is resolved
+    # before it is dialled — so a policy that forgets this denies everything it
+    # was carefully written to allow, and does it as a timeout rather than as a
+    # refusal anybody can read.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+    # The database.
+    #
+    # THE ONE RULE TO CHECK BEFORE APPLYING THIS. See the note above.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432

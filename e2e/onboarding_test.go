@@ -15,6 +15,7 @@
 package e2e
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -23,6 +24,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/ppusapati/gavya/libs/integrity/connectjson"
 )
 
 // admin calls one identity procedure as a tenant administrator.
@@ -35,6 +38,17 @@ func admin(t *testing.T, base, method, tenant string, in any) (int, map[string]a
 	return callAs(t, base, method, in, map[string]string{
 		"X-Gavya-Tenant":      tenant,
 		"X-Gavya-Permissions": "tenant.admin,tenant.read,tenant.write",
+		// The verified actor, which the gateway sets from the session. The
+		// harness did not send it, so every administrative call here arrived
+		// with no actor on the context — which nothing noticed until one of
+		// these routes started writing an audit entry, because an audit entry
+		// is the only thing that refuses to be written without one.
+		//
+		// Worth knowing that it is a different value from the "actor" field in
+		// the request body: that one feeds updated_by and is whatever the caller
+		// says, while this is what the session proved and what the trail is
+		// attributed to.
+		connectjson.UserHeader: "US_FOUNDER_00000000000000",
 	})
 }
 
@@ -517,5 +531,165 @@ func TestManyCorrectSignInsFromOneAddressAreNotLimited(t *testing.T) {
 				"A limit that catches a morning's work is a limit somebody turns off.",
 				i+1, code, body)
 		}
+	}
+}
+
+// Promoting somebody leaves a record of what they held before.
+//
+// This is the change in the whole platform most worth being able to reconstruct,
+// and it was a bare UPDATE. The membership row afterwards carried updated_by and
+// updated_at, which is exactly what made the gap invisible — the table looks like
+// it remembers, and what it remembers is who touched it last. "Who gave this
+// person the approver role, and what did they have before" had no answer, from
+// the service whose entire subject is who may do what.
+//
+// Driven through the API and read out of audit_logs, because the failure this
+// catches is an entry written to the wrong place, in the wrong transaction, or
+// not at all — none of which is visible from the promotion succeeding.
+func TestPromotingSomebodyRecordsTheRoleTheyHeldBefore(t *testing.T) {
+	base, owner := identityAt(t)
+	tenant := seedTenantRow(t, owner)
+	ctx := context.Background()
+
+	const password = "the password for this test"
+	code, body := admin(t, base, "AddMember", tenant, map[string]string{
+		"tenant_id": tenant, "email": "promoted@society.test",
+		"full_name": "Somebody", "role": "clerk",
+		"password": password, "actor": "US_FOUNDER_00000000000000",
+	})
+	if code != 200 {
+		t.Fatalf("AddMember: %d %v", code, body)
+	}
+	userID, _ := body["user_id"].(string)
+	if userID == "" {
+		t.Fatalf("AddMember returned no user id: %v", body)
+	}
+
+	if code, body := admin(t, base, "SetMemberRole", tenant, map[string]string{
+		"tenant_id": tenant, "user_id": userID, "role": "accountant",
+		"actor": "US_FOUNDER_00000000000000",
+	}); code != 200 {
+		t.Fatalf("SetMemberRole: %d %v", code, body)
+	}
+
+	var action, before, after, actor string
+	err := owner.QueryRow(ctx, `
+		SELECT action, old_value::text, new_value::text, actor_id
+		  FROM audit_logs
+		 WHERE tenant_id = $1 AND resource_id = $2 AND action = 'set_member_role'`,
+		tenant, userID).Scan(&action, &before, &after, &actor)
+	if err != nil {
+		t.Fatalf("no audit entry for the promotion: %v\n"+
+			"The membership row now says accountant and nothing anywhere says it "+
+			"used to say clerk.", err)
+	}
+
+	// The clerk role id, which is what the row held before. Compared by looking
+	// it up rather than by hard-coding, because the id is a hash of the tenant
+	// and the name and a literal here would be a different tenant's.
+	var clerkRole, accountantRole string
+	if err := owner.QueryRow(ctx,
+		`SELECT id FROM roles WHERE tenant_id = $1 AND name = 'clerk'`, tenant).
+		Scan(&clerkRole); err != nil {
+		t.Fatalf("read the clerk role: %v", err)
+	}
+	if err := owner.QueryRow(ctx,
+		`SELECT id FROM roles WHERE tenant_id = $1 AND name = 'accountant'`, tenant).
+		Scan(&accountantRole); err != nil {
+		t.Fatalf("read the accountant role: %v", err)
+	}
+
+	if !strings.Contains(before, clerkRole) {
+		t.Errorf("the trail says the role before the change was %s, and it was the "+
+			"clerk role %s\nA before-image that does not carry what was actually "+
+			"there is a record of nothing.", before, clerkRole)
+	}
+	if !strings.Contains(after, accountantRole) {
+		t.Errorf("the trail says the role after the change was %s, want %s",
+			after, accountantRole)
+	}
+	if actor != "US_FOUNDER_00000000000000" {
+		t.Errorf("the trail attributes the promotion to %q", actor)
+	}
+}
+
+// A password reset is recorded, and the trail does not carry the password.
+//
+// Both halves matter. Nobody could tell that an administrator had replaced
+// somebody's password, which is the reset worth noticing; and the obvious way to
+// record it puts a password hash into the one table designed to be read widely,
+// exported, and never deleted.
+func TestAPasswordResetIsRecordedWithoutRecordingThePassword(t *testing.T) {
+	base, owner := identityAt(t)
+	tenant := seedTenantRow(t, owner)
+	ctx := context.Background()
+
+	code, body := admin(t, base, "AddMember", tenant, map[string]string{
+		"tenant_id": tenant, "email": "reset@society.test",
+		"full_name": "Somebody", "role": "clerk",
+		"password": "the first password here", "actor": "US_FOUNDER_00000000000000",
+	})
+	if code != 200 {
+		t.Fatalf("AddMember: %d %v", code, body)
+	}
+	userID, _ := body["user_id"].(string)
+
+	// The hash as it stands before the reset. Captured here, because the trail's
+	// before-image would carry this one and not the one stored afterwards —
+	// asserting against the new hash is an assertion that passes whatever the
+	// trail says, which is how the first version of this test survived a mutation
+	// that put the old hash straight into it.
+	var oldHash string
+	if err := owner.QueryRow(ctx,
+		`SELECT password_hash FROM users WHERE id = $1`, userID).Scan(&oldHash); err != nil {
+		t.Fatalf("read the stored hash: %v", err)
+	}
+	if oldHash == "" {
+		t.Fatal("the member was created with no password hash, so there is nothing " +
+			"for the trail to leak and this test would pass for the wrong reason")
+	}
+
+	const replacement = "the replacement password here"
+	if code, body := admin(t, base, "SetMemberPassword", tenant, map[string]string{
+		"tenant_id": tenant, "user_id": userID, "password": replacement,
+		"actor": "US_FOUNDER_00000000000000",
+	}); code != 200 {
+		t.Fatalf("SetMemberPassword: %d %v", code, body)
+	}
+
+	var before, after string
+	if err := owner.QueryRow(ctx, `
+		SELECT old_value::text, new_value::text FROM audit_logs
+		 WHERE tenant_id = $1 AND resource_id = $2 AND action = 'set_password'`,
+		tenant, userID).Scan(&before, &after); err != nil {
+		t.Fatalf("no audit entry for the password reset: %v", err)
+	}
+
+	// Both hashes: the one that was there and the one that replaced it. Neither
+	// belongs anywhere but users.password_hash.
+	var newHash string
+	if err := owner.QueryRow(ctx,
+		`SELECT password_hash FROM users WHERE id = $1`, userID).Scan(&newHash); err != nil {
+		t.Fatalf("read the stored hash: %v", err)
+	}
+	for name, trail := range map[string]string{"before": before, "after": after} {
+		if strings.Contains(trail, oldHash) || strings.Contains(trail, newHash) {
+			t.Errorf("the %s side of the trail carries the password hash\n"+
+				"An audit trail is read by auditors, exported, and copied into "+
+				"tickets. This takes the secret out of the one column the schema "+
+				"protects.", name)
+		}
+		if strings.Contains(trail, replacement) {
+			t.Errorf("the %s side of the trail carries the password itself", name)
+		}
+	}
+	// And it says the thing a reader needs: that there was a password, and that
+	// a lock was cleared at the same time — which is the part somebody resetting
+	// a password to get into an account would rather not have recorded.
+	if !strings.Contains(before, "had_password") {
+		t.Errorf("the trail does not say whether there was a password before: %s", before)
+	}
+	if !strings.Contains(before, "was_locked") {
+		t.Errorf("the trail does not say whether the account was locked: %s", before)
 	}
 }

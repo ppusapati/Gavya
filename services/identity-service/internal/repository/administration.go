@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/ppusapati/gavya/libs/integrity/audit"
 	"github.com/ppusapati/gavya/libs/integrity/authz"
 )
 
@@ -147,36 +148,113 @@ func (r *repo) ListMembers(ctx context.Context, tenantID string) ([]Member, erro
 }
 
 // SetMemberRole changes what somebody may do.
-func (r *repo) SetMemberRole(ctx context.Context, tenantID, userID, roleID, actor string) error {
-	tag, err := r.db.Exec(ctx, `
-		UPDATE tenant_memberships
-		SET role_id = $3, updated_at = NOW(), updated_by = $4
-		WHERE tenant_id = $1 AND user_id = $2 AND deleted_at IS NULL`,
-		tenantID, userID, roleID, actor)
+
+// recordedUpdate is one change to who can do what, with the state either side.
+//
+// # WHY THESE FOUR AND WHY TOGETHER
+//
+// A role change, a suspension, a password reset and a revoked machine credential
+// are the changes in this platform most worth being able to reconstruct. Every
+// one of them was a bare UPDATE: the row afterwards said who had last touched it
+// and nothing anywhere said what it had been. "Who gave this person the approver
+// role, and what did they have before" had no answer, from a service whose whole
+// subject is who may do what.
+//
+// Written once rather than four times because the four differ only in their SQL,
+// and the part that is easy to get wrong is the same in all of them: read the
+// before under the lock the update will take, write both in the transaction that
+// makes the change, and let the audit failing roll the change back. An audit
+// entry written in its own transaction commits whether or not the change did,
+// which is the failure libs/integrity/audit exists to remove.
+type recordedUpdate struct {
+	action, resourceType, resourceID string
+	before                           string
+	beforeArgs                       []any
+	beforeCols                       []string
+	update                           string
+	updateArgs                       []any
+	after                            map[string]any
+	what                             string
+}
+
+func (r *repo) recordedUpdate(ctx context.Context, u recordedUpdate) error {
+	tx, err := r.db.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("set member role: %w", err)
+		return fmt.Errorf("%s: %w", u.what, err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	values := make([]any, len(u.beforeCols))
+	into := make([]any, len(u.beforeCols))
+	for i := range values {
+		into[i] = &values[i]
+	}
+	if err := tx.QueryRow(ctx, u.before, u.beforeArgs...).Scan(into...); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("%s: %w", u.what, err)
+	}
+	before := make(map[string]any, len(u.beforeCols))
+	for i, c := range u.beforeCols {
+		before[c] = values[i]
+	}
+
+	tag, err := tx.Exec(ctx, u.update, u.updateArgs...)
+	if err != nil {
+		return fmt.Errorf("%s: %w", u.what, err)
 	}
 	if tag.RowsAffected() == 0 {
+		// The row was there a moment ago, under a lock. Reaching here means the
+		// update's own conditions excluded it, which is a mistake in this
+		// function rather than a caller asking for something that is not there.
 		return ErrNotFound
 	}
-	return nil
+
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: u.action, ResourceType: u.resourceType, ResourceID: u.resourceID,
+		Before: before, After: u.after, ServiceName: serviceName,
+	}); err != nil {
+		return fmt.Errorf("%s: %w", u.what, err)
+	}
+	return tx.Commit(ctx)
+}
+
+func (r *repo) SetMemberRole(ctx context.Context, tenantID, userID, roleID, actor string) error {
+	return r.recordedUpdate(ctx, recordedUpdate{
+		action: "set_member_role", resourceType: "membership", resourceID: userID,
+		// Read under the lock the update will take, so a second change cannot
+		// land between the read and the write and be recorded as though it had
+		// not happened.
+		before: `SELECT role_id FROM tenant_memberships
+		          WHERE tenant_id = $1 AND user_id = $2 AND deleted_at IS NULL FOR UPDATE`,
+		beforeArgs: []any{tenantID, userID},
+		beforeCols: []string{"role_id"},
+		update: `UPDATE tenant_memberships
+		            SET role_id = $3, updated_at = NOW(), updated_by = $4
+		          WHERE tenant_id = $1 AND user_id = $2 AND deleted_at IS NULL`,
+		updateArgs: []any{tenantID, userID, roleID, actor},
+		after:      map[string]any{"role_id": roleID},
+		what:       "set member role",
+	})
 }
 
 // SetMemberStatus suspends or restores somebody without removing the record of
 // their having been here.
 func (r *repo) SetMemberStatus(ctx context.Context, tenantID, userID, status, actor string) error {
-	tag, err := r.db.Exec(ctx, `
-		UPDATE tenant_memberships
-		SET status = $3, updated_at = NOW(), updated_by = $4
-		WHERE tenant_id = $1 AND user_id = $2 AND deleted_at IS NULL`,
-		tenantID, userID, status, actor)
-	if err != nil {
-		return fmt.Errorf("set member status: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return r.recordedUpdate(ctx, recordedUpdate{
+		action: "set_member_status", resourceType: "membership", resourceID: userID,
+		before: `SELECT status FROM tenant_memberships
+		          WHERE tenant_id = $1 AND user_id = $2 AND deleted_at IS NULL FOR UPDATE`,
+		beforeArgs: []any{tenantID, userID},
+		beforeCols: []string{"status"},
+		update: `UPDATE tenant_memberships
+		            SET status = $3, updated_at = NOW(), updated_by = $4
+		          WHERE tenant_id = $1 AND user_id = $2 AND deleted_at IS NULL`,
+		updateArgs: []any{tenantID, userID, status, actor},
+		after:      map[string]any{"status": status},
+		what:       "set member status",
+	})
 }
 
 // SetPassword replaces somebody's password hash.
@@ -186,18 +264,30 @@ func (r *repo) SetMemberStatus(ctx context.Context, tenantID, userID, status, ac
 // of somebody who belongs to another co-operative, and the check is the
 // database's rather than this function's.
 func (r *repo) SetPassword(ctx context.Context, userID, hash, actor string) error {
-	tag, err := r.db.Exec(ctx, `
-		UPDATE users
-		SET password_hash = $2, failed_attempts = 0, locked_until = NULL,
-		    updated_at = NOW(), updated_by = $3
-		WHERE id = $1`, userID, hash, actor)
-	if err != nil {
-		return fmt.Errorf("set password: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return r.recordedUpdate(ctx, recordedUpdate{
+		action: "set_password", resourceType: "user", resourceID: userID,
+		// Deliberately not the hash, on either side.
+		//
+		// An audit trail is read by auditors, exported, and copied into tickets.
+		// Putting a password hash in one takes a secret out of the single column
+		// the schema protects and spreads it through the one table designed to be
+		// read widely and never deleted. What a reader needs is that the password
+		// was replaced, by whom, and whether a lock was lifted at the same time —
+		// which is the part somebody might be hiding.
+		before: `SELECT password_hash IS NOT NULL, failed_attempts, locked_until IS NOT NULL
+		           FROM users WHERE id = $1 FOR UPDATE`,
+		beforeArgs: []any{userID},
+		beforeCols: []string{"had_password", "failed_attempts", "was_locked"},
+		update: `UPDATE users
+		            SET password_hash = $2, failed_attempts = 0, locked_until = NULL,
+		                updated_at = NOW(), updated_by = $3
+		          WHERE id = $1`,
+		updateArgs: []any{userID, hash, actor},
+		after: map[string]any{
+			"had_password": true, "failed_attempts": 0, "was_locked": false,
+		},
+		what: "set password",
+	})
 }
 
 // PasswordHashFor reads one person's stored hash, for the change-your-own-password
@@ -237,18 +327,21 @@ func (r *repo) CreateServiceIdentity(ctx context.Context, id, tenantID, name, se
 // Revoked rather than deleted: a credential that was used has a history, and a
 // row that is gone answers no question about what it did before it went.
 func (r *repo) RevokeServiceIdentity(ctx context.Context, tenantID, id, actor string) error {
-	tag, err := r.db.Exec(ctx, `
-		UPDATE service_identities
-		SET status = 'revoked', updated_at = NOW(), updated_by = $3
-		WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL AND status <> 'revoked'`,
-		tenantID, id, actor)
-	if err != nil {
-		return fmt.Errorf("revoke service identity: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return r.recordedUpdate(ctx, recordedUpdate{
+		action: "revoke_service_identity", resourceType: "service_identity", resourceID: id,
+		before: `SELECT name, status FROM service_identities
+		          WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL
+		            AND status <> 'revoked' FOR UPDATE`,
+		beforeArgs: []any{tenantID, id},
+		beforeCols: []string{"name", "status"},
+		update: `UPDATE service_identities
+		            SET status = 'revoked', updated_at = NOW(), updated_by = $3
+		          WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL
+		            AND status <> 'revoked'`,
+		updateArgs: []any{tenantID, id, actor},
+		after:      map[string]any{"status": "revoked"},
+		what:       "revoke service identity",
+	})
 }
 
 // ListServiceIdentities is every machine credential this tenant holds.

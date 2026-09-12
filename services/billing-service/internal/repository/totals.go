@@ -5,7 +5,11 @@ import (
 	"errors"
 	"fmt"
 
+	"time"
+
 	"github.com/jackc/pgx/v5"
+
+	"github.com/ppusapati/gavya/libs/integrity/audit"
 
 	"github.com/ppusapati/gavya/services/billing-service/internal/domain"
 )
@@ -54,6 +58,32 @@ type Money struct {
 	Scale int32
 }
 
+// invoiceTotals is what an audit entry records about an invoice.
+//
+// The figures and the status, as decimal literals, and not the whole row: an
+// audit entry is read by somebody asking what changed about the money, and a
+// dump of every column buries the three fields that answer that in twenty that
+// do not. The literals rather than the money.Money values because those marshal
+// to a shape that depends on the type rather than on the figure, and an audit
+// trail outlives the type.
+func invoiceTotals(i *domain.Invoice) map[string]any {
+	if i == nil {
+		return nil
+	}
+	paid := ""
+	if i.PaidAt != nil {
+		paid = i.PaidAt.UTC().Format(time.RFC3339)
+	}
+	return map[string]any{
+		"status":       i.Status,
+		"sub_total":    i.SubTotal.String(),
+		"tax_amount":   i.TaxAmount.String(),
+		"total_amount": i.TotalAmount.String(),
+		"currency":     i.TotalAmount.Currency,
+		"paid_at":      paid,
+	}
+}
+
 func (r *repo) AddItemAndRetotal(ctx context.Context, item *domain.InvoiceItem, quantity, unitPrice, taxRate string, money Money) (*ItemOutcome, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -61,20 +91,24 @@ func (r *repo) AddItemAndRetotal(ctx context.Context, item *domain.InvoiceItem, 
 	}
 	defer tx.Rollback(ctx)
 
-	var status string
-	var taxInclusive bool
-	if err := tx.QueryRow(ctx,
-		`SELECT status, tax_inclusive FROM invoices
+	// The whole invoice, not just the two fields this needs, because it is also
+	// the before-image. Adding a line changes what somebody is billed, and the
+	// row afterwards said who had last touched it and nothing said what the
+	// figures had been.
+	before, err := scanInvoice(tx.QueryRow(ctx,
+		`SELECT `+invoiceCols+` FROM invoices
 		 WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL FOR UPDATE`,
-		item.InvoiceID, item.TenantID).Scan(&status, &taxInclusive); err != nil {
+		item.InvoiceID, item.TenantID))
+	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("lock invoice: %w", err)
 	}
-	if status != domain.InvoiceDraft {
-		return nil, fmt.Errorf("%w: this one is %s", ErrNotDraft, status)
+	if before.Status != domain.InvoiceDraft {
+		return nil, fmt.Errorf("%w: this one is %s", ErrNotDraft, before.Status)
 	}
+	taxInclusive := before.TaxInclusive
 	if err := pinCurrency(ctx, tx, item.TenantID, money.Code, money.Scale); err != nil {
 		return nil, err
 	}
@@ -124,6 +158,15 @@ func (r *repo) AddItemAndRetotal(ctx context.Context, item *domain.InvoiceItem, 
 		return nil, fmt.Errorf("retotal invoice: %w", err)
 	}
 
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "add_invoice_item", ResourceType: "invoice", ResourceID: item.InvoiceID,
+		Before:      invoiceTotals(before),
+		After:       invoiceTotals(invoice),
+		ServiceName: serviceName,
+	}); err != nil {
+		return nil, err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit: %w", err)
 	}
@@ -162,19 +205,23 @@ func (r *repo) RecordPaymentAndSettle(ctx context.Context, p *domain.Payment, am
 	defer tx.Rollback(ctx)
 
 	// Locked so that two payments cannot each decide the invoice is short.
-	var status, invoiceCurrency string
-	if err := tx.QueryRow(ctx,
-		`SELECT status, currency FROM invoices
+	// The whole invoice, which is also the before-image: a payment can move this
+	// row to paid, and which payment settled an invoice is the question somebody
+	// asks when the money and the invoice disagree.
+	before, err := scanInvoice(tx.QueryRow(ctx,
+		`SELECT `+invoiceCols+` FROM invoices
 		 WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL FOR UPDATE`,
-		p.InvoiceID, p.TenantID).Scan(&status, &invoiceCurrency); err != nil {
+		p.InvoiceID, p.TenantID))
+	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("lock invoice: %w", err)
 	}
-	if status == InvoiceCancelledStatus {
+	if before.Status == InvoiceCancelledStatus {
 		return nil, fmt.Errorf("%w: this one is cancelled", ErrNotPayable)
 	}
+	invoiceCurrency := before.TotalAmount.Currency
 	if err := pinCurrency(ctx, tx, p.TenantID, denom.Code, denom.Scale); err != nil {
 		return nil, err
 	}
@@ -216,6 +263,15 @@ func (r *repo) RecordPaymentAndSettle(ctx context.Context, p *domain.Payment, am
 		p.InvoiceID, p.TenantID, p.PaidAt, p.UpdatedBy))
 	if err != nil {
 		return nil, fmt.Errorf("settle invoice: %w", err)
+	}
+
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "record_payment", ResourceType: "invoice", ResourceID: p.InvoiceID,
+		Before:      invoiceTotals(before),
+		After:       invoiceTotals(invoice),
+		ServiceName: serviceName,
+	}); err != nil {
+		return nil, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {

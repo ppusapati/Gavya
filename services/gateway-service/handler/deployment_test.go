@@ -217,6 +217,8 @@ func TestEveryServiceHasKubernetesManifests(t *testing.T) {
 			{"service.yaml", "the pods run and nothing can reach them"},
 			{"networkpolicy.yaml", "every pod in the cluster can reach it, and " +
 				"this service believes the tenant and permission headers it is sent"},
+			{"egresspolicy.yaml", "a compromise of it can reach every other " +
+				"service in the cluster and anywhere outside it"},
 		} {
 			if !dirExists(dir) {
 				break
@@ -761,37 +763,18 @@ func TestEveryNetworkPolicyAllowsExactlyTheCallersThatExist(t *testing.T) {
 			"and a check that finds nothing passes", len(services))
 	}
 
-	// Who calls whom, from the settings each service reads. A service that looks
-	// up FOO_SERVICE_URL or FOO_URL calls foo-service.
-	reads := regexp.MustCompile(`"([A-Z][A-Z0-9_]*?)(?:_SERVICE)?_URL"`)
+	// Who calls whom, inverted: this check asks who may reach a service, and the
+	// derivation says who each service reaches.
+	//
+	// Inverted from the same function the egress check uses rather than derived
+	// again here. Two copies of one derivation is two answers about the same edge
+	// the first time somebody changes one of them, and the two would then disagree
+	// about whether a call is allowed in and allowed out.
 	callersOf := map[string][]string{}
-	for _, dir := range services {
-		caller := filepath.Base(dir)
-		var src []byte
-		for _, pattern := range []string{"internal/config/*.go", "config/*.go"} {
-			files, _ := filepath.Glob(filepath.Join(dir, pattern))
-			for _, f := range files {
-				if strings.HasSuffix(f, "_test.go") {
-					continue
-				}
-				b, err := os.ReadFile(f)
-				if err != nil {
-					continue
-				}
-				src = append(src, b...)
-			}
-		}
-		for _, m := range reads.FindAllSubmatch(src, -1) {
-			name := strings.ToLower(strings.ReplaceAll(string(m[1]), "_", "-")) + "-service"
-			switch {
-			case name == "database-service":
-				// DATABASE_URL. Not a service in this platform.
-			case strings.HasSuffix(name, "-ml-service"):
-				// The Rust tier, which has no manifests in this repository.
-			case name == caller:
-				// The modulith points every URL at itself.
-			case !contains(callersOf[name], caller):
-				callersOf[name] = append(callersOf[name], caller)
+	for caller, peers := range callGraph(t, services) {
+		for _, peer := range peers {
+			if !contains(callersOf[peer], caller) {
+				callersOf[peer] = append(callersOf[peer], caller)
 			}
 		}
 	}
@@ -992,4 +975,205 @@ func TestNoServiceCompilesInACredentialOrADatabase(t *testing.T) {
 			len(withDefault), strings.Join(withDefault, "\n  "))
 	}
 	t.Logf("checked %d config files", len(configs))
+}
+
+// Every service's egress policy allows exactly the calls it makes.
+//
+// The ingress policies bound who may start a conversation with a service. This
+// bounds where a service can send things once something inside it has been taken
+// over — which an ingress policy says nothing about at all, and which is the
+// half that matters after the first mistake rather than before it.
+//
+// Compared against the same call graph as the ingress check and failing the same
+// two ways, with the directions swapped. A call in code and missing from the
+// policy is a timeout in the cluster and nowhere else. A peer in the policy and
+// not in code is a route out that nothing will ever close, because nothing fails.
+//
+// Two things every one of them must have, and both are quiet when absent:
+//
+//   - DNS. Every other rule names a Service, and a Service name is resolved
+//     before it is dialled, so a policy without this denies everything it was
+//     written to allow — as a timeout, not as anything a reader can see.
+//   - The database. A service that cannot reach it answers nothing, and the
+//     rule that allows it is the one this repository cannot verify: it assumes
+//     a Service named postgres in the namespace, which is what every
+//     DATABASE_URL here says and may not be what a given deployment runs.
+//
+// RUN WITH -count=1. These files are outside this module.
+func TestEveryEgressPolicyAllowsExactlyTheCallsThatExist(t *testing.T) {
+	root := repoRoot(t)
+	services, err := filepath.Glob(filepath.Join(root, "services", "*-service"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(services) < 20 {
+		t.Fatalf("found only %d services; the glob has probably stopped matching, "+
+			"and a check that finds nothing passes", len(services))
+	}
+
+	callsOf := callGraph(t, services)
+	if len(callsOf) < 2 {
+		t.Fatalf("derived calls for only %d services; the pattern has probably "+
+			"stopped matching config.go", len(callsOf))
+	}
+
+	for _, dir := range services {
+		svc := filepath.Base(dir)
+		src, err := os.ReadFile(filepath.Join(dir, "deployments", "k8s", "egresspolicy.yaml"))
+		if err != nil {
+			// Reported by TestEveryServiceHasKubernetesManifests; not repeated.
+			continue
+		}
+
+		var policy struct {
+			Spec struct {
+				PodSelector struct {
+					MatchLabels map[string]string `yaml:"matchLabels"`
+				} `yaml:"podSelector"`
+				PolicyTypes []string `yaml:"policyTypes"`
+				Egress      []struct {
+					To []struct {
+						PodSelector *struct {
+							MatchLabels map[string]string `yaml:"matchLabels"`
+						} `yaml:"podSelector"`
+						NamespaceSelector *struct {
+							MatchLabels map[string]string `yaml:"matchLabels"`
+						} `yaml:"namespaceSelector"`
+						IPBlock *struct {
+							CIDR string `yaml:"cidr"`
+						} `yaml:"ipBlock"`
+					} `yaml:"to"`
+					Ports []struct {
+						Port any `yaml:"port"`
+					} `yaml:"ports"`
+				} `yaml:"egress"`
+			} `yaml:"spec"`
+		}
+		if err := yaml.Unmarshal(src, &policy); err != nil {
+			t.Errorf("%s's egress policy does not parse: %v", svc, err)
+			continue
+		}
+
+		if got := policy.Spec.PodSelector.MatchLabels["app"]; got != svc {
+			t.Errorf("%s's egress policy selects app=%q, so it bounds something else "+
+				"or nothing at all", svc, got)
+		}
+		if !contains(policy.Spec.PolicyTypes, "Egress") {
+			t.Errorf("%s's egress policy does not list Egress in policyTypes, so it "+
+				"restricts nothing", svc)
+		}
+
+		allowed := map[string]bool{}
+		dns, database := false, false
+		for _, rule := range policy.Spec.Egress {
+			if len(rule.To) == 0 {
+				t.Errorf("%s has an egress rule with no destination, which permits "+
+					"every address there is and undoes every rule beside it", svc)
+				continue
+			}
+			for _, to := range rule.To {
+				switch {
+				case to.IPBlock != nil:
+					// Egress rules are OR-ed like ingress ones. A broad ipBlock
+					// here is a route to anywhere, which is the thing being
+					// prevented.
+					if to.IPBlock.CIDR == "0.0.0.0/0" {
+						t.Errorf("%s allows egress to 0.0.0.0/0, which is every address "+
+							"there is — the policy applies cleanly and bounds nothing", svc)
+					}
+				case to.NamespaceSelector != nil:
+					if to.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] == "kube-system" {
+						dns = true
+					}
+				case to.PodSelector != nil:
+					app := to.PodSelector.MatchLabels["app"]
+					if app == "postgres" {
+						database = true
+						continue
+					}
+					allowed[app] = true
+				}
+			}
+		}
+
+		if !dns {
+			t.Errorf("%s's egress policy does not allow DNS. Every other rule in it "+
+				"names a Service, and a Service name is resolved before it is dialled, "+
+				"so this denies everything it was written to allow — as a timeout", svc)
+		}
+		if !database {
+			t.Errorf("%s's egress policy does not allow the database, so the service "+
+				"starts, passes its liveness probe and answers nothing", svc)
+		}
+
+		want := append([]string{}, callsOf[svc]...)
+		sort.Strings(want)
+		var missing, extra []string
+		for _, peer := range want {
+			if !allowed[peer] {
+				missing = append(missing, peer)
+			}
+		}
+		for peer := range allowed {
+			if !contains(want, peer) {
+				extra = append(extra, peer)
+			}
+		}
+		sort.Strings(extra)
+
+		if len(missing) > 0 {
+			t.Errorf("%s calls %s and its egress policy does not allow it, so those "+
+				"calls time out in the cluster and nowhere else",
+				svc, strings.Join(missing, ", "))
+		}
+		if len(extra) > 0 {
+			t.Errorf("%s's egress policy allows it to reach %s, and nothing in this "+
+				"repository calls them from there. Nothing will ever fail because of "+
+				"this, and a compromise of %s reaches them",
+				svc, strings.Join(extra, ", "), svc)
+		}
+	}
+}
+
+// callGraph reads who calls whom out of the *_URL settings each config looks up.
+//
+// The one source both policy checks compare against, so ingress and egress
+// cannot disagree about the same edge — which they would, eventually, as two
+// copies of the same derivation.
+func callGraph(t *testing.T, services []string) map[string][]string {
+	t.Helper()
+	reads := regexp.MustCompile(`"([A-Z][A-Z0-9_]*?)(?:_SERVICE)?_URL"`)
+	known := map[string]bool{}
+	for _, dir := range services {
+		known[filepath.Base(dir)] = true
+	}
+
+	calls := map[string][]string{}
+	for _, dir := range services {
+		caller := filepath.Base(dir)
+		var src []byte
+		for _, pattern := range []string{"internal/config/*.go", "config/*.go"} {
+			files, _ := filepath.Glob(filepath.Join(dir, pattern))
+			for _, f := range files {
+				if strings.HasSuffix(f, "_test.go") {
+					continue
+				}
+				if b, err := os.ReadFile(f); err == nil {
+					src = append(src, b...)
+				}
+			}
+		}
+		for _, m := range reads.FindAllSubmatch(src, -1) {
+			name := strings.ToLower(strings.ReplaceAll(string(m[1]), "_", "-")) + "-service"
+			// DATABASE_URL is not a service; the Rust tier has no manifests here;
+			// the modulith points every URL at itself.
+			if !known[name] || name == caller {
+				continue
+			}
+			if !contains(calls[caller], name) {
+				calls[caller] = append(calls[caller], name)
+			}
+		}
+	}
+	return calls
 }

@@ -19,6 +19,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ppusapati/gavya/libs/integrity/audit"
+	"github.com/ppusapati/gavya/libs/integrity/sys"
+
 	"github.com/ppusapati/gavya/services/identity-service/internal/domain"
 )
 
@@ -83,9 +86,20 @@ type Resolved struct {
 	ServiceIdentityID string
 }
 
-type repo struct{ db *pgxpool.Pool }
+type repo struct {
+	db  *pgxpool.Pool
+	ids audit.IDs
+}
 
-func New(db *pgxpool.Pool) Repository { return &repo{db: db} }
+// serviceName is what this service's audit entries are attributed to.
+const serviceName = "identity-service"
+
+// New builds the repository.
+//
+// The identifier source is fixed here rather than taken as an argument, because
+// every caller passed the same one and the alternative was changing the
+// composition root of the one service whose changes most need recording.
+func New(db *pgxpool.Pool) Repository { return &repo{db: db, ids: sys.IDs{}} }
 
 func (r *repo) FindAccount(ctx context.Context, emailNormalised string) (domain.Account, error) {
 	var a domain.Account
