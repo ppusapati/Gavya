@@ -9,6 +9,7 @@ import (
 
 	"p9e.in/samavaya/packages/p9log"
 
+	"github.com/ppusapati/gavya/libs/integrity/ratelimit"
 	"github.com/ppusapati/gavya/services/gateway-service/config"
 )
 
@@ -287,6 +288,50 @@ func TestAServiceIdentityIsForwardedAsItself(t *testing.T) {
 	}
 	if got := u.got.Get("X-Gavya-User"); got != "" {
 		t.Errorf("a service was forwarded as user %q", got)
+	}
+}
+
+// A client cannot choose the address it is rate-limited by.
+//
+// This is the whole of the rate limit. Every per-address bucket downstream is
+// keyed on X-Gavya-Client, and if a caller could send that header themselves,
+// every request would arrive under a fresh key and the limit would hold nobody:
+// the control would run, report success, and bound nothing. The forwarding
+// headers go the same way, because a service reached without this gateway falls
+// back to them — so a value that survived here would be a value the caller chose
+// wearing a different name.
+func TestAClientCannotChooseTheAddressItIsLimitedBy(t *testing.T) {
+	u := newUpstream(t)
+	mux := gatewayTo(t, u, stubVerifier{tenant: "T_A", user: "US_1"})
+
+	req := httptest.NewRequest(http.MethodPost, milkPath, nil)
+	req.Header.Set("Authorization", "Bearer SE_1")
+	req.RemoteAddr = "198.51.100.9:41234"
+	req.Header.Set(ratelimit.ClientHeader, "203.0.113.77")
+	req.Header.Set("X-Forwarded-For", "203.0.113.78")
+	req.Header.Set("X-Real-Ip", "203.0.113.79")
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+
+	// The peer of the connection, without the port: a new source port per
+	// connection would give one bucket per request, which is the same nothing
+	// arrived at by a different route.
+	if got := u.got.Get(ratelimit.ClientHeader); got != "198.51.100.9" {
+		t.Errorf("the upstream limits on %q; the client asked for 203.0.113.77 and the "+
+			"connection came from 198.51.100.9", got)
+	}
+	// X-Forwarded-For is not empty at the upstream: the reverse proxy writes it
+	// from the peer after the strip, which is the honest value. What must not
+	// survive is the client's — so this asserts the claim is gone rather than
+	// that the header is, which would fail on correct behaviour.
+	for _, h := range []string{"X-Forwarded-For", "X-Real-Ip"} {
+		if got := u.got.Get(h); strings.Contains(got, "203.0.113.") {
+			t.Errorf("%s reached the upstream as %q, carrying what the client wrote", h, got)
+		}
 	}
 }
 

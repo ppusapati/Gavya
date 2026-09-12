@@ -138,8 +138,17 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 	})
 
+	// The sign-in limit, in the same place it sits in the separate-process
+	// deployment: innermost, so it sees the status the identity module actually
+	// returned, and inside the gateway so the address it keys on is the one the
+	// gateway asserted rather than one the caller sent.
+	//
+	// Wired here as well as in identity-service's own main because this binary
+	// does not run that main. A defence present in the shape nobody deploys and
+	// absent from the one they do is worse than no defence: it is a defence
+	// everybody believes in.
 	srv := serve.Unguarded(gwcfg.ServerAddr,
-		gw.CORS(gw.Middleware(authz.Guard(mux))), metrics)
+		gw.CORS(gw.Middleware(authz.Guard(identityapp.LimitSignIn(mux)))), metrics)
 
 	go func() {
 		log.Infof("gavya listening on %s", gwcfg.ServerAddr)

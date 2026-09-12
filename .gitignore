@@ -4,3 +4,9 @@
 
 # Local credentials for docker compose; .env.example is the template.
 .env
+
+# Compiled binaries from `go build ./...` run inside a service directory.
+# One of these — a 30MB modulith — was committed and went unnoticed, because a
+# binary in the tree breaks nothing and every test still passes.
+/services/*/server
+/services/*/cmd/server/server

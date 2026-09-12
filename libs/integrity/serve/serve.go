@@ -11,6 +11,10 @@
 //     connections will otherwise hold sockets until the process runs out, and
 //     the process that runs out is the one taking the morning's collections.
 //   - Every server speaks h2c, which they already did, one copy at a time.
+//   - Every server bounds how fast one caller can ask. Not a defence against a
+//     distributed attacker, and not meant to be: it stops one misbehaving client
+//     from starving everyone else, which is the failure a co-operative actually
+//     meets.
 //   - Every server can be watched. /readyz asks the service's dependencies and
 //     /metrics says what it has been doing. Both are registered here, so a
 //     service cannot be deployed without them and a probe cannot be pointed at
@@ -23,6 +27,8 @@ package serve
 
 import (
 	"net/http"
+	"os"
+	"strconv"
 	"time"
 
 	"golang.org/x/net/http2"
@@ -30,6 +36,24 @@ import (
 
 	"github.com/ppusapati/gavya/libs/integrity/authz"
 	"github.com/ppusapati/gavya/libs/integrity/observe"
+	"github.com/ppusapati/gavya/libs/integrity/ratelimit"
+)
+
+// The general rate, per caller.
+//
+// Generous, because it is not the sign-in limit — that one is stricter and lives
+// in identity-service, where failures rather than attempts are counted. This is
+// the bound that stops one client hammering a service, and a booth recording a
+// morning's collections must never come near it: a limit that catches ordinary
+// work is a limit somebody turns off.
+//
+// The burst is what lets a page that fetches a dozen things load at once.
+const (
+	RequestsPerSecond = 50
+	RequestBurst      = 200
+	// How many callers to remember. An unbounded map keyed on an address is
+	// itself the denial of service.
+	TrackedClients = 8192
 )
 
 // The timeouts.
@@ -47,6 +71,45 @@ const (
 	WriteTimeout      = 2 * time.Minute
 	IdleTimeout       = 2 * time.Minute
 )
+
+// The settings a deployment may move the general rate with.
+//
+// Because the right number is a property of the deployment and not of this
+// repository: one address may be a phone, or a village office behind one NAT, or
+// an integration pushing a day of collections in a batch. A default that catches
+// the third is a default somebody removes entirely, and then there is no limit
+// anywhere.
+const (
+	RateEnv  = "GAVYA_RATE_PER_SECOND"
+	BurstEnv = "GAVYA_RATE_BURST"
+)
+
+// generalRate reads the configured rate, falling back to the constants.
+//
+// There is deliberately no way to switch the limit off. A value at or below zero
+// is not read as "unlimited" — it is read as a mistake, and the default stands.
+// The alternative is a control that a typo silently removes, which is the shape
+// of failure this platform keeps finding: something that reports success while
+// doing nothing.
+func generalRate() (float64, int) {
+	perSecond, burst := float64(RequestsPerSecond), RequestBurst
+	if v, err := strconv.ParseFloat(os.Getenv(RateEnv), 64); err == nil && v > 0 {
+		perSecond = v
+	}
+	if v, err := strconv.Atoi(os.Getenv(BurstEnv)); err == nil && v > 0 {
+		burst = v
+	}
+	return perSecond, burst
+}
+
+// limit is the general per-caller limit, built once per server.
+func limit() func(http.Handler) http.Handler {
+	perSecond, burst := generalRate()
+	return ratelimit.Middleware(
+		ratelimit.New(perSecond, burst, TrackedClients),
+		ratelimit.ExemptProbes(ratelimit.ByClient),
+	)
+}
 
 // New returns the server a service should run: the mux, guarded and counted,
 // over h2c, with timeouts — and with /readyz and /metrics on it.
@@ -77,9 +140,15 @@ func New(addr string, mux *http.ServeMux, checks ...observe.Check) *http.Server 
 	mux.HandleFunc("/readyz", observe.Ready(checks...))
 	mux.HandleFunc("/metrics", metrics.Handler())
 
+	limited := limit()
+
+	// Order matters. Counting is outermost so a refused request is counted —
+	// a service rejecting everything must not look like one serving everything.
+	// The limit comes before the authorisation check, so an exhausted caller is
+	// turned away without the work of deciding what they may do.
 	return &http.Server{
 		Addr:              addr,
-		Handler:           h2c.NewHandler(metrics.Middleware(authz.Guard(mux)), &http2.Server{}),
+		Handler:           h2c.NewHandler(metrics.Middleware(limited(authz.Guard(mux))), &http2.Server{}),
 		ReadHeaderTimeout: ReadHeaderTimeout,
 		ReadTimeout:       ReadTimeout,
 		WriteTimeout:      WriteTimeout,
@@ -100,9 +169,12 @@ func Unguarded(addr string, mux http.Handler, metrics *observe.Metrics) *http.Se
 	if metrics == nil {
 		metrics = observe.NewMetrics()
 	}
+	// Limited here too. The modulith runs this one, and the modulith is the shape
+	// this platform ships — a bound present only in the deployment nobody runs is
+	// not a weaker bound, it is none.
 	return &http.Server{
 		Addr:              addr,
-		Handler:           h2c.NewHandler(metrics.Middleware(mux), &http2.Server{}),
+		Handler:           h2c.NewHandler(metrics.Middleware(limit()(mux)), &http2.Server{}),
 		ReadHeaderTimeout: ReadHeaderTimeout,
 		ReadTimeout:       ReadTimeout,
 		WriteTimeout:      WriteTimeout,

@@ -31,6 +31,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ppusapati/gavya/libs/integrity/authz"
+	"github.com/ppusapati/gavya/libs/integrity/serve"
 	"github.com/ppusapati/gavya/libs/integrity/svcclient"
 )
 
@@ -361,6 +362,28 @@ var sharedBinDirs []string
 // to. An interrupted run still leaves them behind — Go gives a test binary no
 // chance to clean up after SIGKILL — so the message on a full disk names them.
 func TestMain(m *testing.M) {
+	// This suite is not a client any deployment will ever see.
+	//
+	// Dozens of tests run in parallel against one process, all of them from
+	// 127.0.0.1, which is one bucket — so the general per-caller limit fires and
+	// tests fail with 429 on work that has nothing to do with rate limiting. The
+	// limit is right and the suite is the unusual one, so the suite says so here
+	// rather than the default being loosened until this passes.
+	//
+	// Inherited by every service these tests start, because each of them builds
+	// its environment from os.Environ. The sign-in limit is deliberately not
+	// raised: it has its own budget, and two tests in onboarding_test.go exist to
+	// meet it.
+	for _, e := range []struct{ key, value string }{
+		{serve.RateEnv, "100000"},
+		{serve.BurstEnv, "100000"},
+	} {
+		if err := os.Setenv(e.key, e.value); err != nil {
+			fmt.Fprintf(os.Stderr, "could not set %s: %v\n", e.key, err)
+			os.Exit(1)
+		}
+	}
+
 	code := m.Run()
 	stopMLPlatform()
 	for _, cmd := range sharedProcs {

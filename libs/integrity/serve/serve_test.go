@@ -2,6 +2,7 @@ package serve
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sort"
@@ -112,4 +113,85 @@ func repoRoot(t *testing.T) string {
 	}
 	// .../libs/integrity/serve -> repository root
 	return filepath.Dir(filepath.Dir(filepath.Dir(wd)))
+}
+
+// The general rate can be moved by a deployment and cannot be switched off.
+//
+// Moved, because the right number is a property of the deployment: one address
+// may be a phone, a village office behind one NAT, or an integration pushing a
+// day of collections in a batch. Not switched off, because the way a control
+// disappears is never a decision to remove it — it is a zero, an empty string or
+// a typo in a compose file, after which everything still works and nothing is
+// bounded.
+func TestTheGeneralRateIsConfigurableAndCannotBeDisabled(t *testing.T) {
+	for _, c := range []struct {
+		name        string
+		rate, burst string
+		wantRate    float64
+		wantBurst   int
+	}{
+		{"unset", "", "", RequestsPerSecond, RequestBurst},
+		{"raised", "5000", "20000", 5000, 20000},
+		{"lowered", "2", "3", 2, 3},
+		// Each of these is somebody trying, or failing, to remove the limit.
+		{"zero", "0", "0", RequestsPerSecond, RequestBurst},
+		{"negative", "-1", "-1", RequestsPerSecond, RequestBurst},
+		{"nonsense", "unlimited", "none", RequestsPerSecond, RequestBurst},
+		{"blank", "   ", "", RequestsPerSecond, RequestBurst},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv(RateEnv, c.rate)
+			t.Setenv(BurstEnv, c.burst)
+			rate, burst := generalRate()
+			if rate != c.wantRate {
+				t.Errorf("%s=%q gives %v requests a second, want %v", RateEnv, c.rate, rate, c.wantRate)
+			}
+			if burst != c.wantBurst {
+				t.Errorf("%s=%q gives a burst of %d, want %d", BurstEnv, c.burst, burst, c.wantBurst)
+			}
+		})
+	}
+}
+
+// The server the modulith runs is limited too.
+//
+// It is built by Unguarded, which for a while had no limit on it at all: the
+// bound existed in the twenty-nine-process deployment and was absent from the one
+// this platform ships. Exercised rather than read, because a limiter that is
+// constructed and not wired in reads exactly the same.
+func TestTheUnguardedServerIsStillLimited(t *testing.T) {
+	t.Setenv(RateEnv, "1")
+	t.Setenv(BurstEnv, "2")
+
+	srv := Unguarded(":0", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}), nil)
+
+	var refused bool
+	for i := 0; i < 10; i++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/milk.v1.MilkService/RecordMilk", nil)
+		req.RemoteAddr = "198.51.100.4:40000"
+		srv.Handler.ServeHTTP(rec, req)
+		if rec.Code == http.StatusTooManyRequests {
+			refused = true
+			break
+		}
+	}
+	if !refused {
+		t.Error("ten requests a second from one address through the modulith's server " +
+			"were all served, with a configured burst of two")
+	}
+
+	// And the probes are still reachable, because a readiness probe that gets a
+	// 429 takes the pod out of rotation — a rate limit turned into an outage.
+	for i := 0; i < 10; i++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+		req.RemoteAddr = "198.51.100.4:40000"
+		srv.Handler.ServeHTTP(rec, req)
+		if rec.Code == http.StatusTooManyRequests {
+			t.Fatalf("/healthz was refused on request %d", i+1)
+		}
+	}
 }

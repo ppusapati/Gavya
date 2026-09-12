@@ -43,6 +43,10 @@ func main() {
 	srv := serve.New(cfg.ServerAddr, mux, observe.Check{
 		Name: "database", Ping: pool.Ping,
 	})
+	// Repeated sign-in failures from one address slow down. Wrapped around what
+	// serve built rather than passed into it, because this is the one service
+	// with a door worth guarding differently from the rest.
+	srv.Handler = app.LimitSignIn(srv.Handler)
 
 	go func() {
 		log.Infof("%s listening on %s", cfg.ServiceName, cfg.ServerAddr)

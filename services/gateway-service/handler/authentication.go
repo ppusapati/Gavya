@@ -12,6 +12,7 @@ import (
 
 	"github.com/ppusapati/gavya/libs/integrity/authz"
 	"github.com/ppusapati/gavya/libs/integrity/connectjson"
+	"github.com/ppusapati/gavya/libs/integrity/ratelimit"
 )
 
 // The header the platform's services read the verified tenant from.
@@ -29,6 +30,18 @@ var assertedHeaders = []string{
 	"X-Gavya-Service-Identity",
 	authz.PermissionsHeader,
 	authz.RoleHeader,
+	ratelimit.ClientHeader,
+	// The two a client would otherwise use to choose its own address. They are
+	// read by the sign-in log and by the rate limiter, and a value the caller
+	// picks is no use to either: an attacker rotates X-Forwarded-For and every
+	// per-address limit becomes a per-request limit, which is none.
+	//
+	// A deployment with a real proxy in front of this gateway would need to trust
+	// that proxy's X-Forwarded-For, by configuration, naming it. Stripping is the
+	// right default until somebody says otherwise: an inherited header is trusted
+	// by accident, and a configured one is trusted on purpose.
+	"X-Forwarded-For",
+	"X-Real-Ip",
 }
 
 // Verifier turns a session into the tenant it acts for.
@@ -192,6 +205,12 @@ func isUnauthenticated(path string) bool {
 func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) bool {
 	// First, always: whatever the client sent under these names is gone.
 	strip(r)
+
+	// And the address it is actually connected from, which is the one thing
+	// about a caller that cannot be chosen by the caller. Set before the
+	// unauthenticated paths are let through, because sign-in is exactly where it
+	// is needed.
+	r.Header.Set(ratelimit.ClientHeader, ratelimit.PeerAddress(r))
 
 	if isUnauthenticated(r.URL.Path) {
 		return true

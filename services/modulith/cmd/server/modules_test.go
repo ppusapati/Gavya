@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -156,6 +157,75 @@ func TestNoTwoModulesClaimTheSameRoute(t *testing.T) {
 			len(clashes), strings.Join(clashes, "\n  "))
 	}
 	t.Logf("%d literal paths registered across %d services", len(claimedBy), len(dirs))
+}
+
+// A defence a service wraps around its own server is also wrapped around this
+// one.
+//
+// The modulith does not run any service's main. Anything a main does beyond
+// assembling the module — every `srv.Handler = something(srv.Handler)` — is
+// therefore absent here unless somebody wired it a second time, and absent
+// silently: the module still answers every procedure it has, correctly, with the
+// defence gone.
+//
+// That is worse than never having built the defence. The sign-in rate limit was
+// written, unit-tested, end-to-end tested against identity-service's own stack,
+// and missing from the one deployment shape this platform ships — a control
+// reporting success while doing nothing, which is the failure this repository
+// keeps finding. So: two lists of the same thing, compared.
+//
+// RUN WITH -count=1. It reads Go files in other modules, which the test cache
+// does not track.
+func TestEveryServiceLevelDefenceIsWrappedHereToo(t *testing.T) {
+	root := repoRoot(t)
+	mains, err := filepath.Glob(filepath.Join(root, "services", "*-service", "cmd", "server", "main.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mains) < 20 {
+		t.Fatalf("found only %d service main functions; the glob has probably stopped "+
+			"matching, and a check that finds nothing passes", len(mains))
+	}
+
+	// srv.Handler = pkg.Wrapper(srv.Handler) — the name of the wrapper is what
+	// has to appear in this binary as well.
+	wrap := regexp.MustCompile(`srv\.Handler\s*=\s*(?:[A-Za-z0-9_]+\.)?([A-Za-z0-9_]+)\(`)
+
+	self, err := os.ReadFile(filepath.Join(root, "services", "modulith", "cmd", "server", "main.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var missing []string
+	found := 0
+	for _, path := range mains {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		service := filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(path))))
+		for _, m := range wrap.FindAllSubmatch(src, -1) {
+			name := string(m[1])
+			found++
+			if !bytes.Contains(self, []byte(name+"(")) {
+				missing = append(missing, service+" wraps its server in "+name+
+					", and this binary does not")
+			}
+		}
+	}
+	sort.Strings(missing)
+	if len(missing) > 0 {
+		t.Errorf("%d defences exist only in the separate-process deployment:\n  %s\n"+
+			"The modulith is the shape that ships. A defence it does not carry is not "+
+			"a weaker deployment, it is no deployment with that defence at all.",
+			len(missing), strings.Join(missing, "\n  "))
+	}
+	// A regexp that has stopped matching would report nothing missing forever.
+	if found == 0 {
+		t.Error("no service wraps its own server, so this check compared two empty lists; " +
+			"either the pattern changed or the regexp no longer matches it")
+	}
+	t.Logf("%d service-level wrappers, %d of them missing here", found, len(missing))
 }
 
 func contains(list []string, s string) bool {

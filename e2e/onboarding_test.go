@@ -17,6 +17,7 @@ package e2e
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -436,4 +437,85 @@ func keysOf(m map[string]bool) []string {
 func seedTenantRow(t *testing.T, owner *pgx.Conn) string {
 	t.Helper()
 	return newID("TN")
+}
+
+// Repeated sign-in failures from one address slow down.
+//
+// The account lock protects one account against many passwords. It does nothing
+// against the attack that is actually used — one password tried against many
+// accounts — because every failure lands on a different account and none reaches
+// its threshold. This is the control for that, and it counts failures per
+// address rather than attempts, so a co-operative signing thirty people in at
+// six in the morning never meets it.
+func TestRepeatedSignInFailuresFromOneAddressSlowDown(t *testing.T) {
+	base, owner := identityAt(t)
+	tenant := seedTenantRow(t, owner)
+
+	const password = "the password for this test"
+	code, body := admin(t, base, "AddMember", tenant, map[string]string{
+		"tenant_id": tenant, "email": "target@society.test",
+		"full_name": "A Target", "role": "clerk",
+		"password": password, "actor": "US_FOUNDER_00000000000000",
+	})
+	if code != 200 {
+		t.Fatalf("AddMember: %d %v", code, body)
+	}
+
+	// Spraying: a different account each time, so no account lock can fire.
+	// Every one of these is a wrong credential.
+	var refused bool
+	for i := 0; i < 40; i++ {
+		code, _ := callAs(t, base, "SignIn", map[string]string{
+			"email":     "nobody-" + strconv.Itoa(i) + "@society.test",
+			"password":  "not the password",
+			"tenant_id": tenant,
+		}, nil)
+		if code == http.StatusTooManyRequests {
+			refused = true
+			break
+		}
+	}
+	if !refused {
+		t.Error("forty failed sign-ins against forty different accounts from one " +
+			"address were all served\n" +
+			"No account reaches its lock, so nothing else in the platform sees this.")
+	}
+
+	// And the person who knows their password is not caught by it. A new
+	// address, because the one above has spent its budget — which is the
+	// limiter working, not a separate concern.
+	if code, body := callAs(t, base, "SignIn", map[string]string{
+		"email": "target@society.test", "password": password, "tenant_id": tenant,
+	}, map[string]string{"X-Gavya-Client": "198.51.100.7"}); code != 200 {
+		t.Errorf("a correct sign-in from another address was refused: %d %v", code, body)
+	}
+}
+
+// A correct password is never spent from the budget.
+//
+// Thirty people signing in one after another from one booth must not exhaust
+// anything: that is the ordinary morning this platform exists for.
+func TestManyCorrectSignInsFromOneAddressAreNotLimited(t *testing.T) {
+	base, owner := identityAt(t)
+	tenant := seedTenantRow(t, owner)
+
+	const password = "another password for this test"
+	if code, body := admin(t, base, "AddMember", tenant, map[string]string{
+		"tenant_id": tenant, "email": "busy@society.test",
+		"full_name": "Busy Clerk", "role": "clerk",
+		"password": password, "actor": "US_FOUNDER_00000000000000",
+	}); code != 200 {
+		t.Fatalf("AddMember: %d %v", code, body)
+	}
+
+	for i := 0; i < 30; i++ {
+		code, body := callAs(t, base, "SignIn", map[string]string{
+			"email": "busy@society.test", "password": password, "tenant_id": tenant,
+		}, map[string]string{"X-Gavya-Client": "198.51.100.8"})
+		if code != 200 {
+			t.Fatalf("correct sign-in %d of 30 was refused with %d: %v\n"+
+				"A limit that catches a morning's work is a limit somebody turns off.",
+				i+1, code, body)
+		}
+	}
 }
