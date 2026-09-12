@@ -584,7 +584,7 @@ func TestAnAnimalsMedicineHistoryIsItsOwn(t *testing.T) {
 	theirs, err := svcclient.Call[historyReq, treatmentHistoryResp](
 		context.Background(), p.health(), healthSvc2+"/GetTreatmentHistory",
 		historyReq{TenantID: stranger, CattleID: mine},
-		svcclient.CallOptions{Tenant: stranger, Actor: "e2e"})
+		actingAs(stranger, "e2e"))
 	if err == nil && len(theirs.Treatments) > 0 {
 		t.Errorf("a second tenant reads %d treatments against an animal it has never "+
 			"treated", len(theirs.Treatments))
@@ -733,7 +733,7 @@ func TestATenantsSettingsAreItsOwn(t *testing.T) {
 		context.Background(), p.tenantSvcClient(), tenantSvc+"/UpsertTenantSetting",
 		upsertSettingReq{TenantID: mine.Tenant.ID, Key: "collection_shift_cutoff",
 			Value: "09:30", DataType: "string", CreatedBy: "e2e"},
-		svcclient.CallOptions{Tenant: mine.Tenant.ID, Actor: "e2e"})
+		actingAs(mine.Tenant.ID, "e2e"))
 	if err != nil {
 		t.Fatalf("upsert setting: %v", err)
 	}
@@ -747,7 +747,7 @@ func TestATenantsSettingsAreItsOwn(t *testing.T) {
 		context.Background(), p.tenantSvcClient(), tenantSvc+"/UpsertTenantSetting",
 		upsertSettingReq{TenantID: mine.Tenant.ID, Key: "collection_shift_cutoff",
 			Value: "10:00", DataType: "string", CreatedBy: "e2e"},
-		svcclient.CallOptions{Tenant: mine.Tenant.ID, Actor: "e2e"})
+		actingAs(mine.Tenant.ID, "e2e"))
 	if err != nil {
 		t.Fatalf("upsert the same setting: %v", err)
 	}
@@ -758,7 +758,7 @@ func TestATenantsSettingsAreItsOwn(t *testing.T) {
 	list, err := svcclient.Call[tenantReq, listSettingsResp](
 		context.Background(), p.tenantSvcClient(), tenantSvc+"/ListTenantSettings",
 		tenantReq{TenantID: mine.Tenant.ID},
-		svcclient.CallOptions{Tenant: mine.Tenant.ID, Actor: "e2e"})
+		actingAs(mine.Tenant.ID, "e2e"))
 	if err != nil {
 		t.Fatalf("list settings: %v", err)
 	}
@@ -777,7 +777,7 @@ func TestATenantsSettingsAreItsOwn(t *testing.T) {
 	other, err := svcclient.Call[tenantReq, listSettingsResp](
 		context.Background(), p.tenantSvcClient(), tenantSvc+"/ListTenantSettings",
 		tenantReq{TenantID: theirs.Tenant.ID},
-		svcclient.CallOptions{Tenant: theirs.Tenant.ID, Actor: "e2e"})
+		actingAs(theirs.Tenant.ID, "e2e"))
 	if err == nil && len(other.Settings) > 0 {
 		t.Errorf("a second tenant holds %d settings it never set", len(other.Settings))
 	}

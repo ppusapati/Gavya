@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ppusapati/gavya/libs/integrity/serve"
 	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
 
 	"github.com/ppusapati/gavya/services/breeding-service/internal/config"
@@ -15,8 +16,6 @@ import (
 	"github.com/ppusapati/gavya/services/breeding-service/internal/repository"
 	"github.com/ppusapati/gavya/services/breeding-service/internal/service"
 
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 	"p9e.in/samavaya/packages/p9log"
 	ulidpkg "p9e.in/samavaya/packages/ulid"
 )
@@ -41,10 +40,8 @@ func main() {
 	h := handler.New(svc)
 	mux := http.NewServeMux()
 	h.Register(mux)
-	srv := &http.Server{
-		Addr:    cfg.ServerAddr,
-		Handler: h2c.NewHandler(mux, &http2.Server{}),
-	}
+	srv := serve.New(cfg.ServerAddr, mux)
+
 	go func() {
 		log.Infof("starting %s on %s", cfg.ServiceName, cfg.ServerAddr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

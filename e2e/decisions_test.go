@@ -393,7 +393,7 @@ func TestAReconciliationRunIsAcceptedOnce(t *testing.T) {
 	if _, err := svcclient.Call[acceptRunReq, acceptRunResp](ctx, p.balance(),
 		balanceSvc+"/AcceptRun", acceptRunReq{
 			TenantID: stranger, RunID: run.Run.ID, Actor: "supervisor",
-		}, svcclient.CallOptions{Tenant: stranger, Actor: "e2e"}); err == nil {
+		}, actingAs(stranger, "e2e")); err == nil {
 		t.Error("a second tenant accepted a reconciliation run it did not produce")
 	}
 }

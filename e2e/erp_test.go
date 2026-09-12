@@ -76,7 +76,7 @@ func countVia[Req any, Resp any](
 ) int {
 	t.Helper()
 	resp, err := svcclient.Call[Req, Resp](context.Background(), c, procedure, in,
-		svcclient.CallOptions{Tenant: tenant, Actor: "e2e"})
+		actingAs(tenant, "e2e"))
 	if err != nil {
 		// A refusal is a stronger answer than an empty list: the service
 		// declined to answer for a tenant that has nothing. Either is isolation

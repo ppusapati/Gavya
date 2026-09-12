@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"github.com/ppusapati/gavya/libs/integrity/authz"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -330,6 +331,7 @@ type stubVerifier struct {
 	tenant  string
 	user    string
 	service string
+	perms   authz.Set
 	err     error
 }
 
@@ -337,5 +339,17 @@ func (s stubVerifier) Verify(context.Context, string) (Identity, error) {
 	if s.err != nil {
 		return Identity{}, s.err
 	}
-	return Identity{TenantID: s.tenant, UserID: s.user, ServiceIdentityID: s.service}, nil
+	held := s.perms
+	if held == nil {
+		// These tests are about authentication — which headers are stripped,
+		// where a session may be presented, which tenant is forwarded — and a
+		// session that could call nothing would make every one of them a 403
+		// for a reason none of them is asking about. A test that means to
+		// exercise a refusal names its own permissions.
+		held = authz.Roles()["admin"].Permissions
+	}
+	return Identity{
+		TenantID: s.tenant, UserID: s.user, ServiceIdentityID: s.service,
+		Permissions: held,
+	}, nil
 }

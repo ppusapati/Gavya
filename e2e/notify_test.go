@@ -249,7 +249,7 @@ func TestANotificationTemplateIsCreatedAndListed(t *testing.T) {
 	other := newID("tnt")
 	theirs, err := svcclient.Call[tenantReq, listTemplatesResp](
 		context.Background(), p.notification(), notifySvc+"/ListTemplates",
-		tenantReq{TenantID: other}, svcclient.CallOptions{Tenant: other, Actor: "e2e"})
+		tenantReq{TenantID: other}, actingAs(other, "e2e"))
 	if err == nil && len(theirs.Templates) > 0 {
 		t.Errorf("a second tenant sees %d templates it did not write", len(theirs.Templates))
 	}
@@ -334,7 +334,7 @@ func TestAReportIsRequestedAndOnlyOfferedWhenItIsDone(t *testing.T) {
 	if _, err := svcclient.Call[idTenantReq, reportResp](
 		context.Background(), p.reporting(), reportSvc+"/GetReport",
 		idTenantReq{ID: made.Report.ID, TenantID: other},
-		svcclient.CallOptions{Tenant: other, Actor: "e2e"}); err == nil {
+		actingAs(other, "e2e")); err == nil {
 		t.Error("a second tenant read a report it did not request")
 	}
 }

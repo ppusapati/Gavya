@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/ppusapati/gavya/libs/integrity/authz"
 	"github.com/ppusapati/gavya/libs/integrity/connectjson"
 )
 
@@ -25,6 +27,8 @@ var assertedHeaders = []string{
 	tenantHeader,
 	"X-Gavya-User",
 	"X-Gavya-Service-Identity",
+	authz.PermissionsHeader,
+	authz.RoleHeader,
 }
 
 // Verifier turns a session into the tenant it acts for.
@@ -37,6 +41,13 @@ type Identity struct {
 	TenantID          string
 	UserID            string
 	ServiceIdentityID string
+	// Permissions is what the session's role may do. Empty is meaningful and is
+	// not an error: a member with no role holds nothing, and every procedure
+	// then refuses them, which is the right answer rather than a reason to fail
+	// the sign-in.
+	Permissions authz.Set
+	// RoleName is carried for the audit trail. Nothing decides on it.
+	RoleName string
 }
 
 // identityVerifier asks the identity service, over the same Connect JSON
@@ -85,14 +96,26 @@ func (v *identityVerifier) Verify(ctx context.Context, sessionID string) (Identi
 	}
 
 	var out struct {
-		TenantID          string `json:"tenant_id"`
-		UserID            string `json:"user_id"`
-		ServiceIdentityID string `json:"service_identity_id"`
+		TenantID          string   `json:"tenant_id"`
+		UserID            string   `json:"user_id"`
+		ServiceIdentityID string   `json:"service_identity_id"`
+		RoleName          string   `json:"role_name"`
+		Permissions       []string `json:"permissions"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return Identity{}, fmt.Errorf("identity service replied with something unreadable: %w", err)
 	}
-	return Identity(out), nil
+	held := authz.Set{}
+	for _, p := range out.Permissions {
+		held[authz.Permission(p)] = struct{}{}
+	}
+	return Identity{
+		TenantID:          out.TenantID,
+		UserID:            out.UserID,
+		ServiceIdentityID: out.ServiceIdentityID,
+		RoleName:          out.RoleName,
+		Permissions:       held,
+	}, nil
 }
 
 var errNotSignedIn = fmt.Errorf("not signed in")
@@ -225,7 +248,51 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) bool {
 	if id.ServiceIdentityID != "" {
 		r.Header.Set("X-Gavya-Service-Identity", id.ServiceIdentityID)
 	}
+	// Set even when empty, so what reads the header downstream reads this
+	// gateway's answer rather than the absence of one. strip removed whatever
+	// the client sent, and an absent header and an empty one would then mean the
+	// same thing to a reader and different things to a careless one.
+	r.Header.Set(authz.PermissionsHeader, id.Permissions.String())
+	// Set unconditionally, so this header always carries this gateway's answer
+	// rather than sometimes carrying nothing.
+	//
+	// It is not what keeps a client's own role claim out — strip does that, and
+	// measured: restoring the `if id.RoleName != ""` guard breaks no test,
+	// because by this point the client's value is already gone. What this buys
+	// is that the header stops depending on strip alone. Worth having for a
+	// value nothing decides on but an audit entry is written from: a forged one
+	// would put "approved by a supervisor" against something a supervisor did
+	// not do, which is harder to notice than a wrong figure.
+	r.Header.Set(authz.RoleHeader, id.RoleName)
 	return true
+}
+
+// authorise refuses a request whose session may not call the procedure.
+//
+// The services check this too, and deliberately: this one fails fast at the
+// edge, before a request crosses the network to an upstream that would only
+// refuse it, and the one inside the service is the one that still holds if
+// anything ever reaches it without passing through here.
+//
+// It reads the header this gateway has just set rather than the Identity it set
+// it from, so there is a single answer to "what may this caller do" and both
+// layers are reading the same one. A second copy of that fact is a second thing
+// that can be wrong.
+func (h *Handler) authorise(w http.ResponseWriter, r *http.Request) bool {
+	err := authz.Decide(r.URL.Path, authz.ParseSet(r.Header.Get(authz.PermissionsHeader)))
+	if err == nil {
+		return true
+	}
+	var unknown *authz.ErrUnknownProcedure
+	if errors.As(err, &unknown) {
+		// Nobody declared who may call this. Not the caller's fault, and not a
+		// role that wants widening.
+		h.log.Errorf("refusing %s: no permission is declared for it", r.URL.Path)
+		writeStatus(w, http.StatusNotImplemented, "unimplemented", err.Error())
+		return false
+	}
+	writeStatus(w, http.StatusForbidden, "permission_denied", err.Error())
+	return false
 }
 
 func writeUnauthorised(w http.ResponseWriter, message string) {

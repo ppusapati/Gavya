@@ -30,6 +30,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/ppusapati/gavya/libs/integrity/authz"
 	"github.com/ppusapati/gavya/libs/integrity/svcclient"
 )
 
@@ -533,8 +534,26 @@ func (p *platform) opts() svcclient.CallOptions {
 	// tests call services directly, so the harness sets them — which is what a
 	// service-to-service caller does too, and keeps the rule that a service
 	// reads who is acting from the transport rather than from the payload.
+	return actingAs(p.tenant, "US_E2E_HARNESS_0000000000")
+}
+
+// actingAs is one caller, for one tenant, holding an administrator's
+// permissions.
+//
+// The suite acts as an administrator throughout because it is testing what the
+// procedures do, not who may call them — and a suite that had to pick the right
+// role for each of two hundred and forty-nine routes would be a second, worse
+// copy of the permission table. Who may call what is tested where it is decided:
+// in libs/integrity/authz, exhaustively, and in authz_e2e_test.go over the wire.
+//
+// The permissions travel as a header, which is what a service-to-service caller
+// does and what the gateway does on a person's behalf. That the services believe
+// it is a property of where they sit on the network, not of this call: see the
+// note on authz.Guard.
+func actingAs(tenant, actor string) svcclient.CallOptions {
 	return svcclient.CallOptions{
-		TenantID: p.tenant, RequestID: newID("req"),
-		Tenant: p.tenant, Actor: "US_E2E_HARNESS_0000000000",
+		TenantID: tenant, RequestID: newID("req"),
+		Tenant: tenant, Actor: actor,
+		Permissions: authz.Roles()["admin"].Permissions.String(),
 	}
 }

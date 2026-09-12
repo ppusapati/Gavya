@@ -136,7 +136,7 @@ func declarePolicyIn(t *testing.T, p *platform, tenant, name, resolution string,
 	}
 	out, err := svcclient.Call[declarePolicyReq, declarePolicyResp](context.Background(), p.canonical(),
 		canonicalSvc+"/DeclarePolicy", req,
-		svcclient.CallOptions{Tenant: tenant, Actor: "e2e", RequestID: newID("req")})
+		actingAs(tenant, "e2e"))
 	if err != nil {
 		t.Fatalf("DeclarePolicy %s: %v", name, err)
 	}
@@ -158,7 +158,7 @@ func TestASlotReadsBackUnderTheOriginItWasClaimedFor(t *testing.T) {
 	ctx := context.Background()
 
 	tenant := newID("ten")
-	opts := svcclient.CallOptions{Tenant: tenant, Actor: "e2e", RequestID: newID("req")}
+	opts := actingAs(tenant, "e2e")
 	policy := declarePolicyIn(t, p, tenant, newID("pol"), "FIRST_WINS", 7,
 		time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC), time.Time{})
 
@@ -239,7 +239,7 @@ func TestTheConflictQueueHoldsOnlyUnresolvedConflicts(t *testing.T) {
 	ctx := context.Background()
 
 	tenant := newID("ten")
-	opts := svcclient.CallOptions{Tenant: tenant, Actor: "e2e", RequestID: newID("req")}
+	opts := actingAs(tenant, "e2e")
 	declarePolicyIn(t, p, tenant, newID("pol"), "MANUAL", 3,
 		time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC), time.Time{})
 
@@ -362,7 +362,7 @@ func TestListIdentitiesAnswersForOneSourceSystemAndOmitsRetiredOnes(t *testing.T
 	ctx := context.Background()
 
 	tenant := newID("ten")
-	opts := svcclient.CallOptions{Tenant: tenant, Actor: "e2e", RequestID: newID("req")}
+	opts := actingAs(tenant, "e2e")
 	mine, theirs := newID("src"), newID("src")
 
 	mapOne := func(source, external string) *identityProto {
@@ -453,7 +453,7 @@ func TestTheCanonicalPolicyInForceIsTheOneCoveringTheMoment(t *testing.T) {
 	ctx := context.Background()
 
 	tenant := newID("ten")
-	opts := svcclient.CallOptions{Tenant: tenant, Actor: "e2e", RequestID: newID("req")}
+	opts := actingAs(tenant, "e2e")
 
 	firstFrom := time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC)
 	secondFrom := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)

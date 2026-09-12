@@ -105,7 +105,7 @@ type summariseResp struct {
 func adjudicated(t *testing.T, p *platform, tenant, producer, external, shadow, extQty, shadowQty, extRate, shadowRate string) *divergenceProto {
 	t.Helper()
 	ctx := context.Background()
-	opts := svcclient.CallOptions{Tenant: tenant, Actor: "e2e", RequestID: newID("req")}
+	opts := actingAs(tenant, "e2e")
 
 	assertion, err := svcclient.Call[ingestAssertionReq, ingestAssertionResp](ctx, p.shadow(),
 		shadowSvc+"/IngestAssertion", ingestAssertionReq{
@@ -166,7 +166,7 @@ func TestADivergenceIsFoundByIdAndTheQueueNarrowsByEachFilter(t *testing.T) {
 	// Its own tenant: this test counts what a filter returns, and the shared
 	// tenant accumulates divergences from every other test in the file.
 	tenant := newID("ten")
-	opts := svcclient.CallOptions{Tenant: tenant, Actor: "e2e", RequestID: newID("req")}
+	opts := actingAs(tenant, "e2e")
 	alpha, beta := "producer:"+newID("a"), "producer:"+newID("b")
 
 	// Same milk, a different rate: a policy difference of 50.00.
@@ -210,7 +210,7 @@ func TestADivergenceIsFoundByIdAndTheQueueNarrowsByEachFilter(t *testing.T) {
 	stranger := newID("ten")
 	if _, err := svcclient.Call[getDivergenceReq, getDivergenceResp](ctx, p.shadow(),
 		shadowSvc+"/GetDivergence", getDivergenceReq{ID: big.ID, TenantID: stranger},
-		svcclient.CallOptions{Tenant: stranger, Actor: "e2e", RequestID: newID("req")}); err == nil {
+		actingAs(stranger, "e2e")); err == nil {
 		t.Error("another tenant read this divergence, which names what one society " +
 			"paid a producer and what the platform thinks it should have")
 	}
@@ -303,7 +303,7 @@ func TestDecidingADivergenceRecordsWhoDecidedAndWhy(t *testing.T) {
 	ctx := context.Background()
 
 	tenant := newID("ten")
-	opts := svcclient.CallOptions{Tenant: tenant, Actor: "e2e", RequestID: newID("req")}
+	opts := actingAs(tenant, "e2e")
 	producer := "producer:" + newID("a")
 	d := adjudicated(t, p, tenant, producer, "1050.00", "1000.00", "300.000", "300.000", "3.5000", "3.3333")
 
@@ -389,7 +389,7 @@ func TestTheDivergenceSummaryGroupsByClassificationOverItsWindow(t *testing.T) {
 	ctx := context.Background()
 
 	tenant := newID("ten")
-	opts := svcclient.CallOptions{Tenant: tenant, Actor: "e2e", RequestID: newID("req")}
+	opts := actingAs(tenant, "e2e")
 	alpha, beta := "producer:"+newID("a"), "producer:"+newID("b")
 
 	// Two policy differences and one input difference: 50.00 + 10.00 under one

@@ -8,9 +8,7 @@ import (
 	"syscall"
 	"time"
 
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
-
+	"github.com/ppusapati/gavya/libs/integrity/serve"
 	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
 
 	"github.com/ppusapati/gavya/services/procurement-service/internal/config"
@@ -53,7 +51,7 @@ func main() {
 	mux := http.NewServeMux()
 	h.Register(mux)
 
-	srv := &http.Server{Addr: cfg.ServerAddr, Handler: h2c.NewHandler(mux, &http2.Server{})}
+	srv := serve.New(cfg.ServerAddr, mux)
 
 	go func() {
 		log.Infof("starting %s on %s", cfg.ServiceName, cfg.ServerAddr)

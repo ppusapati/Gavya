@@ -187,7 +187,7 @@ func TestAFeedReportAddsUpOneAnimalsWindow(t *testing.T) {
 	ctx := context.Background()
 
 	tenant := newID("ten")
-	opts := svcclient.CallOptions{Tenant: tenant, Actor: "e2e", RequestID: newID("req")}
+	opts := actingAs(tenant, "e2e")
 
 	feedType := func(name string) string {
 		t.Helper()
@@ -298,7 +298,7 @@ func TestAnAnimalIsUpdatedAndTheBreedListIsTheTenantsOwn(t *testing.T) {
 	ctx := context.Background()
 
 	tenant := newID("ten")
-	opts := svcclient.CallOptions{Tenant: tenant, Actor: "e2e", RequestID: newID("req")}
+	opts := actingAs(tenant, "e2e")
 
 	made, err := svcclient.Call[createCattleReq, cattleResp](ctx, p.cattle(),
 		cattleSvc+"/CreateCattle", createCattleReq{
@@ -331,7 +331,7 @@ func TestAnAnimalIsUpdatedAndTheBreedListIsTheTenantsOwn(t *testing.T) {
 		cattleSvc+"/UpdateCattle", updateCattleReq{
 			ID: made.Cattle.ID, TenantID: stranger, Status: "sold", Weight: 1,
 			UpdatedBy: "e2e",
-		}, svcclient.CallOptions{Tenant: stranger, Actor: "e2e", RequestID: newID("req")}); err == nil {
+		}, actingAs(stranger, "e2e")); err == nil {
 		t.Error("another tenant edited this animal's weight and status")
 	}
 
@@ -371,7 +371,7 @@ func TestAnAnimalIsUpdatedAndTheBreedListIsTheTenantsOwn(t *testing.T) {
 	// A second tenant's list does not carry it.
 	theirs, err := svcclient.Call[tenantOnlyReq, listBreedsResp](ctx, p.cattle(),
 		cattleSvc+"/ListBreeds", tenantOnlyReq{TenantID: stranger},
-		svcclient.CallOptions{Tenant: stranger, Actor: "e2e", RequestID: newID("req")})
+		actingAs(stranger, "e2e"))
 	if err != nil {
 		t.Fatalf("ListBreeds for another tenant: %v", err)
 	}
@@ -397,7 +397,7 @@ func TestABreedingHistoryIsOneCowsAndThePregnancyQueueIsOngoingOnly(t *testing.T
 	ctx := context.Background()
 
 	tenant := newID("ten")
-	opts := svcclient.CallOptions{Tenant: tenant, Actor: "e2e", RequestID: newID("req")}
+	opts := actingAs(tenant, "e2e")
 
 	// carry takes one cow from heat to a confirmed pregnancy and returns the
 	// cycle and the pregnancy.
@@ -513,7 +513,7 @@ func TestAVaccinationHistoryIsOneAnimalsAndTheQueueIsThisWeeks(t *testing.T) {
 	ctx := context.Background()
 
 	tenant := newID("ten")
-	opts := svcclient.CallOptions{Tenant: tenant, Actor: "e2e", RequestID: newID("req")}
+	opts := actingAs(tenant, "e2e")
 	mine, theirs := newID("cow"), newID("cow")
 
 	when := func(d time.Duration) *time.Time { u := time.Now().UTC().Add(d); return &u }

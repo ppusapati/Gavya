@@ -550,7 +550,12 @@ func TestTenantIsolationOverTheWire(t *testing.T) {
 			TenantID: other, SourceSystemID: sourceSystem,
 			EntityKind: "PRODUCER", ExternalID: "P-ISOLATED",
 			AsOf: assertedAt,
-		}, svcclient.CallOptions{TenantID: other, RequestID: newID("req")})
+		}, actingAs(other, "e2e"))
+	// Holding an administrator's permissions, and still not this tenant's
+	// administrator. The two refusals are different and the difference is the
+	// point: a permission refusal would say this caller may not resolve
+	// identities at all, and what is being checked is that it may — just not
+	// these.
 	if !svcclient.IsNotFound(err) {
 		t.Fatalf("another tenant resolved the mapping: err = %v", err)
 	}

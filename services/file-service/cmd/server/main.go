@@ -8,14 +8,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ppusapati/gavya/libs/integrity/serve"
 	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
 
 	"github.com/ppusapati/gavya/services/file-service/internal/config"
 	"github.com/ppusapati/gavya/services/file-service/internal/handler"
 	"github.com/ppusapati/gavya/services/file-service/internal/repository"
 	"github.com/ppusapati/gavya/services/file-service/internal/service"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 	"p9e.in/samavaya/packages/p9log"
 )
 
@@ -36,10 +35,7 @@ func main() {
 	mux := http.NewServeMux()
 	h.Register(mux)
 
-	srv := &http.Server{
-		Addr:    cfg.ServerAddr,
-		Handler: h2c.NewHandler(mux, &http2.Server{}),
-	}
+	srv := serve.New(cfg.ServerAddr, mux)
 
 	go func() {
 		log.Infof("file-service listening on %s", cfg.ServerAddr)

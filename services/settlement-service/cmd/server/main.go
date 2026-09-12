@@ -8,9 +8,8 @@ import (
 	"syscall"
 	"time"
 
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
-
+	"github.com/ppusapati/gavya/libs/integrity/authz"
+	"github.com/ppusapati/gavya/libs/integrity/serve"
 	"github.com/ppusapati/gavya/libs/integrity/svcclient"
 	"github.com/ppusapati/gavya/libs/integrity/tenantctx"
 	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
@@ -77,7 +76,7 @@ func main() {
 	mux := http.NewServeMux()
 	h.Register(mux)
 
-	srv := &http.Server{Addr: cfg.ServerAddr, Handler: h2c.NewHandler(mux, &http2.Server{})}
+	srv := serve.New(cfg.ServerAddr, mux)
 
 	go func() {
 		log.Infof("starting %s on %s", cfg.ServiceName, cfg.ServerAddr)
@@ -129,6 +128,16 @@ func (s *scoped) Collections(ctx context.Context, tenantID, societyCode string, 
 			// whoever pressed the button would put a name in the trail that
 			// did not make the call.
 			ServiceIdentity: s.identity,
+			// And its own permissions, for the same reason. The alternative is
+			// to forward the caller's — settlement reading collections as the
+			// accountant who asked — which sounds stricter and buys nothing
+			// here: what comes back to that accountant is the gathered cycle,
+			// which settlement.write already entitles them to, not the
+			// collections themselves. Acting as itself keeps one answer to
+			// "what is settlement allowed to read", which is a thing somebody
+			// can look up, rather than one that varies by who pressed the
+			// button.
+			Permissions: authz.Roles()["service"].Permissions.String(),
 		}
 	})
 	return reader.Collections(ctx, tenantID, societyCode, from, to)

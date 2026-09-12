@@ -152,7 +152,7 @@ func TestAWarehouseReadsBackToTheTenantThatCreatedIt(t *testing.T) {
 	stranger := newID("ten")
 	if _, err := svcclient.Call[idTenantReq, fullWarehouseResp](ctx, p.inventory(),
 		inventorySvc+"/GetWarehouse", idTenantReq{ID: made.Warehouse.ID, TenantID: stranger},
-		svcclient.CallOptions{Tenant: stranger, Actor: "e2e", RequestID: newID("req")}); err == nil {
+		actingAs(stranger, "e2e")); err == nil {
 		t.Error("another tenant read this warehouse")
 	}
 }
@@ -236,7 +236,7 @@ func TestTheExpiringListHoldsWhatIsNearItsDateAndStillOnTheShelf(t *testing.T) {
 	// Its own tenant: this counts what a report returns, and the shared tenant
 	// carries every other test's stock.
 	tenant := newID("ten")
-	opts := svcclient.CallOptions{Tenant: tenant, Actor: "e2e", RequestID: newID("req")}
+	opts := actingAs(tenant, "e2e")
 
 	wh, err := svcclient.Call[createWarehouseReq2, warehouseResp2](ctx, p.inventory(),
 		inventorySvc+"/CreateWarehouse", createWarehouseReq2{

@@ -103,7 +103,7 @@ func TestABatchIsFoundByItsIdAndByTheCodeWrittenOnIt(t *testing.T) {
 	stranger := newID("ten")
 	if _, err := svcclient.Call[getBatchReq, batchResp](ctx, p.production(),
 		productionSvc+"/GetBatch", getBatchReq{TenantID: stranger, Code: code},
-		svcclient.CallOptions{Tenant: stranger, Actor: "e2e", RequestID: newID("req")}); err == nil {
+		actingAs(stranger, "e2e")); err == nil {
 		t.Error("another tenant found this batch by its code\n" +
 			"Batch codes are a plant's own numbering, and two plants number " +
 			"from one.")

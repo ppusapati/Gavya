@@ -116,7 +116,7 @@ func TestTheRateCardInForceIsTheOneThatAppliedThatDay(t *testing.T) {
 	// Its own tenant: a tenant holds one card in force at a time, so declaring
 	// these into the shared tenant would collide with every pricing test.
 	tenant := newID("ten")
-	opts := svcclient.CallOptions{Tenant: tenant, Actor: "e2e", RequestID: newID("req")}
+	opts := actingAs(tenant, "e2e")
 
 	declare := func(name, from, to string) *rateCardProto {
 		t.Helper()
@@ -216,7 +216,7 @@ func TestANodeReadsBackAndAListingByKindHoldsOnlyThatKind(t *testing.T) {
 	ctx := context.Background()
 
 	tenant := newID("ten")
-	opts := svcclient.CallOptions{Tenant: tenant, Actor: "e2e", RequestID: newID("req")}
+	opts := actingAs(tenant, "e2e")
 
 	register := func(code, kind string) *nodeProto {
 		t.Helper()
@@ -294,7 +294,7 @@ func TestACycleReadsBackAndAListingForOneSocietyIsThatSocietys(t *testing.T) {
 	ctx := context.Background()
 
 	tenant := newID("ten")
-	opts := svcclient.CallOptions{Tenant: tenant, Actor: "e2e", RequestID: newID("req")}
+	opts := actingAs(tenant, "e2e")
 	// Whole ids, not truncated: newID pads with zeros, so the first twelve
 	// characters of two ids made in the same millisecond are identical and both
 	// societies would be the same society. VARCHAR(64) has room.
@@ -377,7 +377,7 @@ func TestASampleReadsBackWithItsSealAndAListingCoversTheDayAsked(t *testing.T) {
 	ctx := context.Background()
 
 	tenant := newID("ten")
-	opts := svcclient.CallOptions{Tenant: tenant, Actor: "e2e", RequestID: newID("req")}
+	opts := actingAs(tenant, "e2e")
 
 	draw := func(code, drawnAt string) *sampleProto {
 		t.Helper()

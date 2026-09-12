@@ -23,6 +23,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	"github.com/ppusapati/gavya/libs/integrity/authz"
 	"github.com/ppusapati/gavya/libs/integrity/connectjson"
 )
 
@@ -127,6 +128,17 @@ type CallOptions struct {
 	// its actions to somebody who was not there.
 	Actor           string
 	ServiceIdentity string
+
+	// Permissions is what this caller may do, as authz renders a set: a
+	// comma-separated list. The receiving service authorises against it.
+	//
+	// A service calling another service presents its own, exactly as it presents
+	// its own tenant and identity, because there is no gateway between two
+	// services to do it for them. Left empty the header is not sent at all, and
+	// the receiving service refuses every procedure — which is the right
+	// default: a caller that has not said what it may do has not said it may do
+	// anything.
+	Permissions string
 }
 
 // Call performs one unary procedure call.
@@ -187,6 +199,9 @@ func (c *Client) attempt(ctx context.Context, url, procedure string, body []byte
 	}
 	if opts.ServiceIdentity != "" {
 		req.Header.Set(connectjson.ServiceIdentityHeader, opts.ServiceIdentity)
+	}
+	if opts.Permissions != "" {
+		req.Header.Set(authz.PermissionsHeader, opts.Permissions)
 	}
 	if opts.TenantID != "" {
 		req.Header.Set(HeaderTenantID, opts.TenantID)

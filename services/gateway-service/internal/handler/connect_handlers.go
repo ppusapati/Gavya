@@ -125,6 +125,14 @@ func (h *Handler) dispatch(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, rt := range h.routes {
 		if strings.HasPrefix(r.URL.Path, rt.prefix) {
+			// Authorised here rather than before the loop, so a path this
+			// gateway has no upstream for is still a 404. Asked earlier, every
+			// unknown path would answer "no permission is declared for it",
+			// which is true and useless: it says the platform has a gap where
+			// the caller has a typo.
+			if !h.authorise(w, r) {
+				return
+			}
 			// The reverse proxy forwards headers as they now stand, which
 			// includes the tenant this gateway just established and excludes
 			// anything the client sent under that name.

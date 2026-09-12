@@ -242,7 +242,7 @@ func TestMilkKeepsTenantsApart(t *testing.T) {
 	theirs, err := svcclient.Call[dailyYieldReq, dailyYieldResp](
 		context.Background(), p.milk(), milkSvc+"/GetDailyYield",
 		dailyYieldReq{TenantID: other, CattleID: cattle, Date: today},
-		svcclient.CallOptions{Tenant: other, Actor: "e2e"})
+		actingAs(other, "e2e"))
 	if err == nil && theirs.TotalLiters != 0 {
 		t.Errorf("a second tenant reads %v litres against an animal it has never "+
 			"recorded, through milk-service", theirs.TotalLiters)
@@ -320,7 +320,7 @@ func TestATenantsTimezoneIsStatedOnceAndThenFixed(t *testing.T) {
 		context.Background(), p.milk(), milkSvc+"/CreateSession",
 		createMilkSessionReq{TenantID: fresh, CattleID: newID("cow"),
 			ShiftType: "morning", Timezone: "IST", CreatedBy: "e2e"},
-		svcclient.CallOptions{Tenant: fresh, Actor: "e2e"}); err == nil {
+		actingAs(fresh, "e2e")); err == nil {
 		t.Error(`"IST" was accepted as a timezone; it names two different zones five ` +
 			"and a half hours apart, and neither is what the database would store")
 	}
@@ -338,7 +338,7 @@ func TestATenantsTimezoneIsStatedOnceAndThenFixed(t *testing.T) {
 		context.Background(), p.milk(), milkSvc+"/CreateSession",
 		createMilkSessionReq{TenantID: blank, CattleID: newID("cow"),
 			ShiftType: "morning", CreatedBy: "e2e"},
-		svcclient.CallOptions{Tenant: blank, Actor: "e2e"}); err == nil {
+		actingAs(blank, "e2e")); err == nil {
 		t.Error("a session with no timezone was accepted, so its tenant's days begin " +
 			"wherever the database happens to be configured")
 	}
@@ -361,7 +361,7 @@ func TestMilkSaysWhoseProblemAFailureIs(t *testing.T) {
 	_, err := svcclient.Call[dailyYieldReq, dailyYieldResp](
 		context.Background(), p.milk(), milkSvc+"/GetDailyYield",
 		dailyYieldReq{TenantID: fresh, CattleID: newID("cow"), Date: today(t)},
-		svcclient.CallOptions{Tenant: fresh, Actor: "e2e"})
+		actingAs(fresh, "e2e"))
 	if err == nil {
 		t.Fatal("a yield was answered for a tenant that has recorded no milk")
 	}
@@ -539,7 +539,7 @@ func TestAMilkSessionAndItsRecordsReadBack(t *testing.T) {
 	theirs, err := svcclient.Call[listSessionsReq, listSessionsResp](
 		context.Background(), p.milk(), milkSvc+"/ListSessions",
 		listSessionsReq{TenantID: other, Limit: 100},
-		svcclient.CallOptions{Tenant: other, Actor: "e2e"})
+		actingAs(other, "e2e"))
 	if err == nil && len(theirs.Sessions) > 0 {
 		t.Errorf("a second tenant sees %d milk sessions it never opened", len(theirs.Sessions))
 	}
@@ -577,7 +577,7 @@ func TestAMilkSessionsStatusMoves(t *testing.T) {
 		context.Background(), p.milk(), milkSvc+"/UpdateSessionStatus",
 		updateSessionStatusReq{ID: sess.Session.ID, TenantID: other,
 			Status: "cancelled", UpdatedBy: "e2e"},
-		svcclient.CallOptions{Tenant: other, Actor: "e2e"}); err == nil {
+		actingAs(other, "e2e")); err == nil {
 		t.Error("a second tenant moved the status of a session it did not open")
 	}
 }

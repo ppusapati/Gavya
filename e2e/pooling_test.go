@@ -235,7 +235,7 @@ func TestAPoolIsNotReadableByAnotherTenant(t *testing.T) {
 	stranger := newID("ten")
 	_, err := svcclient.Call[getPoolReq, getPoolResp](ctx, p.pooling(),
 		poolingSvc+"/GetPool", getPoolReq{TenantID: stranger, PoolID: id},
-		svcclient.CallOptions{Tenant: stranger, Actor: "e2e", RequestID: newID("req")})
+		actingAs(stranger, "e2e"))
 	if err == nil {
 		t.Fatal("another tenant read this pool; the pool id alone was enough")
 	}
@@ -484,7 +484,7 @@ func TestThePolicyInForceIsTheOneCoveringTheMoment(t *testing.T) {
 	// tenant at a time, so a test that declared one into the shared tenant
 	// would collide with every other pooling test.
 	tenant := newID("ten")
-	opts := svcclient.CallOptions{Tenant: tenant, Actor: "e2e", RequestID: newID("req")}
+	opts := actingAs(tenant, "e2e")
 
 	firstFrom := time.Now().UTC().AddDate(-2, 0, 0).Truncate(24 * time.Hour)
 	secondFrom := firstFrom.AddDate(1, 0, 0)

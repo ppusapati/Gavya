@@ -105,6 +105,12 @@ type VerifySessionResponse struct {
 	TenantID          string `json:"tenant_id"`
 	UserID            string `json:"user_id,omitempty"`
 	ServiceIdentityID string `json:"service_identity_id,omitempty"`
+	// RoleName and Permissions are what the gateway turns into the headers every
+	// service authorises against. Permissions is always present, empty included:
+	// a reader should be able to tell "holds nothing" from "this reply is from a
+	// version that did not say".
+	RoleName    string   `json:"role_name,omitempty"`
+	Permissions []string `json:"permissions"`
 }
 
 // VerifySession is what the gateway calls on every request. It is the step that
@@ -118,10 +124,16 @@ func (h *Handler) VerifySession(ctx context.Context, req *connect.Request[Verify
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	perms := v.Permissions
+	if perms == nil {
+		perms = []string{}
+	}
 	return connect.NewResponse(&VerifySessionResponse{
 		TenantID:          v.TenantID,
 		UserID:            v.UserID,
 		ServiceIdentityID: v.ServiceIdentityID,
+		RoleName:          v.RoleName,
+		Permissions:       perms,
 	}), nil
 }
 

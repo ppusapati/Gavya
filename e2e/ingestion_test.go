@@ -588,7 +588,7 @@ func TestIngestionKeepsTenantsApart(t *testing.T) {
 	held, err := svcclient.Call[listQuarantinedReq, listQuarantinedResp](
 		context.Background(), p.ingestion(), ingestionSvc+"/ListQuarantined",
 		listQuarantinedReq{TenantID: other, Limit: 50},
-		svcclient.CallOptions{Tenant: other, Actor: "e2e"})
+		actingAs(other, "e2e"))
 	if err == nil && len(held.Records) > 0 {
 		t.Errorf("a second tenant sees %d held records through ingestion-service, and it "+
 			"wrote none; quarantined payloads are the rawest data this platform holds",
@@ -608,7 +608,7 @@ func TestIngestionKeepsTenantsApart(t *testing.T) {
 	devices, err := svcclient.Call[listQuarantinedReq, deviceListResp](
 		context.Background(), p.ingestion(), ingestionSvc+"/ListDevices",
 		listQuarantinedReq{TenantID: other, Limit: 50},
-		svcclient.CallOptions{Tenant: other, Actor: "e2e"})
+		actingAs(other, "e2e"))
 	if err == nil && len(devices.Devices) > 0 {
 		t.Errorf("a second tenant sees %d devices, and it registered none", len(devices.Devices))
 	}

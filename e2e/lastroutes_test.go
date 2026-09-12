@@ -178,7 +178,7 @@ func TestAnOrderIsInvoicedForWhatItHoldsAndItsReturnReadsBack(t *testing.T) {
 	stranger := newID("ten")
 	if _, err := svcclient.Call[idTenantReq, getReturnResp](ctx, p.order(),
 		orderSvc+"/GetReturn", idTenantReq{ID: requested.Return.ID, TenantID: stranger},
-		svcclient.CallOptions{Tenant: stranger, Actor: "e2e", RequestID: newID("req")}); err == nil {
+		actingAs(stranger, "e2e")); err == nil {
 		t.Error("another tenant read this return, which names what a customer is owed")
 	}
 }
@@ -193,7 +193,7 @@ func TestAProductReadsBackAndItsSKUsAreItsOwn(t *testing.T) {
 	ctx := context.Background()
 
 	tenant := newID("ten")
-	opts := svcclient.CallOptions{Tenant: tenant, Actor: "e2e", RequestID: newID("req")}
+	opts := actingAs(tenant, "e2e")
 
 	code := newID("cat")
 	cat, err := svcclient.Call[createCategoryReq, categoryResp](ctx, p.catalog(),
@@ -312,7 +312,7 @@ func TestANotificationReadsBackToItsOwnTenant(t *testing.T) {
 	stranger := newID("ten")
 	if _, err := svcclient.Call[idTenantReq, fullNotificationResp](ctx, p.notification(),
 		notifySvc+"/GetNotification", idTenantReq{ID: sent.Notification.ID, TenantID: stranger},
-		svcclient.CallOptions{Tenant: stranger, Actor: "e2e", RequestID: newID("req")}); err == nil {
+		actingAs(stranger, "e2e")); err == nil {
 		t.Error("another tenant read this notification, which carries a producer's " +
 			"telephone number and the message sent to it")
 	}

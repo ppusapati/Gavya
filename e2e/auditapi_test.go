@@ -101,7 +101,7 @@ func anEntry(t *testing.T, p *platform, tenant, actor, resourceType, resourceID 
 			Action: "update_price", ResourceType: resourceType, ResourceID: resourceID,
 			OldValue: `{"price":"42.50"}`, NewValue: `{"price":"47.75"}`,
 			ServiceName: "e2e", CreatedBy: actor},
-		svcclient.CallOptions{Tenant: tenant, Actor: actor})
+		actingAs(tenant, actor))
 	if err != nil {
 		t.Fatalf("write an audit entry: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestTheChainSealsAndVerifiesThroughTheService(t *testing.T) {
 	sealed, err := svcclient.Call[sealChainReq, sealChainResp](
 		context.Background(), p.audit(), auditSvc+"/SealAuditChain",
 		sealChainReq{TenantID: tenant},
-		svcclient.CallOptions{Tenant: tenant, Actor: "e2e"})
+		actingAs(tenant, "e2e"))
 	if err != nil {
 		t.Fatalf("seal chain: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestTheChainSealsAndVerifiesThroughTheService(t *testing.T) {
 	ok, err := svcclient.Call[verifyChainReq, verifyChainResp](
 		context.Background(), p.audit(), auditSvc+"/VerifyAuditChain",
 		verifyChainReq{TenantID: tenant},
-		svcclient.CallOptions{Tenant: tenant, Actor: "e2e"})
+		actingAs(tenant, "e2e"))
 	if err != nil {
 		t.Fatalf("verify chain: %v", err)
 	}
@@ -244,7 +244,7 @@ func TestTheChainSealsAndVerifiesThroughTheService(t *testing.T) {
 	again, err := svcclient.Call[sealChainReq, sealChainResp](
 		context.Background(), p.audit(), auditSvc+"/SealAuditChain",
 		sealChainReq{TenantID: tenant},
-		svcclient.CallOptions{Tenant: tenant, Actor: "e2e"})
+		actingAs(tenant, "e2e"))
 	if err != nil {
 		t.Fatalf("seal again: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestTheAuditTrailKeepsTenantsApart(t *testing.T) {
 	own, err := svcclient.Call[listAuditLogsReq, listAuditLogsResp](
 		context.Background(), p.audit(), auditSvc+"/ListAuditLogs",
 		listAuditLogsReq{TenantID: mine},
-		svcclient.CallOptions{Tenant: mine, Actor: "e2e"})
+		actingAs(mine, "e2e"))
 	if err != nil {
 		t.Fatalf("list own trail: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestTheAuditTrailKeepsTenantsApart(t *testing.T) {
 	other, err := svcclient.Call[listAuditLogsReq, listAuditLogsResp](
 		context.Background(), p.audit(), auditSvc+"/ListAuditLogs",
 		listAuditLogsReq{TenantID: theirs},
-		svcclient.CallOptions{Tenant: theirs, Actor: "e2e"})
+		actingAs(theirs, "e2e"))
 	if err == nil && len(other.AuditLogs) > 0 {
 		t.Errorf("a second tenant reads %d audit entries it did not write; the trail "+
 			"holds the old value of everything that changed", len(other.AuditLogs))

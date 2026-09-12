@@ -8,9 +8,9 @@ import (
 	"syscall"
 	"time"
 
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 	"p9e.in/samavaya/packages/p9log"
+
+	"github.com/ppusapati/gavya/libs/integrity/serve"
 
 	"github.com/ppusapati/gavya/services/gateway-service/internal/config"
 	"github.com/ppusapati/gavya/services/gateway-service/internal/handler"
@@ -29,11 +29,7 @@ func main() {
 	h := handler.New(cfg, log)
 	h.Register(mux)
 
-	srv := &http.Server{
-		Addr:              cfg.ServerAddr,
-		Handler:           h2c.NewHandler(h.CORS(mux), &http2.Server{}),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+	srv := serve.Unguarded(cfg.ServerAddr, h.CORS(mux))
 
 	go func() {
 		log.Infof("gateway-service listening on %s", cfg.ServerAddr)

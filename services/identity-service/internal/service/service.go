@@ -6,12 +6,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/ppusapati/gavya/libs/integrity/credential"
 	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
 
+	"github.com/ppusapati/gavya/libs/integrity/authz"
 	"github.com/ppusapati/gavya/services/identity-service/internal/domain"
 	"github.com/ppusapati/gavya/services/identity-service/internal/repository"
 )
@@ -208,6 +210,20 @@ type Verified struct {
 	TenantID          string
 	UserID            string
 	ServiceIdentityID string
+	// RoleName is the membership's role, or "service" for a machine. Empty when
+	// the person belongs to the tenant with no role, which is a real state and
+	// not an error: they hold nothing and every procedure refuses them.
+	RoleName string
+	// Permissions is what that role may do, resolved from authz rather than read
+	// from the roles table.
+	//
+	// The table has carried a permissions column all along, seeded with strings
+	// from a vocabulary nothing ever used — 'collections.read' and the like. The
+	// seven starter roles are defined in code instead, where they are reviewed
+	// in a diff and covered by tests that fail when a role quietly widens. A
+	// tenant wanting its own role is a later change and a deliberate one; it is
+	// not something that should happen by somebody editing an array in a row.
+	Permissions []string
 }
 
 // Verify resolves a session to the tenant it acts for.
@@ -226,11 +242,53 @@ func (s *Service) Verify(ctx context.Context, sessionID string) (*Verified, erro
 		s.log.Infof("session %s refused: %s", sessionID, res.Reason)
 		return nil, ErrNotSignedIn
 	}
-	return &Verified{
+	v := &Verified{
 		TenantID:          res.TenantID,
 		UserID:            res.UserID,
 		ServiceIdentityID: res.ServiceIdentityID,
-	}, nil
+	}
+	v.RoleName = s.roleFor(ctx, res)
+	if role, ok := authz.Roles()[v.RoleName]; ok {
+		for p := range role.Permissions {
+			v.Permissions = append(v.Permissions, string(p))
+		}
+		sort.Strings(v.Permissions)
+	} else if v.RoleName != "" {
+		// A role nobody recognises holds nothing. Logged rather than failed: the
+		// session is genuine and the tenant is right, so refusing it outright
+		// would read to the person as "your password is wrong". Holding nothing
+		// reads as "you may not do that", which is what is true.
+		s.log.Errorf("session %s carries role %q, which the platform does not define; "+
+			"it holds no permissions", sessionID, v.RoleName)
+	}
+	return v, nil
+}
+
+// roleFor is the role a verified session acts under.
+//
+// A machine gets "service" rather than a row of its own. Service identities
+// carry a permissions column too and it is unused for the same reason the roles
+// one is; giving every machine the same role is the honest starting point, and
+// the place to change when one of them needs less than the others — which is the
+// direction that change should go.
+func (s *Service) roleFor(ctx context.Context, res repository.Resolved) string {
+	if res.ServiceIdentityID != "" {
+		return "service"
+	}
+	if res.UserID == "" {
+		return ""
+	}
+	memberships, err := s.repo.MembershipsFor(ctx, res.UserID)
+	if err != nil {
+		s.log.Errorf("could not read memberships for %s: %v", res.UserID, err)
+		return ""
+	}
+	for _, m := range memberships {
+		if m.TenantID == res.TenantID {
+			return m.RoleName
+		}
+	}
+	return ""
 }
 
 // SignOut ends a session.

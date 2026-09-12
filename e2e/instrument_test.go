@@ -171,7 +171,7 @@ func TestAnInstrumentReadsBackToTheTenantThatRegisteredIt(t *testing.T) {
 	if _, err := svcclient.Call[getObsInstrumentReq, getObsInstrumentResp](ctx, p.observation(),
 		observationSvc+"/GetInstrument", getObsInstrumentReq{
 			ID: made.Instrument.ID, TenantID: stranger,
-		}, svcclient.CallOptions{Tenant: stranger, Actor: "e2e", RequestID: newID("req")}); err == nil {
+		}, actingAs(stranger, "e2e")); err == nil {
 		t.Error("another tenant read this instrument\n" +
 			"Two societies buying the same analyser from the same supplier hold " +
 			"the same serial numbers; the id alone must not be the key.")
