@@ -1,0 +1,45 @@
+# Nothing may reach a pod in this namespace unless something allows it.
+#
+# # WHY THIS IS NOT OPTIONAL
+#
+# Every service in this platform takes the tenant it acts for, and the
+# permissions it acts with, from headers: X-Gavya-Tenant, X-Gavya-Permissions,
+# X-Gavya-User. The gateway sets them from a verified session and strips anything
+# a client sent under those names, which is sound exactly as long as the gateway
+# is the only way in.
+#
+# In a cluster with no NetworkPolicy it is not. Every Service here is ClusterIP,
+# which means reachable from every pod in the cluster — so anything that can make
+# an HTTP request can send milk-service a tenant of its choosing with
+# milk.admin in the permissions header and be believed. Not a privilege
+# escalation through a bug: the documented behaviour, reached by the front door
+# of a service that was never meant to have one.
+#
+# A compromised sidecar, a debug pod, a CI runner in the same cluster, anything
+# at all. The isolation this platform is built around — the row-level security,
+# the policies, the permission table — is downstream of a header, and the header
+# is only as good as who can set it.
+#
+# # WHAT THIS DENIES
+#
+# Ingress, to every pod, by default. Each service then re-allows exactly the
+# callers it has, in its own networkpolicy.yaml, derived from what its
+# config.go actually reads.
+#
+# Egress is deliberately NOT denied here. A default-deny egress needs to know
+# where the database is, and that is a property of the deployment — a managed
+# PostgreSQL outside the cluster needs an ipBlock this repository cannot guess.
+# Guessing it wrong takes every service down at once, at runtime, with an error
+# about a connection rather than about this file. A deployment that knows its own
+# topology should add one; this ships the half that can be got right from here.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: gavya
+spec:
+  # Every pod. An empty selector is the whole namespace, which is the point:
+  # a policy listing pods by name is a policy that misses the next one added.
+  podSelector: {}
+  policyTypes:
+    - Ingress

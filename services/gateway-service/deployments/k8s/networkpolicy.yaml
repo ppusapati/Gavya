@@ -1,0 +1,50 @@
+# Who may reach the gateway.
+#
+# The ingress controller, and nothing else in the cluster. This is the one pod in
+# the namespace that is meant to receive traffic from outside, and it is still
+# not reachable from an arbitrary pod beside it — a debug container in this
+# namespace has no business calling the front door directly, and allowing it
+# would mean the default-deny stops at the one pod worth protecting most.
+#
+# The controller is named by its namespace rather than by a pod label, because
+# the label differs between ingress-nginx, Traefik and a cloud controller and a
+# selector that matches none of them denies everything with no error anywhere.
+# Label whichever namespace yours runs in:
+#
+#   kubectl label namespace ingress-nginx gavya-ingress=true
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-service
+  namespace: gavya
+spec:
+  podSelector:
+    matchLabels:
+      app: gateway-service
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              gavya-ingress: "true"
+      ports:
+        - protocol: TCP
+          port: 8000
+    # NO RULE HERE FOR THE PROBES, DELIBERATELY.
+    #
+    # The first draft of this file had one: an ipBlock of 0.0.0.0/0 on this port,
+    # so kubelet could reach /healthz. NetworkPolicy ingress rules are OR-ed, so
+    # that rule allowed every source in the cluster and on the internet to reach
+    # this port — the policy above still read correctly, applied cleanly, and
+    # protected nothing.
+    #
+    # kubelet probes a pod from the node, which is not a pod and matches no
+    # podSelector. Calico and Cilium both let that through regardless of policy
+    # (Calico calls it a failsafe port; Cilium treats host traffic as allowed),
+    # which is why no rule is needed on the common CNIs.
+    #
+    # If yours does block it, the probes fail and every replica is pulled out of
+    # rotation. The fix is an ipBlock for THIS CLUSTER'S node CIDR, which the
+    # deployment knows and this repository cannot: adding one that is merely
+    # wide enough to work is how the 0.0.0.0/0 above got written.

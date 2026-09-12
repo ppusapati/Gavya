@@ -1,0 +1,13 @@
+# The namespace everything in this platform runs in.
+#
+# It exists as a file because the NetworkPolicies beside it are namespace-scoped:
+# a default-deny applied to the wrong namespace denies nothing and reports
+# nothing, which is the failure mode this whole directory is about.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gavya
+  labels:
+    # Selected by the gateway's policy, so the ingress controller can be named by
+    # its namespace rather than by a pod label that varies between controllers.
+    name: gavya

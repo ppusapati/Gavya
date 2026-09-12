@@ -1,0 +1,49 @@
+# Who may reach notification-service.
+#
+# gateway-service, and nothing else.
+#
+# This service takes the tenant it acts for and the permissions it acts with from
+# headers the gateway sets. Any pod that can reach this port can send a tenant of
+# its choosing and be believed — so the list below is not a tidiness measure, it
+# is what makes the header trustworthy at all.
+#
+# It is derived from what this service's callers actually read out of their
+# config. A caller added in code and not here fails at runtime with a timeout;
+# the test in services/gateway-service/handler compares the two lists so that the
+# failure is a failing build instead.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: notification-service
+  namespace: gavya
+spec:
+  podSelector:
+    matchLabels:
+      app: notification-service
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: gateway-service
+      ports:
+        - protocol: TCP
+          port: 8080
+    # NO RULE HERE FOR THE PROBES, DELIBERATELY.
+    #
+    # The first draft of this file had one: an ipBlock of 0.0.0.0/0 on this port,
+    # so kubelet could reach /healthz. NetworkPolicy ingress rules are OR-ed, so
+    # that rule allowed every source in the cluster and on the internet to reach
+    # this port — the policy above still read correctly, applied cleanly, and
+    # protected nothing.
+    #
+    # kubelet probes a pod from the node, which is not a pod and matches no
+    # podSelector. Calico and Cilium both let that through regardless of policy
+    # (Calico calls it a failsafe port; Cilium treats host traffic as allowed),
+    # which is why no rule is needed on the common CNIs.
+    #
+    # If yours does block it, the probes fail and every replica is pulled out of
+    # rotation. The fix is an ipBlock for THIS CLUSTER'S node CIDR, which the
+    # deployment knows and this repository cannot: adding one that is merely
+    # wide enough to work is how the 0.0.0.0/0 above got written.

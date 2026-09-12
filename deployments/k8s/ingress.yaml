@@ -1,0 +1,63 @@
+# The one way in.
+#
+# Every Service in this platform is ClusterIP and stays that way. This is the
+# only object that exposes anything, it exposes exactly one thing, and the thing
+# it exposes is the gateway — which is the only component that verifies a session
+# before setting the headers everything downstream trusts.
+#
+# # TLS
+#
+# Terminated here, which is why serve.Run defaults to plaintext and says so: a
+# process behind this receives already-decrypted traffic over a network the
+# NetworkPolicies beside this file restrict to the ingress controller. Give the
+# gateway its own certificate instead — GAVYA_TLS_CERT and GAVYA_TLS_KEY — if
+# that last hop has to be encrypted too.
+#
+# The secret named below has to exist before this works. With cert-manager, the
+# annotation is enough and it will create it; without, create it yourself:
+#
+#   kubectl create secret tls gavya-tls -n gavya --cert=... --key=...
+#
+# There is no HTTP listener. An Ingress that serves both and redirects is an
+# Ingress that served the first request in the clear, and the first request is
+# the one carrying the session.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gavya
+  namespace: gavya
+  annotations:
+    # Refuse plaintext rather than redirect it.
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    # Connect unary bodies are small, but a settlement statement or a recall
+    # trace is not. The controller default of 1MB truncates those with a 413.
+    nginx.ingress.kubernetes.io/proxy-body-size: "16m"
+    # Matching serve.WriteTimeout. A report that times out at the ingress while
+    # the service is still writing it is a failure that looks like the service's.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "120"
+    # cert-manager, when it is installed. Harmless when it is not.
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        # Replace with the host this platform is served on. Left as an example
+        # deliberately: a working default here would be somebody else's domain.
+        - gavya.example
+      secretName: gavya-tls
+  rules:
+    - host: gavya.example
+      http:
+        paths:
+          # Everything. The gateway routes by the Connect procedure in the path
+          # and refuses what it does not recognise, so splitting the routing
+          # across two places would mean two lists to keep in step.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway-service
+                port:
+                  number: 80

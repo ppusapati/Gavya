@@ -211,10 +211,12 @@ func TestEveryServiceHasKubernetesManifests(t *testing.T) {
 			empty = append(empty, e.Name())
 		}
 
-		// The two that decide whether anything can reach it.
+		// The three that decide whether anything can reach it, and who.
 		for _, kind := range []struct{ file, why string }{
 			{"deployment.yaml", "nothing runs"},
 			{"service.yaml", "the pods run and nothing can reach them"},
+			{"networkpolicy.yaml", "every pod in the cluster can reach it, and " +
+				"this service believes the tenant and permission headers it is sent"},
 		} {
 			if !dirExists(dir) {
 				break
@@ -727,4 +729,192 @@ func environmentOf(node yaml.Node) map[string]string {
 		}
 	}
 	return env
+}
+
+// Every service's NetworkPolicy allows exactly the callers it has.
+//
+// This is the check that makes the policies worth having. Two lists of the same
+// thing, compared: the callers a service actually has, read out of what every
+// other service's config.go looks up, against the podSelectors in its policy.
+//
+// Both directions matter and they fail differently.
+//
+// A caller present in code and missing from the policy fails at runtime, as a
+// timeout, in the one deployment shape where it is hard to reproduce — and
+// settlement-service reading procurement is exactly that edge: a settlement that
+// gathers nothing reports a fortnight in which every producer earned zero.
+//
+// A caller present in the policy and not in code is the more interesting one. It
+// is a hole nothing will ever close, because nothing fails: the platform works
+// perfectly with a pod allowed to reach a service it has no reason to, and that
+// pod can send any tenant and any permissions it likes.
+//
+// RUN WITH -count=1. These files are outside this module.
+func TestEveryNetworkPolicyAllowsExactlyTheCallersThatExist(t *testing.T) {
+	root := repoRoot(t)
+	services, err := filepath.Glob(filepath.Join(root, "services", "*-service"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(services) < 20 {
+		t.Fatalf("found only %d services; the glob has probably stopped matching, "+
+			"and a check that finds nothing passes", len(services))
+	}
+
+	// Who calls whom, from the settings each service reads. A service that looks
+	// up FOO_SERVICE_URL or FOO_URL calls foo-service.
+	reads := regexp.MustCompile(`"([A-Z][A-Z0-9_]*?)(?:_SERVICE)?_URL"`)
+	callersOf := map[string][]string{}
+	for _, dir := range services {
+		caller := filepath.Base(dir)
+		var src []byte
+		for _, pattern := range []string{"internal/config/*.go", "config/*.go"} {
+			files, _ := filepath.Glob(filepath.Join(dir, pattern))
+			for _, f := range files {
+				if strings.HasSuffix(f, "_test.go") {
+					continue
+				}
+				b, err := os.ReadFile(f)
+				if err != nil {
+					continue
+				}
+				src = append(src, b...)
+			}
+		}
+		for _, m := range reads.FindAllSubmatch(src, -1) {
+			name := strings.ToLower(strings.ReplaceAll(string(m[1]), "_", "-")) + "-service"
+			switch {
+			case name == "database-service":
+				// DATABASE_URL. Not a service in this platform.
+			case strings.HasSuffix(name, "-ml-service"):
+				// The Rust tier, which has no manifests in this repository.
+			case name == caller:
+				// The modulith points every URL at itself.
+			case !contains(callersOf[name], caller):
+				callersOf[name] = append(callersOf[name], caller)
+			}
+		}
+	}
+	if len(callersOf) < 20 {
+		t.Fatalf("derived callers for only %d services; the pattern has probably "+
+			"stopped matching config.go, and a check with nothing to compare passes",
+			len(callersOf))
+	}
+
+	for _, dir := range services {
+		svc := filepath.Base(dir)
+		path := filepath.Join(dir, "deployments", "k8s", "networkpolicy.yaml")
+		src, err := os.ReadFile(path)
+		if err != nil {
+			// Reported by TestEveryServiceHasKubernetesManifests; not repeated.
+			continue
+		}
+
+		var policy struct {
+			Spec struct {
+				PodSelector struct {
+					MatchLabels map[string]string `yaml:"matchLabels"`
+				} `yaml:"podSelector"`
+				Ingress []struct {
+					From []struct {
+						PodSelector *struct {
+							MatchLabels map[string]string `yaml:"matchLabels"`
+						} `yaml:"podSelector"`
+						NamespaceSelector *struct {
+							MatchLabels map[string]string `yaml:"matchLabels"`
+						} `yaml:"namespaceSelector"`
+						IPBlock *struct {
+							CIDR string `yaml:"cidr"`
+						} `yaml:"ipBlock"`
+					} `yaml:"from"`
+				} `yaml:"ingress"`
+			} `yaml:"spec"`
+		}
+		if err := yaml.Unmarshal(src, &policy); err != nil {
+			t.Errorf("%s does not parse: %v", svc, err)
+			continue
+		}
+
+		// The policy has to select the pods it claims to protect. One that
+		// selects nothing applies cleanly and guards nothing.
+		if got := policy.Spec.PodSelector.MatchLabels["app"]; got != svc {
+			t.Errorf("%s's policy selects app=%q, so it protects something else "+
+				"or nothing at all", svc, got)
+		}
+
+		allowed := map[string]bool{}
+		for _, rule := range policy.Spec.Ingress {
+			if len(rule.From) == 0 {
+				t.Errorf("%s has an ingress rule with no source, which allows every "+
+					"pod in the cluster and every address outside it", svc)
+				continue
+			}
+			for _, from := range rule.From {
+				switch {
+				case from.IPBlock != nil:
+					// Ingress rules are OR-ed, so one broad ipBlock undoes every
+					// podSelector beside it. This has been written here once
+					// already, for the health probes, and it made the policy
+					// decorative while leaving it looking correct.
+					t.Errorf("%s allows the address range %s. Ingress rules are OR-ed, "+
+						"so this permits every source in that range regardless of the "+
+						"podSelectors beside it", svc, from.IPBlock.CIDR)
+				case from.PodSelector != nil:
+					allowed[from.PodSelector.MatchLabels["app"]] = true
+				case from.NamespaceSelector != nil:
+					// The gateway's ingress controller, which is not a service.
+					allowed[gatewayIngress] = true
+				}
+			}
+		}
+
+		if svc == "gateway-service" {
+			// The front door is reached from outside, not from a service.
+			if !allowed[gatewayIngress] {
+				t.Error("gateway-service's policy names no ingress controller, so " +
+					"nothing outside the cluster can reach the only door there is")
+			}
+			continue
+		}
+
+		want := append([]string{}, callersOf[svc]...)
+		sort.Strings(want)
+		var missing, extra []string
+		for _, caller := range want {
+			if !allowed[caller] {
+				missing = append(missing, caller)
+			}
+		}
+		for caller := range allowed {
+			if caller != gatewayIngress && !contains(want, caller) {
+				extra = append(extra, caller)
+			}
+		}
+		sort.Strings(extra)
+
+		if len(missing) > 0 {
+			t.Errorf("%s is called by %s and its policy does not allow them, so those "+
+				"calls time out in the cluster and nowhere else",
+				svc, strings.Join(missing, ", "))
+		}
+		if len(extra) > 0 {
+			t.Errorf("%s's policy allows %s, and nothing in this repository calls it "+
+				"from there. Nothing will ever fail because of this, and that pod can "+
+				"send %s any tenant and any permissions it likes",
+				svc, strings.Join(extra, ", "), svc)
+		}
+	}
+}
+
+// gatewayIngress stands for "something outside the cluster", which is a
+// namespaceSelector rather than a service and so is not compared against code.
+const gatewayIngress = "<ingress controller>"
+
+func contains(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
