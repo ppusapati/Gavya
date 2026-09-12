@@ -34,6 +34,20 @@ type Repository interface {
 	ResolveSession(ctx context.Context, sessionID string) (Resolved, error)
 	RevokeSession(ctx context.Context, sessionID, reason string) (bool, error)
 	RevokeSessionsFor(ctx context.Context, userID, reason string) (int64, error)
+
+	// Administration: the routes that let a co-operative be set up without a
+	// database console. See administration.go.
+	EnsureBuiltinRoles(ctx context.Context, tenantID, actor string) error
+	RoleIDFor(ctx context.Context, tenantID, name string) (string, error)
+	AddMember(ctx context.Context, tenantID, email, fullName, passwordHash, roleID, actor, membershipID, userID string) (string, bool, error)
+	ListMembers(ctx context.Context, tenantID string) ([]Member, error)
+	SetMemberRole(ctx context.Context, tenantID, userID, roleID, actor string) error
+	SetMemberStatus(ctx context.Context, tenantID, userID, status, actor string) error
+	SetPassword(ctx context.Context, userID, hash, actor string) error
+	PasswordHashFor(ctx context.Context, userID string) (string, error)
+	CreateServiceIdentity(ctx context.Context, id, tenantID, name, secretHash string, expiresAt time.Time, actor string) error
+	RevokeServiceIdentity(ctx context.Context, tenantID, id, actor string) error
+	ListServiceIdentities(ctx context.Context, tenantID string) ([]ServiceIdentityRow, error)
 }
 
 // Attempt is one line of the sign-in log.

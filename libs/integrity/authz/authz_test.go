@@ -296,6 +296,13 @@ func TestASetSurvivesBeingWrittenToAHeaderAndRead(t *testing.T) {
 }
 
 // scrapeProcedures reads every route every service registers.
+//
+// Every non-test file in each handler package, not just connect_handlers.go.
+// The first version of this read that one file, and identity-service's ten
+// administration routes — which live in administration.go — were invisible to
+// it: added, served, and not required to declare a permission by the check whose
+// entire job is to require that. A service is free to split its registration
+// across files and this has to follow.
 func scrapeProcedures(t *testing.T) []string {
 	t.Helper()
 	root := repoRoot(t)
@@ -309,17 +316,38 @@ func scrapeProcedures(t *testing.T) []string {
 
 	var out []string
 	for _, dir := range dirs {
-		path := filepath.Join(dir, "internal", "handler", "connect_handlers.go")
-		src, err := os.ReadFile(path)
-		if err != nil {
+		files, err := filepath.Glob(filepath.Join(dir, "internal", "handler", "*.go"))
+		if err != nil || len(files) == 0 {
 			continue // a service shaped differently, or none
 		}
-		name := nameRe.FindSubmatch(src)
-		if name == nil {
+
+		// The service's fully qualified name, from wherever it is declared.
+		var name string
+		for _, f := range files {
+			src, err := os.ReadFile(f)
+			if err != nil {
+				continue
+			}
+			if m := nameRe.FindSubmatch(src); m != nil {
+				name = string(m[1])
+				break
+			}
+		}
+		if name == "" {
 			continue
 		}
-		for _, m := range routeRe.FindAllSubmatch(src, -1) {
-			out = append(out, string(name[1])+"/"+string(m[1]))
+
+		for _, f := range files {
+			if strings.HasSuffix(f, "_test.go") {
+				continue
+			}
+			src, err := os.ReadFile(f)
+			if err != nil {
+				continue
+			}
+			for _, m := range routeRe.FindAllSubmatch(src, -1) {
+				out = append(out, name+"/"+string(m[1]))
+			}
 		}
 	}
 	sort.Strings(out)

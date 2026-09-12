@@ -23,6 +23,13 @@ var cheap = credential.Params{Memory: 8 * 1024, Time: 1, Parallelism: 1, SaltLen
 // of operations — which is the security property here — can be asserted rather
 // than assumed.
 type fake struct {
+	// The administration half of the interface, embedded rather than stubbed out
+	// method by method. These tests are about signing in, and a nil embedded
+	// interface panics loudly if one of them is ever reached — which is the right
+	// answer for a test double being used for something it was not written for,
+	// and better than ten methods quietly returning zero values.
+	repository.Repository
+
 	account     domain.Account
 	memberships []domain.Membership
 	identity    domain.ServiceIdentity

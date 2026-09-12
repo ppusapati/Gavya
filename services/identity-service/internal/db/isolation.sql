@@ -302,3 +302,80 @@ BEGIN
     END IF;
 END
 $$;
+
+-- ---------------------------------------------------------------------------
+-- Adding a person to a tenant
+-- ---------------------------------------------------------------------------
+
+-- gavya_add_member creates a person, or attaches an existing one, and gives them
+-- a role in one tenant.
+--
+-- Definer rights, and the policy on users above says why: a tenant may update
+-- somebody who is already one of theirs, and creating a person is not a
+-- tenant-scoped act, because the membership that would authorise it does not
+-- exist yet. The comment there has pointed at "the definer-rights function
+-- below" since the table was written and there was no such function, which is
+-- why a co-operative could not be given a single clerk without a database
+-- console.
+--
+-- The tenant is a parameter rather than gavya_current_tenant() because this runs
+-- with the privileges of its owner and must not be able to read which tenant it
+-- is in from ambient state. The caller says which tenant, and the caller has
+-- already been authorised for tenant.admin against that tenant.
+--
+-- An address that already has an account joins the existing person rather than
+-- creating a second one: two accounts for one address is how a revoked login
+-- stays usable, which is the reason email_normalised is unique in the first
+-- place.
+CREATE OR REPLACE FUNCTION gavya_add_member(
+    p_tenant        text,
+    p_email         text,
+    p_full_name     text,
+    p_password_hash text,
+    p_role_id       text,
+    p_actor         text,
+    p_membership_id text,
+    p_user_id       text
+)
+-- The output columns are prefixed because plpgsql resolves an unqualified name
+-- against them before it resolves it against a table: RETURNS TABLE(user_id ...)
+-- makes ON CONFLICT (tenant_id, user_id) below ambiguous, and Postgres refuses
+-- it rather than guessing.
+RETURNS TABLE(out_user_id text, out_created boolean) AS $fn$
+DECLARE
+    existing text;
+    made     boolean := false;
+BEGIN
+    IF p_tenant = '' OR p_tenant IS NULL THEN
+        RAISE EXCEPTION 'a member must be added to a tenant';
+    END IF;
+
+    SELECT u.id INTO existing FROM users u WHERE u.email_normalised = lower(p_email);
+
+    IF existing IS NULL THEN
+        INSERT INTO users (id, email, email_normalised, full_name, password_hash,
+                           created_by, updated_by)
+        VALUES (p_user_id, p_email, lower(p_email), p_full_name,
+                nullif(p_password_hash, ''), p_actor, p_actor);
+        existing := p_user_id;
+        made := true;
+    END IF;
+
+    -- A second membership in the same tenant is the same membership. Restoring
+    -- one that was removed keeps the row and its history rather than leaving a
+    -- deleted row beside a live one for the same pair.
+    INSERT INTO tenant_memberships (id, tenant_id, user_id, role_id, created_by, updated_by)
+    VALUES (p_membership_id, p_tenant, existing, p_role_id, p_actor, p_actor)
+    ON CONFLICT (tenant_id, user_id) DO UPDATE
+        SET role_id    = EXCLUDED.role_id,
+            status     = 'active',
+            deleted_at = NULL,
+            updated_at = NOW(),
+            updated_by = EXCLUDED.updated_by;
+
+    RETURN QUERY SELECT existing, made;
+END
+$fn$ LANGUAGE plpgsql VOLATILE SECURITY DEFINER;
+
+REVOKE ALL ON FUNCTION gavya_add_member(text, text, text, text, text, text, text, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION gavya_add_member(text, text, text, text, text, text, text, text) TO gavya_app;

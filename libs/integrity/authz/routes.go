@@ -131,6 +131,28 @@ var table = map[string]Permission{
 	"file.v1.FileService/DeleteFile":       PlatformAdmin,
 	"file.v1.FileService/GetDownloadURL":   PlatformRead,
 
+	// gavya.identity.v1.IdentityService — administration
+	//
+	// Setting up a co-operative: its people, what they may do, and the
+	// credentials its machines hold. tenant.admin throughout for the changes,
+	// because handing somebody the accountant role is a larger act than anything
+	// the accountant role can then do.
+	"gavya.identity.v1.IdentityService/ListRoles":             TenantRead,
+	"gavya.identity.v1.IdentityService/ListMembers":           TenantRead,
+	"gavya.identity.v1.IdentityService/ListServiceIdentities": TenantRead,
+	"gavya.identity.v1.IdentityService/AddMember":             TenantAdmin,
+	"gavya.identity.v1.IdentityService/SetMemberRole":         TenantAdmin,
+	"gavya.identity.v1.IdentityService/SetMemberStatus":       TenantAdmin,
+	"gavya.identity.v1.IdentityService/SetMemberPassword":     TenantAdmin,
+	"gavya.identity.v1.IdentityService/IssueServiceIdentity":  TenantAdmin,
+	"gavya.identity.v1.IdentityService/RevokeServiceIdentity": TenantAdmin,
+	// The one administration route needing no permission. A person holding no
+	// role at all must still be able to change the credential they were handed,
+	// and the current password is what authorises the change. The gateway still
+	// requires a session to reach it: Public here means "no particular
+	// permission", not "no authentication".
+	"gavya.identity.v1.IdentityService/ChangePassword": Public,
+
 	// gavya.identity.v1.IdentityService
 	"gavya.identity.v1.IdentityService/SignIn":            Public,
 	"gavya.identity.v1.IdentityService/SignInService":     Public,

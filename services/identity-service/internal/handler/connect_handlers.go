@@ -30,6 +30,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	route("VerifySession", connectjson.Unary(h.VerifySession))
 	route("SignOut", connectjson.Unary(h.SignOut))
 	route("SignOutEverywhere", connectjson.Unary(h.SignOutEverywhere))
+
+	h.RegisterAdministration(mux)
 }
 
 type SignInRequest struct {

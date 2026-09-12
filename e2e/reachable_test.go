@@ -44,7 +44,27 @@ type requirement struct {
 	why   string // the line in the service that demands it
 }
 
+// Handlers that take a value their service requires from the verified transport
+// rather than from the request body.
+//
+// The check below reads what a request carries and what the service it calls
+// insists on, and flags the difference. That is right almost everywhere: a
+// service method needing a field no request has is an endpoint that fails the
+// same way every time, which is what PlaceBid and RecordSale did.
+//
+// It is wrong where the value deliberately does not come from the body, and
+// there is exactly one of those. Listed by name with the reason, rather than
+// inferred, so that adding a second is a decision somebody writes down — the
+// same arrangement as the handlers that pass their whole message on.
+var fromVerifiedTransport = map[string]string{
+	"identity-service.ChangePassword": "reads whose password from the verified actor, " +
+		"never from the body. This route requires no permission, so a body naming " +
+		"its own subject would let anybody signed in change anybody else's password " +
+		"with the current one as the only obstacle.",
+}
+
 func TestEveryEndpointCanSatisfyItsService(t *testing.T) {
+	skippedVerified := 0
 	root := repoRoot(t)
 	dirs, err := filepath.Glob(filepath.Join(root, "services", "*-service"))
 	if err != nil {
@@ -72,6 +92,11 @@ func TestEveryEndpointCanSatisfyItsService(t *testing.T) {
 				if !ok {
 					continue
 				}
+				if reason, exempt := fromVerifiedTransport[svc+"."+ep.name]; exempt {
+					_ = reason
+					skippedVerified++
+					continue
+				}
 				checked++
 				carries := requests[ep.request]
 				for _, need := range needs {
@@ -95,7 +120,8 @@ func TestEveryEndpointCanSatisfyItsService(t *testing.T) {
 		t.Fatal("no handler method was matched to a service method, so this check " +
 			"examined nothing and would have passed against any defect")
 	}
-	t.Logf("checked %d handler-to-service calls", checked)
+	t.Logf("checked %d handler-to-service calls; %d take a required value from the "+
+		"verified transport", checked, skippedVerified)
 }
 
 // endpoint is one Connect handler method.
