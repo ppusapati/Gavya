@@ -1,7 +1,13 @@
+// Command server runs identity-service as its own process.
+//
+// Everything this service is made of is assembled in internal/app, which the
+// modulith also calls. This file is only the part that differs between running
+// alone and running alongside: a port, a signal, and a shutdown.
 package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"os/signal"
@@ -9,44 +15,23 @@ import (
 	"time"
 
 	"github.com/ppusapati/gavya/libs/integrity/serve"
-	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
 
+	"github.com/ppusapati/gavya/services/identity-service/app"
 	"github.com/ppusapati/gavya/services/identity-service/internal/config"
-	"github.com/ppusapati/gavya/services/identity-service/internal/handler"
-	"github.com/ppusapati/gavya/services/identity-service/internal/repository"
-	"github.com/ppusapati/gavya/services/identity-service/internal/service"
 
 	"p9e.in/samavaya/packages/p9log"
-	ulidpkg "p9e.in/samavaya/packages/ulid"
 )
-
-// ids and clock are the two things the service takes from the outside world, so
-// a test can hold both still.
-//
-// No prefix on the identifier. Every id column in this platform is VARCHAR(26),
-// which is exactly a ULID and leaves no room for one.
-type ids struct{}
-
-func (ids) New() string { return ulidpkg.New().String() }
-
-type clock struct{}
-
-func (clock) Now() time.Time { return time.Now().UTC() }
 
 func main() {
 	cfg := config.Load()
 	log := p9log.NewHelper(p9log.DefaultLogger)
 
-	pool, err := tenantdb.NewPool(context.Background(), cfg.DatabaseURL)
+	h, closePool, err := app.Build(context.Background(), log)
 	if err != nil {
-		log.Errorf("db connect: %v", err)
+		log.Errorf("%v", err)
 		os.Exit(1)
 	}
-	defer pool.Close()
-
-	repo := repository.New(pool)
-	svc := service.New(repo, ids{}, clock{}, log)
-	h := handler.New(svc)
+	defer closePool()
 
 	mux := http.NewServeMux()
 	h.Register(mux)
@@ -54,18 +39,18 @@ func main() {
 	srv := serve.New(cfg.ServerAddr, mux)
 
 	go func() {
-		log.Infof("starting %s on %s", cfg.ServiceName, cfg.ServerAddr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Errorf("server: %v", err)
+		log.Infof("%s listening on %s", cfg.ServiceName, cfg.ServerAddr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Errorf("listen: %v", err)
 			os.Exit(1)
 		}
 	}()
 
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	<-stop
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	shutdown, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	srv.Shutdown(ctx)
+	_ = srv.Shutdown(shutdown)
 }

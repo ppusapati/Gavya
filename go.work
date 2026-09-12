@@ -34,4 +34,5 @@ use (
 	./services/audit-service
 	./services/file-service
 	./services/gateway-service
+	./services/modulith
 )

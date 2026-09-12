@@ -1,7 +1,13 @@
+// Command server runs breeding-service as its own process.
+//
+// Everything this service is made of is assembled in internal/app, which the
+// modulith also calls. This file is only the part that differs between running
+// alone and running alongside: a port, a signal, and a shutdown.
 package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"os/signal"
@@ -9,50 +15,42 @@ import (
 	"time"
 
 	"github.com/ppusapati/gavya/libs/integrity/serve"
-	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
 
+	"github.com/ppusapati/gavya/services/breeding-service/app"
 	"github.com/ppusapati/gavya/services/breeding-service/internal/config"
-	"github.com/ppusapati/gavya/services/breeding-service/internal/handler"
-	"github.com/ppusapati/gavya/services/breeding-service/internal/repository"
-	"github.com/ppusapati/gavya/services/breeding-service/internal/service"
 
 	"p9e.in/samavaya/packages/p9log"
-	ulidpkg "p9e.in/samavaya/packages/ulid"
 )
-
-// ids supplies the identifier each audit entry carries. No prefix: every id
-// column in this platform is VARCHAR(26), which is exactly a ULID.
-type ids struct{}
-
-func (ids) New() string { return ulidpkg.New().String() }
 
 func main() {
 	cfg := config.Load()
 	log := p9log.NewHelper(p9log.DefaultLogger)
-	pool, err := tenantdb.NewPool(context.Background(), cfg.DatabaseURL)
+
+	h, closePool, err := app.Build(context.Background(), log)
 	if err != nil {
-		log.Errorf("db: %v", err)
+		log.Errorf("%v", err)
 		os.Exit(1)
 	}
-	defer pool.Close()
-	repo := repository.New(pool, ids{})
-	svc := service.New(repo, log)
-	h := handler.New(svc)
+	defer closePool()
+
 	mux := http.NewServeMux()
 	h.Register(mux)
+
 	srv := serve.New(cfg.ServerAddr, mux)
 
 	go func() {
-		log.Infof("starting %s on %s", cfg.ServiceName, cfg.ServerAddr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Errorf("server: %v", err)
+		log.Infof("%s listening on %s", cfg.ServiceName, cfg.ServerAddr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Errorf("listen: %v", err)
 			os.Exit(1)
 		}
 	}()
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	<-stop
+
+	shutdown, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	srv.Shutdown(ctx)
+	_ = srv.Shutdown(shutdown)
 }

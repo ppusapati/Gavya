@@ -12,8 +12,8 @@ import (
 
 	"github.com/ppusapati/gavya/libs/integrity/serve"
 
-	"github.com/ppusapati/gavya/services/gateway-service/internal/config"
-	"github.com/ppusapati/gavya/services/gateway-service/internal/handler"
+	"github.com/ppusapati/gavya/services/gateway-service/config"
+	"github.com/ppusapati/gavya/services/gateway-service/handler"
 )
 
 // main stays deliberately thin. Routing used to live here as a second, inline

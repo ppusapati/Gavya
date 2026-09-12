@@ -1,0 +1,159 @@
+# The whole platform as one process, behind one door.
+#
+#   docker compose -f docker-compose.modulith.yaml up
+#
+# WHY THERE IS A SECOND COMPOSE FILE
+#
+# docker-compose.yaml runs twenty-nine services and publishes a host port for
+# every one of them: 8080, 8081, 8082, and so on. Services take the tenant and
+# the permissions they act on from headers the gateway sets, which is sound
+# exactly as long as the gateway is the only way in — and there it is one door of
+# thirty. Anyone who can reach the host can send X-Gavya-Tenant and
+# X-Gavya-Permissions of their choosing straight to any service and be believed.
+#
+# This file publishes one port. Nothing else listens; the gateway's own
+# middleware runs first in the same process, and the permissions reach the
+# authorisation check on the request context rather than in a header, so inside
+# the process there is nothing to forge.
+#
+# The other file is still the right shape for a cluster, where the services are
+# kept off the network by a NetworkPolicy rather than by being one process. Until
+# that exists, this is the one to deploy.
+#
+# WHAT IS THE SAME
+#
+# The same code. Every module is assembled by the same services/<name>/app that
+# its own binary uses, so this is a deployment shape and not a second
+# implementation. The same database, too: every service in the other file already
+# points at `dairy`, so nothing about the data changes.
+
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      # No default, for the same reason as the other file: a password baked into
+      # a compose file is a password that reaches production, because the file is
+      # what gets copied.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: dairy
+      GAVYA_APP_PASSWORD: ${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}
+    # Bound to the loopback address, not published to every interface. The
+    # database has no business being reachable from off the host even in a
+    # single-host install; a psql prompt from the outside makes every policy in
+    # the schema decorative.
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./deploy/postgres-init:/docker-entrypoint-initdb.d:ro
+      - ./services:/repo/services:ro
+      - ./libs:/repo/libs:ro
+      - ./pkg/database/schema:/repo/pkg/database/schema:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  gavya:
+    build:
+      context: .
+      dockerfile: services/modulith/Dockerfile
+    # The one published port in this file.
+    ports:
+      - "8080:8080"
+    environment:
+      SERVICE_NAME: gavya
+      SERVER_ADDR: ":8080"
+      LOG_LEVEL: info
+
+      DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+
+      # Every upstream is this process.
+      #
+      # The gateway's verifier and settlement's reader over procurement still
+      # speak HTTP, to themselves, through the loopback address. One extra hop
+      # per request, and the alternative is a second code path that only this
+      # deployment uses — a session verification that behaves differently
+      # depending on how the platform was deployed is a difference discovered
+      # during an incident.
+      IDENTITY_SERVICE_URL: "http://127.0.0.1:8080"
+      TENANT_SERVICE_URL: "http://127.0.0.1:8080"
+      CATTLE_SERVICE_URL: "http://127.0.0.1:8080"
+      MILK_SERVICE_URL: "http://127.0.0.1:8080"
+      BREEDING_SERVICE_URL: "http://127.0.0.1:8080"
+      HEALTH_SERVICE_URL: "http://127.0.0.1:8080"
+      FEED_SERVICE_URL: "http://127.0.0.1:8080"
+      FARM_SERVICE_URL: "http://127.0.0.1:8080"
+      CATTLE_MARKET_SERVICE_URL: "http://127.0.0.1:8080"
+      PRODUCT_CATALOG_SERVICE_URL: "http://127.0.0.1:8080"
+      INVENTORY_SERVICE_URL: "http://127.0.0.1:8080"
+      ORDER_SERVICE_URL: "http://127.0.0.1:8080"
+      BILLING_SERVICE_URL: "http://127.0.0.1:8080"
+      NOTIFICATION_SERVICE_URL: "http://127.0.0.1:8080"
+      REPORTING_SERVICE_URL: "http://127.0.0.1:8080"
+      AUDIT_SERVICE_URL: "http://127.0.0.1:8080"
+      FILE_SERVICE_URL: "http://127.0.0.1:8080"
+      INGESTION_SERVICE_URL: "http://127.0.0.1:8080"
+      CANONICAL_SERVICE_URL: "http://127.0.0.1:8080"
+      BALANCE_SERVICE_URL: "http://127.0.0.1:8080"
+      MATERIAL_SERVICE_URL: "http://127.0.0.1:8080"
+      LABORATORY_SERVICE_URL: "http://127.0.0.1:8080"
+      OBSERVATION_SERVICE_URL: "http://127.0.0.1:8080"
+      POOLING_SERVICE_URL: "http://127.0.0.1:8080"
+      PROCUREMENT_SERVICE_URL: "http://127.0.0.1:8080"
+      PRODUCTION_SERVICE_URL: "http://127.0.0.1:8080"
+      SETTLEMENT_SERVICE_URL: "http://127.0.0.1:8080"
+      SHADOW_SETTLEMENT_SERVICE_URL: "http://127.0.0.1:8080"
+
+      # Settlement's reader over procurement, which is also this process.
+      PROCUREMENT_URL: "http://127.0.0.1:8080"
+      # And the identity it reads as. Settlement reads collections on its own
+      # behalf rather than as whoever pressed the button, so the trail needs a
+      # name for it; unset, every gather is attributed to nothing.
+      SERVICE_IDENTITY: "${SETTLEMENT_SERVICE_IDENTITY:-SI_SETTLEMENT_00000000000}"
+
+      # Where file-service puts what it is given. Left unset it has no store
+      # configured and every upload fails, which reads as a broken service
+      # rather than a missing line here.
+      STORAGE_PROVIDER: "${STORAGE_PROVIDER:-local}"
+      STORAGE_BUCKET: "${STORAGE_BUCKET:-/var/lib/gavya/files}"
+
+      # The ML tier, when it is running. Every one of these is advisory: left
+      # unset, a reading is still recorded, a window is still reconciled and a
+      # divergence is still classified — deterministically, by the Go tier, which
+      # is the answer that counts. The Rust services add an estimate beside it.
+      ANOMALY_ML_URL: "${ANOMALY_ML_URL:-}"
+      UNCERTAINTY_ML_URL: "${UNCERTAINTY_ML_URL:-}"
+      RECONCILIATION_ML_URL: "${RECONCILIATION_ML_URL:-}"
+      DIVERGENCE_ML_URL: "${DIVERGENCE_ML_URL:-}"
+
+      # And which version of each model answered. Pinned rather than whatever is
+      # deployed, because a figure that priced milk has to say what produced it
+      # or a replay cannot be held to the same model. Empty means the tier
+      # reports its own version, which is the right default only while nobody is
+      # replaying anything.
+      ANOMALY_MODEL_VERSION: "${ANOMALY_MODEL_VERSION:-}"
+      UNCERTAINTY_MODEL_VERSION: "${UNCERTAINTY_MODEL_VERSION:-}"
+      RECONCILIATION_MODEL_VERSION: "${RECONCILIATION_MODEL_VERSION:-}"
+      DIVERGENCE_MODEL_VERSION: "${DIVERGENCE_MODEL_VERSION:-}"
+
+      # The measurement-control regime whose law an eligibility verdict cites.
+      # Required: observation-service refuses to start without it, because
+      # citing the wrong country's statute is worse than citing none.
+      MEASUREMENT_REGIME: "${MEASUREMENT_REGIME:?set MEASUREMENT_REGIME}"
+
+      # Browser origins allowed to call this. No default: a permissive one is
+      # the kind of setting that reaches production because nobody had to think
+      # about it.
+      CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
