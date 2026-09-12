@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ppusapati/gavya/libs/integrity/audit"
 	"github.com/ppusapati/gavya/libs/integrity/origin"
 	"github.com/ppusapati/gavya/services/observation-service/internal/domain"
 )
@@ -50,9 +51,15 @@ type Repository interface {
 	GetActiveCertificate(ctx context.Context, tenantID, instrumentID string, at time.Time) (*domain.VerificationCertificate, error)
 }
 
-type repo struct{ db *pgxpool.Pool }
+// serviceName is what this service's audit entries are attributed to.
+const serviceName = "observation-service"
 
-func New(db *pgxpool.Pool) Repository { return &repo{db: db} }
+type repo struct {
+	db  *pgxpool.Pool
+	ids audit.IDs
+}
+
+func New(db *pgxpool.Pool, ids audit.IDs) Repository { return &repo{db: db, ids: ids} }
 
 const observationCols = `id,tenant_id,
 	cattle_id,producer_id,route_id,tanker_id,batch_id,
@@ -104,15 +111,37 @@ func (r *repo) GetObservation(ctx context.Context, id, tenantID string) (*domain
 // advisory estimates are the only writes an existing observation row ever
 // receives; the measured value itself is never touched.
 func (r *repo) SupersedeObservation(ctx context.Context, tenantID, id, supersededBy string) error {
+	// In a transaction with its record. Superseding a reading is how a wrong
+	// measurement is corrected, and the measured value itself is never touched —
+	// so the only thing that says a figure was replaced, and by what, is this.
+	// A settlement computed from the old reading is defended by nothing else.
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
 	const q = `UPDATE observations
 		SET superseded_at=NOW(), superseded_by=$3
 		WHERE tenant_id=$1 AND id=$2 AND superseded_at IS NULL`
-	tag, err := r.db.Exec(ctx, q, tenantID, id, supersededBy)
+	tag, err := tx.Exec(ctx, q, tenantID, id, supersededBy)
 	if err != nil {
 		return fmt.Errorf("supersede observation: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
+	}
+
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "supersede_observation", ResourceType: "observation", ResourceID: id,
+		After:       map[string]any{"superseded_by": supersededBy},
+		ServiceName: serviceName,
+	}); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit: %w", err)
 	}
 	return nil
 }

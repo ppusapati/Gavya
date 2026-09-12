@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ppusapati/gavya/libs/integrity/audit"
 	"github.com/ppusapati/gavya/libs/integrity/money"
 	"github.com/ppusapati/gavya/libs/integrity/origin"
 	"github.com/ppusapati/gavya/services/pooling-service/internal/domain"
@@ -49,9 +50,15 @@ type Repository interface {
 	GetEffectiveRetroactivityPolicy(ctx context.Context, tenantID string, at time.Time) (*domain.RecoveryRetroactivityPolicy, error)
 }
 
-type repo struct{ db *pgxpool.Pool }
+// serviceName is what this service's audit entries are attributed to.
+const serviceName = "pooling-service"
 
-func New(db *pgxpool.Pool) Repository { return &repo{db: db} }
+type repo struct {
+	db  *pgxpool.Pool
+	ids audit.IDs
+}
+
+func New(db *pgxpool.Pool, ids audit.IDs) Repository { return &repo{db: db, ids: ids} }
 
 const poolCols = `id,tenant_id,name,period_start,period_end,unit,currency,amount_scale,status,
 	rate_card_id,policy_version,created_at,updated_at,created_by,updated_by`
@@ -268,6 +275,38 @@ func (r *repo) SaveValuation(ctx context.Context, v *domain.PoolValuation, alloc
 		stored = append(stored, *out)
 	}
 
+	// What each producer is owed out of this pool, and the arithmetic that
+	// reached it. Inside the same transaction as the rows themselves: a trail
+	// written in its own transaction commits whether or not the change did,
+	// which is a trail that can disagree with the thing it describes.
+	//
+	// The allocations are summarised rather than listed one by one. A pool of
+	// two thousand producers would otherwise put two thousand entries in the
+	// trail for one act, and a trail nobody can read is one nobody reads. Each
+	// allocation is a row with its own id; this says which valuation produced
+	// them and what the total was, which is the part somebody disputing a
+	// payment needs to find them.
+	total := int64(0)
+	for _, a := range stored {
+		total += a.Total.Value
+	}
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "value_pool", ResourceType: "pool", ResourceID: v.PoolID,
+		After: map[string]any{
+			"valuation_id":             saved.ID,
+			"currency":                 saved.ClassifiedValue.Currency,
+			"amount_scale":             saved.ClassifiedValue.Scale,
+			"classified_value":         saved.ClassifiedValue.Value,
+			"component_value":          saved.ComponentValue.Value,
+			"producer_settlement_fund": saved.ProducerSettlementFund.Value,
+			"allocations":              len(stored),
+			"allocated_total":          total,
+		},
+		ServiceName: serviceName,
+	}); err != nil {
+		return nil, nil, err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, nil, fmt.Errorf("commit: %w", err)
 	}
@@ -340,6 +379,30 @@ func (r *repo) CreateEconomicEvents(ctx context.Context, events []domain.Produce
 			return nil, fmt.Errorf("raise %s event for producer %s: %w", e.Kind, e.ProducerRef, err)
 		}
 		out = append(out, *stored)
+	}
+
+	// The events are the obligation: this is the moment the platform says a
+	// producer is owed money. Summarised for the same reason the allocations
+	// are, and carrying the pool and the kind, which is what distinguishes a
+	// settlement from a correction raised against it months later.
+	byKind := map[string]int{}
+	total := int64(0)
+	for _, e := range out {
+		byKind[string(e.Kind)]++
+		total += e.Amount.Value
+	}
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "raise_economic_events", ResourceType: "pool", ResourceID: out[0].PoolID,
+		After: map[string]any{
+			"events":       len(out),
+			"by_kind":      byKind,
+			"currency":     out[0].Amount.Currency,
+			"amount_scale": out[0].Amount.Scale,
+			"total":        total,
+		},
+		ServiceName: serviceName,
+	}); err != nil {
+		return nil, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {

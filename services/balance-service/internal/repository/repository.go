@@ -10,6 +10,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ppusapati/gavya/services/balance-service/internal/domain"
+
+	"github.com/ppusapati/gavya/libs/integrity/audit"
 )
 
 var (
@@ -36,9 +38,15 @@ type Repository interface {
 	AcceptRun(ctx context.Context, tenantID, runID, actor string) (*domain.ReconciliationRun, error)
 }
 
-type repo struct{ db *pgxpool.Pool }
+// serviceName is what this service's audit entries are attributed to.
+const serviceName = "balance-service"
 
-func New(db *pgxpool.Pool) Repository { return &repo{db: db} }
+type repo struct {
+	db  *pgxpool.Pool
+	ids audit.IDs
+}
+
+func New(db *pgxpool.Pool, ids audit.IDs) Repository { return &repo{db: db, ids: ids} }
 
 const windowCols = `id,tenant_id,route_ref,period_start,period_end,unit,status,
 	created_at,updated_at,created_by,updated_by`
@@ -262,6 +270,34 @@ func (r *repo) AcceptRun(ctx context.Context, tenantID, runID, actor string) (*d
 	if run.Flows, err = reconciledFlowsIn(ctx, tx, tenantID, runID); err != nil {
 		return nil, err
 	}
+
+	// Somebody took this run as the period's close, which shuts the window and
+	// fixes the imbalance it is closed at. The residual is recorded with it: an
+	// entry saying only that a window was accepted answers nothing about what was
+	// accepted, and the figure is the whole question a loss enquiry asks.
+	after := map[string]any{
+		"window_id":       run.WindowID,
+		"converged":       run.Converged,
+		"residual_before": run.ResidualBefore,
+	}
+	// Nil when no model answered, and left out rather than repeated from the
+	// before value — which would read as a window that closed.
+	if run.ResidualAfter != nil {
+		after["residual_after"] = *run.ResidualAfter
+	}
+	if run.ModelVersion != "" {
+		after["model_version"] = run.ModelVersion
+	}
+	if run.Reason != "" {
+		after["reason"] = run.Reason
+	}
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "accept_reconciliation_run", ResourceType: "balance_window",
+		ResourceID: run.WindowID, After: after, ServiceName: serviceName,
+	}); err != nil {
+		return nil, err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit: %w", err)
 	}

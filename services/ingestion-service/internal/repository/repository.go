@@ -11,6 +11,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ppusapati/gavya/services/ingestion-service/internal/domain"
+
+	"github.com/ppusapati/gavya/libs/integrity/audit"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -71,9 +73,15 @@ type Repository interface {
 	ResolveQuarantine(ctx context.Context, tenantID, id, resolution, actor string) (*domain.QuarantinedRecord, error)
 }
 
-type repo struct{ db *pgxpool.Pool }
+// serviceName is what this service's audit entries are attributed to.
+const serviceName = "ingestion-service"
 
-func New(db *pgxpool.Pool) Repository { return &repo{db: db} }
+type repo struct {
+	db  *pgxpool.Pool
+	ids audit.IDs
+}
+
+func New(db *pgxpool.Pool, ids audit.IDs) Repository { return &repo{db: db, ids: ids} }
 
 // Ingest admits, replays or quarantines one record atomically.
 //
@@ -482,11 +490,43 @@ func (r *repo) GetQuarantined(ctx context.Context, id, tenantID string) (*domain
 }
 
 func (r *repo) ResolveQuarantine(ctx context.Context, tenantID, id, resolution, actor string) (*domain.QuarantinedRecord, error) {
+	// In a transaction with its record. A quarantined reading is one the platform
+	// refused; somebody letting it through is overriding that refusal, and an
+	// override nobody can be asked about is the same as no refusal at all.
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// The columns the original statement set, unchanged. My first version of this
+	// added an updated_at that the table does not have: wrapping a statement in a
+	// transaction is not a licence to rewrite it, and the e2e suite caught it.
 	const q = `UPDATE quarantined_records
 		SET resolved_at=NOW(), resolved_by=$4, resolution=$3
 		WHERE tenant_id=$1 AND id=$2 AND resolved_at IS NULL
 		RETURNING ` + quarantineCols
-	return scanQuarantine(r.db.QueryRow(ctx, q, tenantID, id, resolution, actor))
+	rec, err := scanQuarantine(tx.QueryRow(ctx, q, tenantID, id, resolution, actor))
+	if err != nil {
+		return nil, err
+	}
+
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "resolve_quarantine", ResourceType: "quarantined_record", ResourceID: id,
+		After: map[string]any{
+			"resolution": resolution,
+			"reason":     rec.Reason,
+			"device_id":  rec.DeviceID,
+		},
+		ServiceName: serviceName,
+	}); err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
+	}
+	return rec, nil
 }
 
 type scanner interface {

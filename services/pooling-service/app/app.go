@@ -11,6 +11,7 @@ import (
 	"fmt"
 
 	"github.com/ppusapati/gavya/libs/integrity/serve"
+	"github.com/ppusapati/gavya/libs/integrity/sys"
 	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
 
 	"github.com/ppusapati/gavya/services/pooling-service/internal/config"
@@ -29,7 +30,7 @@ func Build(ctx context.Context, log *p9log.Helper) (serve.Registrar, func(), err
 	if err != nil {
 		return nil, nil, fmt.Errorf("pooling-service: db connect: %w", err)
 	}
-	repo := repository.New(pool)
+	repo := repository.New(pool, sys.IDs{})
 	svc := service.New(repo, log)
 	return handler.New(svc), pool.Close, nil
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ppusapati/gavya/libs/integrity/audit"
 	"github.com/ppusapati/gavya/libs/integrity/money"
 	"github.com/ppusapati/gavya/libs/integrity/origin"
 	"github.com/ppusapati/gavya/services/shadow-settlement-service/internal/domain"
@@ -54,9 +55,15 @@ type DivergenceFilter struct {
 	Offset      int
 }
 
-type repo struct{ db *pgxpool.Pool }
+// serviceName is what this service's audit entries are attributed to.
+const serviceName = "shadow-settlement-service"
 
-func New(db *pgxpool.Pool) Repository { return &repo{db: db} }
+type repo struct {
+	db  *pgxpool.Pool
+	ids audit.IDs
+}
+
+func New(db *pgxpool.Pool, ids audit.IDs) Repository { return &repo{db: db, ids: ids} }
 
 const assertionCols = `id,tenant_id,source_system_id,external_settlement_id,producer_ref,period_start,period_end,
 	currency,amount_scale,total_minor_units,components,asserted_at,
@@ -257,11 +264,46 @@ func (r *repo) AttachHypotheses(ctx context.Context, id, tenantID string, hypoth
 }
 
 func (r *repo) ResolveDivergence(ctx context.Context, id, tenantID string, status domain.DivergenceStatus, resolution, resolvedBy string) (*domain.SettlementDivergence, error) {
+	// A transaction, so the decision and its record commit together. This is
+	// somebody deciding which of two figures for one producer's fortnight is the
+	// right one; a decision with no entry beside it is a figure that changed for
+	// no reason anybody can find.
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
 	const q = `UPDATE settlement_divergences
-		SET status=$3, resolution=$4, resolved_at=NOW(), resolved_by=$5, updated_at=NOW(), updated_by=$5
+		SET status=$3, resolution=$4, resolved_at=NOW(), resolved_by=$5,
+		    updated_at=NOW(), updated_by=$5
 		WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL
 		RETURNING ` + divergenceCols
-	return scanDivergence(r.db.QueryRow(ctx, q, id, tenantID, string(status), resolution, resolvedBy))
+	d, err := scanDivergence(tx.QueryRow(ctx, q, id, tenantID, string(status), resolution, resolvedBy))
+	if err != nil {
+		return nil, err
+	}
+
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "resolve_settlement_divergence", ResourceType: "settlement_divergence",
+		ResourceID: id,
+		After: map[string]any{
+			"status":            string(status),
+			"resolution":        resolution,
+			"producer_ref":      d.ProducerRef,
+			"classification":    string(d.Classification),
+			"delta_minor_units": d.Delta.Value,
+			"currency":          d.Delta.Currency,
+		},
+		ServiceName: serviceName,
+	}); err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
+	}
+	return d, nil
 }
 
 func (r *repo) SummariseDivergences(ctx context.Context, tenantID string, from, to time.Time) ([]domain.ClassSummary, error) {

@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ppusapati/gavya/libs/integrity/audit"
 	"github.com/ppusapati/gavya/libs/integrity/origin"
 	"github.com/ppusapati/gavya/services/canonical-service/internal/domain"
 )
@@ -65,9 +66,15 @@ type Repository interface {
 	ResolveConflict(ctx context.Context, tenantID, slotID, authoritativeRef, resolution, actor string) (*domain.AuthoritativeCollectionSlot, error)
 }
 
-type repo struct{ db *pgxpool.Pool }
+// serviceName is what this service's audit entries are attributed to.
+const serviceName = "canonical-service"
 
-func New(db *pgxpool.Pool) Repository { return &repo{db: db} }
+type repo struct {
+	db  *pgxpool.Pool
+	ids audit.IDs
+}
+
+func New(db *pgxpool.Pool, ids audit.IDs) Repository { return &repo{db: db, ids: ids} }
 
 const identityCols = `id,tenant_id,source_system_id,entity_kind,external_id,entity_id,
 	method,COALESCE(confidence,0),note,valid_from,valid_to,
@@ -329,12 +336,44 @@ func (r *repo) ListConflicts(ctx context.Context, tenantID string, limit, offset
 
 // ResolveConflict records a human's choice of which claim holds a slot.
 func (r *repo) ResolveConflict(ctx context.Context, tenantID, slotID, authoritativeRef, resolution, actor string) (*domain.AuthoritativeCollectionSlot, error) {
+	// In a transaction so the decision and the record of it commit together. A
+	// slot that changed hands with no entry beside it is indistinguishable
+	// afterwards from one somebody overwrote, which is the thing the resolution
+	// note exists to prevent — and the note is only worth having if it is on the
+	// record rather than in a column somebody can update again.
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
 	const q = `UPDATE authoritative_collection_slots
 		SET authoritative_ref=$3, status='SETTLED', resolution=$4,
 		    resolved_at=NOW(), resolved_by=$5, updated_at=NOW(), updated_by=$5
 		WHERE tenant_id=$1 AND id=$2 AND status='CONFLICT'
 		RETURNING ` + slotCols
-	return scanSlot(r.db.QueryRow(ctx, q, tenantID, slotID, authoritativeRef, resolution, actor))
+	slot, err := scanSlot(tx.QueryRow(ctx, q, tenantID, slotID, authoritativeRef, resolution, actor))
+	if err != nil {
+		return nil, err
+	}
+
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "resolve_slot_conflict", ResourceType: "collection_slot", ResourceID: slotID,
+		After: map[string]any{
+			"authoritative_ref": authoritativeRef,
+			"resolution":        resolution,
+			"slot_key":          slot.SlotKey,
+			"origin_kind":       string(slot.OriginKind),
+		},
+		ServiceName: serviceName,
+	}); err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
+	}
+	return slot, nil
 }
 
 type scanner interface {

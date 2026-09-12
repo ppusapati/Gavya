@@ -15,6 +15,7 @@ import (
 
 	"github.com/ppusapati/gavya/libs/integrity/mlclient"
 	"github.com/ppusapati/gavya/libs/integrity/serve"
+	"github.com/ppusapati/gavya/libs/integrity/sys"
 	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
 
 	"github.com/ppusapati/gavya/services/shadow-settlement-service/internal/config"
@@ -46,7 +47,7 @@ func Build(ctx context.Context, log *p9log.Helper) (serve.Registrar, func(), err
 		log.Infof("divergence ml tier disabled; unexplained divergences go straight to review")
 	}
 
-	repo := repository.New(pool)
+	repo := repository.New(pool, sys.IDs{})
 	svc := service.New(repo, log, ml)
 	return handler.New(svc), pool.Close, nil
 }

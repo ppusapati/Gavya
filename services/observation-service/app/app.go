@@ -15,6 +15,7 @@ import (
 
 	"github.com/ppusapati/gavya/libs/integrity/mlclient"
 	"github.com/ppusapati/gavya/libs/integrity/serve"
+	"github.com/ppusapati/gavya/libs/integrity/sys"
 	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
 
 	"github.com/ppusapati/gavya/services/observation-service/internal/config"
@@ -74,7 +75,7 @@ func Build(ctx context.Context, log *p9log.Helper) (serve.Registrar, func(), err
 	}
 	log.Infof("eligibility assessed under %s (%s)", regime.Name, regime.ID)
 
-	repo := repository.New(pool)
+	repo := repository.New(pool, sys.IDs{})
 	svc := service.New(repo, log, uncertainty, anomaly, regime)
 	return handler.New(svc), pool.Close, nil
 }
