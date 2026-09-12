@@ -504,3 +504,71 @@ func configGlob(root string) ([]string, error) {
 	}
 	return append(inner, outer...), nil
 }
+
+// Every service is probed, and the two probes ask different questions.
+//
+// Readiness must ask /readyz and liveness must ask /healthz, and getting them
+// the wrong way round is worse than having neither.
+//
+// All twenty-five probes that existed pointed readiness at /healthz, which at
+// the time returned 200 unconditionally — so readiness could not fail, and a pod
+// whose database had gone stayed in the Service's endpoints being sent traffic
+// it could not serve. Four services had no probes at all, so nothing would ever
+// have restarted them or taken them out.
+//
+// The other direction is the reason liveness must NOT ask /readyz: a failing
+// liveness probe kills the pod, so tying it to the database would turn a
+// recoverable database blip into a crash loop across the whole platform.
+//
+// RUN WITH -count=1.
+func TestReadinessAsksReadyzAndLivenessAsksHealthz(t *testing.T) {
+	root := repoRoot(t)
+	files, err := filepath.Glob(filepath.Join(root, "services", "*", "deployments", "k8s", "deployment.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) < 20 {
+		t.Fatalf("found only %d deployments; the glob has stopped matching and a "+
+			"check that finds nothing passes", len(files))
+	}
+
+	probe := regexp.MustCompile(`(?s)(readinessProbe|livenessProbe):.*?path:\s*(\S+)`)
+
+	var problems []string
+	for _, path := range files {
+		svc := filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(path))))
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := map[string]string{}
+		// Each probe block, matched from its keyword to the first path under it.
+		for _, kind := range []string{"readinessProbe", "livenessProbe"} {
+			idx := strings.Index(string(src), kind+":")
+			if idx < 0 {
+				problems = append(problems, svc+" has no "+kind)
+				continue
+			}
+			m := probe.FindStringSubmatch(string(src[idx:]))
+			if m == nil {
+				problems = append(problems, svc+"'s "+kind+" has no path")
+				continue
+			}
+			found[kind] = m[2]
+		}
+		if p, ok := found["readinessProbe"]; ok && p != "/readyz" {
+			problems = append(problems, svc+"'s readinessProbe asks "+p+
+				", which cannot report a dependency failure")
+		}
+		if p, ok := found["livenessProbe"]; ok && p != "/healthz" {
+			problems = append(problems, svc+"'s livenessProbe asks "+p+
+				"; a liveness probe that depends on the database turns an outage "+
+				"into a crash loop")
+		}
+	}
+	sort.Strings(problems)
+	if len(problems) > 0 {
+		t.Errorf("%d probe problems:\n  %s", len(problems), strings.Join(problems, "\n  "))
+	}
+	t.Logf("checked %d deployments", len(files))
+}

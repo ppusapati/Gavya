@@ -26,7 +26,7 @@ spec:
             name: material-service-secret
         readinessProbe:
           httpGet:
-            path: /healthz
+            path: /readyz
             port: 8105
           initialDelaySeconds: 5
           periodSeconds: 10

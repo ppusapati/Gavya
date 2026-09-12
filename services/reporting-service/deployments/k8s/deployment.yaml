@@ -22,6 +22,18 @@ spec:
           envFrom:
             - configMapRef:
                 name: reporting-service-config
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8096
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8096
+            initialDelaySeconds: 15
+            periodSeconds: 20
           resources:
             requests:
               cpu: "100m"

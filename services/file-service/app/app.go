@@ -11,6 +11,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/ppusapati/gavya/libs/integrity/serve"
 	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
 
@@ -22,9 +24,11 @@ import (
 	"p9e.in/samavaya/packages/p9log"
 )
 
-// Build opens this service's database and returns its handler, and the function
-// that closes what was opened.
-func Build(ctx context.Context, log *p9log.Helper) (serve.Registrar, func(), error) {
+// Build opens this service's database and returns its handler and the pool.
+//
+// The pool rather than a close function, because the caller needs it for two
+// things: closing it, and asking it whether the service is ready to serve.
+func Build(ctx context.Context, log *p9log.Helper) (serve.Registrar, *pgxpool.Pool, error) {
 	cfg := config.Load()
 	pool, err := tenantdb.NewPool(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -32,5 +36,5 @@ func Build(ctx context.Context, log *p9log.Helper) (serve.Registrar, func(), err
 	}
 	repo := repository.New(pool)
 	svc := service.New(repo, cfg, log)
-	return handler.New(svc), pool.Close, nil
+	return handler.New(svc), pool, nil
 }

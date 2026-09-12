@@ -89,12 +89,22 @@ func TestGetOnAProcedureIsRejected(t *testing.T) {
 	}
 }
 
-func TestHealthzStillWorks(t *testing.T) {
+// /healthz is not this handler's any more.
+//
+// It moved to libs/integrity/serve, which registers it once for whatever mux a
+// service runs. It had to: every service registered its own, and an
+// http.ServeMux panics on a duplicate pattern, so the modulith — twenty-eight
+// services on one mux — would have panicked at startup on the second one.
+//
+// The liveness endpoint is covered in serve, and that a service actually serves
+// it is covered in e2e/probes_test.go against all twenty-nine running.
+func TestHealthzIsNotRegisteredByThisHandler(t *testing.T) {
 	rec := httptest.NewRecorder()
 	mux(t).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 
-	if rec.Code != http.StatusOK {
-		t.Errorf("status = %d, want 200", rec.Code)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404: this handler registering /healthz is what "+
+			"made two of them impossible to mount together", rec.Code)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 
 	"p9e.in/samavaya/packages/p9log"
 
+	"github.com/ppusapati/gavya/libs/integrity/observe"
 	"github.com/ppusapati/gavya/libs/integrity/serve"
 
 	"github.com/ppusapati/gavya/services/gateway-service/config"
@@ -29,7 +30,17 @@ func main() {
 	h := handler.New(cfg, log)
 	h.Register(mux)
 
-	srv := serve.Unguarded(cfg.ServerAddr, h.CORS(mux))
+	// The gateway's readiness is whether it can verify a session, and that is
+	// the identity service's answer rather than a database of its own — this
+	// process has none. Counted the same way as everything else, through the
+	// metrics it is handed.
+	metrics := observe.NewMetrics()
+	mux.HandleFunc("/readyz", observe.Ready(observe.Check{
+		Name: "identity-service", Ping: h.PingIdentity,
+	}))
+	mux.HandleFunc("/metrics", metrics.Handler())
+
+	srv := serve.Unguarded(cfg.ServerAddr, h.CORS(mux), metrics)
 
 	go func() {
 		log.Infof("gateway-service listening on %s", cfg.ServerAddr)

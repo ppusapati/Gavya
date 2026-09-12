@@ -169,7 +169,12 @@ var services = []service{
 // platform is a running set of services, addressed by name.
 type platform struct {
 	clients map[string]*svcclient.Client
-	tenant  string
+	// baseURLs is the same set as plain addresses, for the tests that reach a
+	// service with something other than svcclient: the probes are ordinary GETs
+	// and not Connect procedures, and a client that only speaks Connect cannot
+	// ask a service whether it is ready.
+	baseURLs map[string]string
+	tenant   string
 }
 
 var (
@@ -232,6 +237,7 @@ var (
 	sharedPlatform *platform
 	sharedErr      error
 	sharedProcs    []*exec.Cmd
+	sharedBaseURLs = map[string]string{}
 )
 
 // startPlatform returns the running services, scoped to a tenant of this test's
@@ -246,7 +252,7 @@ func startPlatform(t *testing.T) *platform {
 	if sharedErr != nil {
 		t.Fatalf("start the platform: %v", sharedErr)
 	}
-	return &platform{clients: sharedPlatform.clients, tenant: newID("tnt")}
+	return &platform{clients: sharedPlatform.clients, baseURLs: sharedBaseURLs, tenant: newID("tnt")}
 }
 
 // buildAndStart builds every service and runs it against its own database.
@@ -329,8 +335,10 @@ func buildAndStart() (*platform, error) {
 		}
 		sharedProcs = append(sharedProcs, cmd)
 
+		baseURL := "http://" + addr
+		sharedBaseURLs[svc.name] = baseURL
 		client := svcclient.New(svcclient.Config{
-			BaseURL: "http://" + addr,
+			BaseURL: baseURL,
 			Timeout: 10 * time.Second,
 		})
 		if err := waitReadyErr(client); err != nil {

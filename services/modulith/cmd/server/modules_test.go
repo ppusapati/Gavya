@@ -1,9 +1,9 @@
 package main
 
 import (
-	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -91,31 +91,80 @@ func TestEveryServiceIsMountedByTheModulith(t *testing.T) {
 
 // Two modules do not claim the same route.
 //
-// Every service registers under its own fully qualified name, so a collision
-// should be impossible — but in twenty-nine separate processes a duplicate
-// registration is twenty-nine muxes each with one entry, and here it is one mux
-// and a panic at startup. Better to find it in a test than in a deployment.
+// In twenty-nine separate processes a duplicate registration is twenty-nine
+// muxes each with one entry. Here it is one mux, and an http.ServeMux panics on
+// a duplicate pattern — at startup, before anything serves.
+//
+// The first version of this check counted module names and registered nothing,
+// so it passed while every service was registering its own /healthz and this
+// binary would have panicked on the second module. A check that does not do the
+// thing it is checking is the failure this repository keeps finding, and it
+// found it in its own test.
+//
+// It now reads every pattern every service registers, out of the source, and
+// looks for one claimed twice. Scraped rather than executed because registering
+// for real needs twenty-eight databases — and the panic it is looking for
+// happens before any of them are touched.
 func TestNoTwoModulesClaimTheSameRoute(t *testing.T) {
-	defer func() {
-		if r := recover(); r != nil {
-			t.Fatalf("mounting the modules panicked, which is what a duplicate route "+
-				"does to an http.ServeMux: %v", r)
-		}
-	}()
+	root := repoRoot(t)
+	dirs, err := filepath.Glob(filepath.Join(root, "services", "*-service"))
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	// Registration alone, with no database: Register only attaches handlers.
-	mux := http.NewServeMux()
-	seen := map[string]bool{}
-	for _, m := range modules() {
-		if seen[m.name] {
-			continue
+	// mux.HandleFunc("literal", ...) — the routes registered by a path rather
+	// than through the `route` helper, which composes a per-service name and
+	// cannot collide.
+	literal := regexp.MustCompile(`mux\.HandleFunc\("(/[^"]*)"`)
+
+	claimedBy := map[string][]string{}
+	for _, dir := range dirs {
+		svc := filepath.Base(dir)
+		for _, pattern := range []string{"internal/handler/*.go", "handler/*.go"} {
+			files, _ := filepath.Glob(filepath.Join(dir, pattern))
+			for _, f := range files {
+				if strings.HasSuffix(f, "_test.go") {
+					continue
+				}
+				src, err := os.ReadFile(f)
+				if err != nil {
+					continue
+				}
+				for _, m := range literal.FindAllSubmatch(src, -1) {
+					path := string(m[1])
+					if !contains(claimedBy[path], svc) {
+						claimedBy[path] = append(claimedBy[path], svc)
+					}
+				}
+			}
 		}
-		seen[m.name] = true
 	}
-	_ = mux
-	if len(seen) != len(modules()) {
-		t.Errorf("%d modules listed and %d distinct names", len(modules()), len(seen))
+
+	var clashes []string
+	for path, services := range claimedBy {
+		if len(services) > 1 {
+			sort.Strings(services)
+			clashes = append(clashes, path+" is registered by "+strings.Join(services, ", "))
+		}
 	}
+	sort.Strings(clashes)
+	if len(clashes) > 0 {
+		t.Errorf("%d paths are registered by more than one service:\n  %s\n"+
+			"Mounted on one mux this panics at startup, before anything serves. "+
+			"A path every service needs belongs in libs/integrity/serve, where it "+
+			"is registered once.",
+			len(clashes), strings.Join(clashes, "\n  "))
+	}
+	t.Logf("%d literal paths registered across %d services", len(claimedBy), len(dirs))
+}
+
+func contains(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 func repoRoot(t *testing.T) string {

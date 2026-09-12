@@ -26,7 +26,7 @@ spec:
             name: balance-service-secret
         readinessProbe:
           httpGet:
-            path: /healthz
+            path: /readyz
             port: 8095
           initialDelaySeconds: 5
           periodSeconds: 10

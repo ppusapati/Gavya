@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ppusapati/gavya/libs/integrity/observe"
 	"github.com/ppusapati/gavya/libs/integrity/serve"
 
 	"github.com/ppusapati/gavya/services/pooling-service/app"
@@ -26,17 +27,22 @@ func main() {
 	cfg := config.Load()
 	log := p9log.NewHelper(p9log.DefaultLogger)
 
-	h, closePool, err := app.Build(context.Background(), log)
+	h, pool, err := app.Build(context.Background(), log)
 	if err != nil {
 		log.Errorf("%v", err)
 		os.Exit(1)
 	}
-	defer closePool()
+	defer pool.Close()
 
 	mux := http.NewServeMux()
 	h.Register(mux)
 
-	srv := serve.New(cfg.ServerAddr, mux)
+	// The readiness check this service answers /readyz with. Its database: a
+	// service whose pool has gone away can still be alive and cannot serve, and
+	// those are different answers to different probes.
+	srv := serve.New(cfg.ServerAddr, mux, observe.Check{
+		Name: "database", Ping: pool.Ping,
+	})
 
 	go func() {
 		log.Infof("%s listening on %s", cfg.ServiceName, cfg.ServerAddr)

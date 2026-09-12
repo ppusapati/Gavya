@@ -328,8 +328,6 @@ func New(svc *service.Service) *Handler { return &Handler{svc: svc} }
 const ServiceName = "pooling.v1.PoolingService"
 
 func (h *Handler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
-
 	route := func(method string, handler http.HandlerFunc) {
 		mux.HandleFunc(connectjson.Procedure(ServiceName, method), handler)
 	}

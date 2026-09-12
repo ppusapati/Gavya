@@ -39,7 +39,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/ppusapati/gavya/libs/integrity/authz"
+	"github.com/ppusapati/gavya/libs/integrity/observe"
 	"github.com/ppusapati/gavya/libs/integrity/serve"
 
 	gatewayconfig "github.com/ppusapati/gavya/services/gateway-service/config"
@@ -80,7 +83,7 @@ import (
 // module is one service and the function that builds it.
 type module struct {
 	name  string
-	build func(context.Context, *p9log.Helper) (serve.Registrar, func(), error)
+	build func(context.Context, *p9log.Helper) (serve.Registrar, *pgxpool.Pool, error)
 }
 
 func main() {
@@ -88,22 +91,27 @@ func main() {
 	ctx := context.Background()
 
 	mux := http.NewServeMux()
-	var closers []func()
+	var pools []*pgxpool.Pool
+	var checks []observe.Check
 	closeAll := func() {
 		// Reverse order, so the last thing opened is the first thing shut.
-		for i := len(closers) - 1; i >= 0; i-- {
-			closers[i]()
+		for i := len(pools) - 1; i >= 0; i-- {
+			pools[i].Close()
 		}
 	}
 
 	for _, m := range modules() {
-		h, closePool, err := m.build(ctx, log)
+		h, pool, err := m.build(ctx, log)
 		if err != nil {
 			log.Errorf("%s: %v", m.name, err)
 			closeAll()
 			os.Exit(1)
 		}
-		closers = append(closers, closePool)
+		pools = append(pools, pool)
+		// Every module's database is a dependency of this process. Named
+		// individually, so a readiness probe that goes red says which module
+		// cannot reach its data rather than only that one cannot.
+		checks = append(checks, observe.Check{Name: m.name, Ping: pool.Ping})
 		h.Register(mux)
 	}
 	defer closeAll()
@@ -123,7 +131,15 @@ func main() {
 	// Guard after the gateway, not instead of it. The gateway refuses at the
 	// front and this refuses again at the module, which is the same two layers
 	// the separate-process deployment has.
-	srv := serve.Unguarded(gwcfg.ServerAddr, gw.CORS(gw.Middleware(authz.Guard(mux))))
+	metrics := observe.NewMetrics()
+	mux.HandleFunc("/readyz", observe.Ready(checks...))
+	mux.HandleFunc("/metrics", metrics.Handler())
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	srv := serve.Unguarded(gwcfg.ServerAddr,
+		gw.CORS(gw.Middleware(authz.Guard(mux))), metrics)
 
 	go func() {
 		log.Infof("gavya listening on %s", gwcfg.ServerAddr)

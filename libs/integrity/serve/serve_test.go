@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -81,7 +82,9 @@ func TestEveryServiceRunsTheGuardedServer(t *testing.T) {
 // number in a file, and this package exists precisely because that was the
 // situation across twenty-eight main functions.
 func TestTheServerCarriesItsTimeouts(t *testing.T) {
-	srv := New(":0", nil)
+	// A real mux, because New registers /healthz, /readyz and /metrics on it —
+	// which is the point of it taking one.
+	srv := New(":0", http.NewServeMux())
 	for _, c := range []struct {
 		name string
 		got  any

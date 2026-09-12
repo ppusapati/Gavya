@@ -26,7 +26,7 @@ spec:
             name: procurement-service-secret
         readinessProbe:
           httpGet:
-            path: /healthz
+            path: /readyz
             port: 8103
           initialDelaySeconds: 5
           periodSeconds: 10

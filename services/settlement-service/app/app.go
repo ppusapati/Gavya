@@ -14,7 +14,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/ppusapati/gavya/libs/integrity/authz"
+
 	"github.com/ppusapati/gavya/libs/integrity/serve"
 	"github.com/ppusapati/gavya/libs/integrity/svcclient"
 	"github.com/ppusapati/gavya/libs/integrity/sys"
@@ -31,9 +33,11 @@ import (
 	ulidpkg "p9e.in/samavaya/packages/ulid"
 )
 
-// Build opens this service's database and returns its handler, and the function
-// that closes what was opened.
-func Build(ctx context.Context, log *p9log.Helper) (serve.Registrar, func(), error) {
+// Build opens this service's database and returns its handler and the pool.
+//
+// The pool rather than a close function, because the caller needs it for two
+// things: closing it, and asking it whether the service is ready to serve.
+func Build(ctx context.Context, log *p9log.Helper) (serve.Registrar, *pgxpool.Pool, error) {
 	cfg := config.Load()
 	pool, err := tenantdb.NewPool(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -68,7 +72,7 @@ func Build(ctx context.Context, log *p9log.Helper) (serve.Registrar, func(), err
 	}
 
 	svc := service.New(repo, milk, sys.IDs{}, sys.Clock{}, log)
-	return handler.New(svc), pool.Close, nil
+	return handler.New(svc), pool, nil
 }
 
 // scoped carries the calling tenant through to procurement.

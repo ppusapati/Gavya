@@ -26,7 +26,7 @@ spec:
             name: pooling-service-secret
         readinessProbe:
           httpGet:
-            path: /healthz
+            path: /readyz
             port: 8094
           initialDelaySeconds: 5
           periodSeconds: 10
