@@ -362,6 +362,39 @@ BEGIN
     ALTER TABLE producer_payables ADD COLUMN IF NOT EXISTS kind VARCHAR(16) NOT NULL DEFAULT 'SETTLEMENT';
     ALTER TABLE producer_payables ADD COLUMN IF NOT EXISTS adjusts_payable_id VARCHAR(26);
     ALTER TABLE producer_payables ADD COLUMN IF NOT EXISTS reason TEXT;
+
+    -- The rules on those columns, which the CREATE TABLE above declares inline
+    -- and which therefore never reached a table that already existed. A
+    -- database upgraded from the first version had the columns and none of the
+    -- six constraints: an adjustment with no reason, a settlement row with a
+    -- negative gross, a kind nothing recognises — all accepted, on exactly the
+    -- databases that had been running longest. Found by comparing a database
+    -- that lived through every version against a fresh one; every version had
+    -- applied without error.
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'producer_payables_kind_check') THEN
+        ALTER TABLE producer_payables ADD CONSTRAINT producer_payables_kind_check
+            CHECK (kind IN ('SETTLEMENT', 'ADJUSTMENT'));
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'producer_payables_adjustment_has_a_reason') THEN
+        ALTER TABLE producer_payables ADD CONSTRAINT producer_payables_adjustment_has_a_reason
+            CHECK (kind <> 'ADJUSTMENT' OR (reason IS NOT NULL AND reason <> ''));
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'producer_payables_only_adjustments_adjust') THEN
+        ALTER TABLE producer_payables ADD CONSTRAINT producer_payables_only_adjustments_adjust
+            CHECK (adjusts_payable_id IS NULL OR kind = 'ADJUSTMENT');
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'producer_payables_adjustment_is_not_zero') THEN
+        ALTER TABLE producer_payables ADD CONSTRAINT producer_payables_adjustment_is_not_zero
+            CHECK (kind <> 'ADJUSTMENT' OR net_minor_units <> 0);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'producer_payables_settlement_gross_is_not_negative') THEN
+        ALTER TABLE producer_payables ADD CONSTRAINT producer_payables_settlement_gross_is_not_negative
+            CHECK (kind <> 'SETTLEMENT' OR gross_minor_units >= 0);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'producer_payables_adjustment_deducts_nothing') THEN
+        ALTER TABLE producer_payables ADD CONSTRAINT producer_payables_adjustment_deducts_nothing
+            CHECK (kind <> 'ADJUSTMENT' OR deducted_minor_units = 0);
+    END IF;
     -- Dropped by its generated name: it forbids the negative adjustment that
     -- an overpayment has to be recorded as.
     ALTER TABLE producer_payables DROP CONSTRAINT IF EXISTS producer_payables_gross_minor_units_check;

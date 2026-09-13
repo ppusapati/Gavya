@@ -794,3 +794,21 @@ SELECT f.tenant_id,
          ON y.tenant_id = f.tenant_id AND y.formulation_id = f.id
  WHERE f.deleted_at IS NULL
  GROUP BY f.tenant_id, f.id, f.code, f.output_product_ref, f.expected_yield_ppm;
+
+-- ---------------------------------------------------------------------------
+-- What earlier versions left behind
+-- ---------------------------------------------------------------------------
+
+-- expected_yield_ppm used to be a column on production_batches. It moved to
+-- production_formulations, where a yield expectation belongs — it is a property
+-- of the recipe, not of one batch — and was removed from the CREATE TABLE above.
+-- Nothing removed it from a database that already had it, so every database
+-- upgraded from the first version carried a nullable column, and its CHECK, that
+-- no fresh database has and no code reads. Found by comparing a database that
+-- lived through every version against a fresh one.
+--
+-- Dropped rather than kept. It is dead: the current code neither writes nor
+-- reads it, so any value in it was written by a version that no longer exists
+-- and is read by nothing. A column that is present on some databases and not
+-- others is the more expensive thing to carry.
+ALTER TABLE production_batches DROP COLUMN IF EXISTS expected_yield_ppm;

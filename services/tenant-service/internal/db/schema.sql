@@ -45,6 +45,17 @@ BEGIN
                  AND column_default IS NOT NULL) THEN
         ALTER TABLE tenants ALTER COLUMN currency DROP DEFAULT;
     END IF;
+    -- And its type. The first version declared currency VARCHAR(3); the CREATE
+    -- above says CHAR(3), and nothing changed a column that already existed.
+    -- The two compare differently — CHAR pads, VARCHAR does not — so a database
+    -- upgraded from the first version held a subtly different column from a
+    -- fresh one, for the value every amount in the platform is read against.
+    -- Every value is a three-letter ISO code, so the conversion loses nothing.
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_name='tenants' AND column_name='currency'
+                 AND data_type='character varying') THEN
+        ALTER TABLE tenants ALTER COLUMN currency TYPE CHAR(3);
+    END IF;
 END
 $$;
 

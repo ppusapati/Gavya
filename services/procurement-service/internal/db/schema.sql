@@ -238,6 +238,24 @@ BEGIN
     ALTER TABLE priced_collections ADD COLUMN IF NOT EXISTS superseded_by VARCHAR(26);
     ALTER TABLE priced_collections ADD COLUMN IF NOT EXISTS supersedes VARCHAR(26);
     ALTER TABLE priced_collections ADD COLUMN IF NOT EXISTS correction_reason TEXT;
+
+    -- The rules on those columns, which the CREATE TABLE above declares inline
+    -- and which therefore never reached a table that already existed. A
+    -- database upgraded from the first version had the columns and neither
+    -- constraint: a correction with no reason was accepted — on exactly the
+    -- databases that had been running longest, which are the ones with
+    -- corrections in them. Found by comparing a database that lived through
+    -- every version against a fresh one; every version had applied without
+    -- error.
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'collection_supersession_is_attributed') THEN
+        ALTER TABLE priced_collections ADD CONSTRAINT collection_supersession_is_attributed CHECK (
+            (superseded_at IS NULL AND superseded_by IS NULL) OR
+            (superseded_at IS NOT NULL AND superseded_by IS NOT NULL));
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'collection_correction_has_a_reason') THEN
+        ALTER TABLE priced_collections ADD CONSTRAINT collection_correction_has_a_reason CHECK (
+            supersedes IS NULL OR (correction_reason IS NOT NULL AND correction_reason <> ''));
+    END IF;
 END
 $$;
 
