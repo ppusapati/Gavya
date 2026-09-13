@@ -27,6 +27,9 @@ import (
 
 	"github.com/ppusapati/gavya/libs/integrity/bitemporal"
 	"github.com/ppusapati/gavya/libs/integrity/origin"
+	"github.com/ppusapati/gavya/libs/integrity/sys"
+	"github.com/ppusapati/gavya/libs/integrity/tenantctx"
+	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
 	"github.com/ppusapati/gavya/services/canonical-service/internal/domain"
 )
 
@@ -68,6 +71,20 @@ var (
 	y2026 = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 )
 
+// acting returns a context carrying what a real request carries.
+//
+// These tests called the repository with a bare context.Background(), which
+// worked for as long as nothing on these paths wrote an audit entry — and an
+// audit entry is the one thing that refuses to be written without a tenant and
+// an actor to attribute it to. Nothing ran this suite between the day the
+// entries were added and the day it was wired into check-all, which is why
+// every audited call here failed at once.
+func (f *fixture) acting() context.Context {
+	return tenantctx.WithActor(
+		tenantdb.WithTenant(context.Background(), f.tenantID),
+		tenantctx.Actor{ID: "integration-test"})
+}
+
 type fixture struct {
 	repo     Repository
 	tenantID string
@@ -76,7 +93,7 @@ type fixture struct {
 
 func setup(t *testing.T) *fixture {
 	t.Helper()
-	return &fixture{repo: New(pool(t)), tenantID: newID("tnt"), sourceID: newID("src")}
+	return &fixture{repo: New(pool(t), sys.IDs{}), tenantID: newID("tnt"), sourceID: newID("src")}
 }
 
 func (f *fixture) identity(entityID string, from, to time.Time) *domain.ExternalIdentity {
@@ -96,7 +113,7 @@ func (f *fixture) identity(entityID string, from, to time.Time) *domain.External
 
 func (f *fixture) policy(t *testing.T, mode domain.ResolutionMode) *domain.CollectionIdentityPolicy {
 	t.Helper()
-	p, err := f.repo.CreatePolicy(context.Background(), &domain.CollectionIdentityPolicy{
+	p, err := f.repo.CreatePolicy(f.acting(), &domain.CollectionIdentityPolicy{
 		ID:       newID("pol"),
 		TenantID: f.tenantID,
 		Name:     "default",
@@ -134,7 +151,7 @@ func (f *fixture) place(t *testing.T, p *domain.CollectionIdentityPolicy, c doma
 	if err != nil {
 		t.Fatalf("slot key: %v", err)
 	}
-	res, err := f.repo.ClaimSlot(context.Background(), ClaimInput{
+	res, err := f.repo.ClaimSlot(f.acting(), ClaimInput{
 		TenantID: f.tenantID,
 		SlotKey:  slotKey,
 		Claim:    c,
@@ -152,7 +169,7 @@ func (f *fixture) place(t *testing.T, p *domain.CollectionIdentityPolicy, c doma
 // instant are not.
 func TestIdentifierMayBeReusedButNeverOverlap(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	if _, err := f.repo.CreateIdentity(ctx, f.identity("prodA", y2020, y2023)); err != nil {
 		t.Fatalf("first mapping: %v", err)
@@ -169,7 +186,7 @@ func TestIdentifierMayBeReusedButNeverOverlap(t *testing.T) {
 
 func TestResolveIdentityAnswersForTheInstantAsked(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	if _, err := f.repo.CreateIdentity(ctx, f.identity("prodA", y2020, y2023)); err != nil {
 		t.Fatalf("create: %v", err)
@@ -213,7 +230,7 @@ func TestResolveIdentityAnswersForTheInstantAsked(t *testing.T) {
 // retiring a mapping leaves the row readable.
 func TestRetiredIdentityStopsResolvingButSurvives(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	in, err := f.repo.CreateIdentity(ctx, f.identity("prodA", y2020, bitemporal.EndOfTime))
 	if err != nil {
@@ -235,7 +252,7 @@ func TestRetiredIdentityStopsResolvingButSurvives(t *testing.T) {
 
 func TestReverseResolveListsEveryIdentifierForAnEntity(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	if _, err := f.repo.CreateIdentity(ctx, f.identity("prodA", y2020, y2023)); err != nil {
 		t.Fatalf("create: %v", err)
@@ -258,7 +275,7 @@ func TestReverseResolveListsEveryIdentifierForAnEntity(t *testing.T) {
 // Two policies in force at once would make a collection's slot key ambiguous.
 func TestOnlyOnePolicyMayBeInForce(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	f.policy(t, domain.ResolveFirstWins)
 
@@ -282,7 +299,7 @@ func TestPolicyMustIdentifyAProducerAtTheDatabase(t *testing.T) {
 
 	// The domain validates this too; the constraint is the backstop for anything
 	// that reaches the table another way.
-	_, err := f.repo.CreatePolicy(context.Background(), &domain.CollectionIdentityPolicy{
+	_, err := f.repo.CreatePolicy(f.acting(), &domain.CollectionIdentityPolicy{
 		ID:            newID("pol"),
 		TenantID:      f.tenantID,
 		Name:          "no-producer",
@@ -409,7 +426,7 @@ func TestConflictClearsTheHolderAndKeepsBothClaims(t *testing.T) {
 
 func TestConflictAppearsInTheTriageQueueAndResolves(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 	p := f.policy(t, domain.ResolveManual)
 
 	f.place(t, p, claim("obs-1", y2026, 0))
@@ -501,7 +518,7 @@ func TestConcurrentClaimsResolveToOneHolder(t *testing.T) {
 			defer wg.Done()
 			<-start
 			c := claim(fmt.Sprintf("obs-%d", i), y2026.Add(time.Duration(i)*time.Minute), 0)
-			res, err := f.repo.ClaimSlot(context.Background(), ClaimInput{
+			res, err := f.repo.ClaimSlot(f.acting(), ClaimInput{
 				TenantID: f.tenantID,
 				SlotKey:  slotKey,
 				Claim:    c,
@@ -528,7 +545,7 @@ func TestConcurrentClaimsResolveToOneHolder(t *testing.T) {
 		t.Fatalf("%d racers established the slot, want exactly 1", established)
 	}
 
-	final, err := f.repo.GetSlot(context.Background(), f.tenantID, slotKey, origin.Native)
+	final, err := f.repo.GetSlot(f.acting(), f.tenantID, slotKey, origin.Native)
 	if err != nil {
 		t.Fatalf("get slot: %v", err)
 	}
@@ -541,7 +558,7 @@ func TestConcurrentClaimsResolveToOneHolder(t *testing.T) {
 func TestTenantIsolation(t *testing.T) {
 	a := setup(t)
 	b := setup(t)
-	ctx := context.Background()
+	ctx := b.acting()
 
 	if _, err := a.repo.CreateIdentity(ctx, a.identity("prodA", y2020, bitemporal.EndOfTime)); err != nil {
 		t.Fatalf("create: %v", err)

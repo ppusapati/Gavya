@@ -121,9 +121,15 @@ func (r *repo) SetPoolStatus(ctx context.Context, tenantID, id string, status do
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 
+	// The before-read is where a pool that is not there is found out, so it
+	// answers as the update used to: not found, not "no rows". The suite that
+	// nothing had run caught the difference the first time it ran.
 	var was string
 	if err := tx.QueryRow(ctx,
 		`SELECT status FROM pools WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, tenantID, id).Scan(&was); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
 		return nil, err
 	}
 	const q = `UPDATE pools SET status=$3, updated_at=NOW(), updated_by=$4

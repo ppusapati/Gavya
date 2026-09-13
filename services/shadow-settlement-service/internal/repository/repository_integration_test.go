@@ -28,6 +28,9 @@ import (
 	"github.com/ppusapati/gavya/libs/integrity/bitemporal"
 	"github.com/ppusapati/gavya/libs/integrity/money"
 	"github.com/ppusapati/gavya/libs/integrity/origin"
+	"github.com/ppusapati/gavya/libs/integrity/sys"
+	"github.com/ppusapati/gavya/libs/integrity/tenantctx"
+	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
 	"github.com/ppusapati/gavya/services/shadow-settlement-service/internal/domain"
 )
 
@@ -72,6 +75,20 @@ func inr(t *testing.T, s string) money.Money {
 	return m
 }
 
+// acting returns a context carrying what a real request carries.
+//
+// These tests called the repository with a bare context.Background(), which
+// worked for as long as nothing on these paths wrote an audit entry — and an
+// audit entry is the one thing that refuses to be written without a tenant and
+// an actor to attribute it to. Nothing ran this suite between the day the
+// entries were added and the day it was wired into check-all, which is why
+// every audited call here failed at once.
+func (f *fixture) acting() context.Context {
+	return tenantctx.WithActor(
+		tenantdb.WithTenant(context.Background(), f.tenantID),
+		tenantctx.Actor{ID: "integration-test"})
+}
+
 type fixture struct {
 	repo     Repository
 	tenantID string
@@ -82,7 +99,7 @@ type fixture struct {
 func setup(t *testing.T) *fixture {
 	t.Helper()
 	return &fixture{
-		repo:     New(pool(t)),
+		repo:     New(pool(t), sys.IDs{}),
 		tenantID: newID("tnt"),
 		sourceID: newID("src"),
 		batchID:  newID("bat"),
@@ -172,7 +189,7 @@ func comp(t *testing.T, kind domain.ComponentKind, amount, quantity, rate string
 
 func TestAssertionRoundTripsComponentsAndOrigin(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	in := f.assertion(t, "EXT-1", "REC-1", "1000.00",
 		comp(t, domain.ComponentBasePrice, "1050.00", "320.000", "3.2812"),
@@ -219,7 +236,7 @@ func TestAssertionRoundTripsComponentsAndOrigin(t *testing.T) {
 // service's pre-check, so a race cannot admit the same record twice.
 func TestDuplicatePayloadIsRefusedByTheDatabase(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	first := f.assertion(t, "EXT-1", "REC-1", "1000.00")
 	if _, err := f.repo.CreateAssertion(ctx, first); err != nil {
@@ -236,7 +253,7 @@ func TestDuplicatePayloadIsRefusedByTheDatabase(t *testing.T) {
 
 func TestFindByPayloadLocatesAReplay(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	in := f.assertion(t, "EXT-1", "REC-1", "1000.00")
 	out, err := f.repo.CreateAssertion(ctx, in)
@@ -261,7 +278,7 @@ func TestFindByPayloadLocatesAReplay(t *testing.T) {
 // which is what makes "as we knew it on date X" answerable.
 func TestAmendmentSupersedesAndBothVersionsRemain(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	v1, err := f.repo.CreateAssertion(ctx, f.assertion(t, "EXT-1", "REC-1", "1000.00"))
 	if err != nil {
@@ -306,7 +323,7 @@ func TestAmendmentSupersedesAndBothVersionsRemain(t *testing.T) {
 
 func TestComputationRoundTripsRoundingTrail(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	in := f.computation(t, "1000.00", comp(t, domain.ComponentBasePrice, "1000.00", "300.000", "3.3333"))
 	out, err := f.repo.CreateComputation(ctx, in)
@@ -338,7 +355,7 @@ func TestComputationRoundTripsRoundingTrail(t *testing.T) {
 // The end-to-end path: ingest, compute, classify, persist, read back.
 func TestDivergenceRoundTripAndTriage(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	assertion, err := f.repo.CreateAssertion(ctx, f.assertion(t, "EXT-1", "REC-1", "1050.00",
 		comp(t, domain.ComponentBasePrice, "1050.00", "300.000", "3.5000")))
@@ -415,7 +432,7 @@ func TestDivergenceRoundTripAndTriage(t *testing.T) {
 // it can never change the classification.
 func TestHypothesesAttachOnlyToUnexplained(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	hypotheses := []domain.MLHypothesis{{
 		Classification: "INPUT_DIFFERENCE",
@@ -474,7 +491,7 @@ func TestHypothesesAttachOnlyToUnexplained(t *testing.T) {
 
 func TestResolveRecordsTheDecisionWithoutChangingTheFinding(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	assertion, err := f.repo.CreateAssertion(ctx, f.assertion(t, "EXT-1", "REC-1", "1000.00"))
 	if err != nil {
@@ -516,7 +533,7 @@ func TestResolveRecordsTheDecisionWithoutChangingTheFinding(t *testing.T) {
 
 func TestSummariseGroupsByClassification(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	for i, spec := range []struct {
 		class domain.Classification
@@ -563,7 +580,7 @@ func TestSummariseGroupsByClassification(t *testing.T) {
 // A MATCH with a non-zero delta is a contradiction the database refuses.
 func TestMatchWithANonZeroDeltaIsRejected(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	assertion, err := f.repo.CreateAssertion(ctx, f.assertion(t, "EXT-1", "REC-1", "1000.00"))
 	if err != nil {
@@ -591,7 +608,7 @@ func TestMatchWithANonZeroDeltaIsRejected(t *testing.T) {
 func TestTenantIsolation(t *testing.T) {
 	a := setup(t)
 	b := setup(t)
-	ctx := context.Background()
+	ctx := b.acting()
 
 	assertion, err := a.repo.CreateAssertion(ctx, a.assertion(t, "EXT-1", "REC-1", "1000.00"))
 	if err != nil {

@@ -26,6 +26,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ppusapati/gavya/libs/integrity/sys"
+	"github.com/ppusapati/gavya/libs/integrity/tenantctx"
+	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
 	"github.com/ppusapati/gavya/services/balance-service/internal/domain"
 )
 
@@ -66,6 +69,20 @@ var (
 	periodEnd   = time.Date(2026, 2, 2, 0, 0, 0, 0, time.UTC)
 )
 
+// acting returns a context carrying what a real request carries.
+//
+// These tests called the repository with a bare context.Background(), which
+// worked for as long as nothing on these paths wrote an audit entry — and an
+// audit entry is the one thing that refuses to be written without a tenant and
+// an actor to attribute it to. Nothing ran this suite between the day the
+// entries were added and the day it was wired into check-all, which is why
+// every audited call here failed at once.
+func (f *fixture) acting() context.Context {
+	return tenantctx.WithActor(
+		tenantdb.WithTenant(context.Background(), f.tenantID),
+		tenantctx.Actor{ID: "integration-test"})
+}
+
 type fixture struct {
 	repo     Repository
 	tenantID string
@@ -74,12 +91,12 @@ type fixture struct {
 
 func setup(t *testing.T) *fixture {
 	t.Helper()
-	return &fixture{repo: New(pool(t)), tenantID: newID("tnt"), routeRef: newID("rte")}
+	return &fixture{repo: New(pool(t), sys.IDs{}), tenantID: newID("tnt"), routeRef: newID("rte")}
 }
 
 func (f *fixture) window(t *testing.T) *domain.BalanceWindow {
 	t.Helper()
-	w, err := f.repo.CreateWindow(context.Background(), &domain.BalanceWindow{
+	w, err := f.repo.CreateWindow(f.acting(), &domain.BalanceWindow{
 		ID:          newID("win"),
 		TenantID:    f.tenantID,
 		RouteRef:    f.routeRef,
@@ -115,7 +132,7 @@ func (f *fixture) flow(windowID, flowID, from, to, measured, uncertainty string)
 
 func (f *fixture) addFlow(t *testing.T, windowID, flowID, from, to, measured, uncertainty string) *domain.FlowMeasurement {
 	t.Helper()
-	out, err := f.repo.AddFlow(context.Background(), f.flow(windowID, flowID, from, to, measured, uncertainty))
+	out, err := f.repo.AddFlow(f.acting(), f.flow(windowID, flowID, from, to, measured, uncertainty))
 	if err != nil {
 		t.Fatalf("add flow %s: %v", flowID, err)
 	}
@@ -143,7 +160,7 @@ func (f *fixture) run(windowID string, converged bool, before string, after *str
 
 func TestWindowAndFlowsRoundTripToTheThirdDecimal(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	w := f.window(t)
 	if w.Status != domain.WindowOpen {
@@ -200,13 +217,13 @@ func TestDuplicateFlowIDInAWindowIsRejected(t *testing.T) {
 
 	f.addFlow(t, w.ID, "in", domain.Boundary, "cc-1", "100.000", "1.000")
 
-	_, err := f.repo.AddFlow(context.Background(), f.flow(w.ID, "in", "cc-1", domain.Boundary, "98.000", "1.000"))
+	_, err := f.repo.AddFlow(f.acting(), f.flow(w.ID, "in", "cc-1", domain.Boundary, "98.000", "1.000"))
 	if !errors.Is(err, ErrDuplicateFlow) {
 		t.Fatalf("got %v, want ErrDuplicateFlow", err)
 	}
 
 	// The same id in another window is a different stream and is allowed.
-	second, err := f.repo.CreateWindow(context.Background(), &domain.BalanceWindow{
+	second, err := f.repo.CreateWindow(f.acting(), &domain.BalanceWindow{
 		ID:          newID("win"),
 		TenantID:    f.tenantID,
 		RouteRef:    f.routeRef,
@@ -223,7 +240,7 @@ func TestDuplicateFlowIDInAWindowIsRejected(t *testing.T) {
 
 func TestRunAndItsFlowsAreWrittenTogether(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 	w := f.window(t)
 	f.addFlow(t, w.ID, "in", domain.Boundary, "cc-1", "100.000", "1.000")
 	f.addFlow(t, w.ID, "out", "cc-1", domain.Boundary, "98.000", "1.000")
@@ -274,7 +291,7 @@ func TestRunAndItsFlowsAreWrittenTogether(t *testing.T) {
 // no run at all.
 func TestAFailedFlowRowLeavesNoRunBehind(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 	w := f.window(t)
 	f.addFlow(t, w.ID, "in", domain.Boundary, "cc-1", "100.000", "1.000")
 
@@ -306,7 +323,7 @@ func TestAFailedFlowRowLeavesNoRunBehind(t *testing.T) {
 // adjustments are indicative, and it accuses nobody.
 func TestANonConvergedRunIsKeptAndAccusesNobody(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 	w := f.window(t)
 	f.addFlow(t, w.ID, "out", "cc-1", "plant-1", "100.000", "1.000")
 	f.addFlow(t, w.ID, "back", "plant-1", "cc-1", "98.000", "1.000")
@@ -356,7 +373,7 @@ func TestANonConvergedRunIsKeptAndAccusesNobody(t *testing.T) {
 
 func TestAcceptedRunClosesTheWindowOnlyOnce(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 	w := f.window(t)
 	f.addFlow(t, w.ID, "in", domain.Boundary, "cc-1", "100.000", "1.000")
 
@@ -399,7 +416,7 @@ func TestOneRoutePeriodHasOneWindow(t *testing.T) {
 	f := setup(t)
 	f.window(t)
 
-	_, err := f.repo.CreateWindow(context.Background(), &domain.BalanceWindow{
+	_, err := f.repo.CreateWindow(f.acting(), &domain.BalanceWindow{
 		ID:          newID("win"),
 		TenantID:    f.tenantID,
 		RouteRef:    f.routeRef,
@@ -415,7 +432,7 @@ func TestOneRoutePeriodHasOneWindow(t *testing.T) {
 
 func TestTenantsCannotSeeEachOthersWindows(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 	other := newID("tnt")
 
 	w := f.window(t)
@@ -466,7 +483,7 @@ func TestTenantsCannotSeeEachOthersWindows(t *testing.T) {
 // The window's own tenant sees it under its status filter.
 func TestListWindowsFiltersByStatus(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 	w := f.window(t)
 
 	open, err := f.repo.ListWindows(ctx, f.tenantID, domain.WindowOpen, 10, 0)

@@ -24,6 +24,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ppusapati/gavya/libs/integrity/sys"
+	"github.com/ppusapati/gavya/libs/integrity/tenantctx"
+	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
 	"github.com/ppusapati/gavya/services/ingestion-service/internal/domain"
 )
 
@@ -55,6 +58,20 @@ func freshTenant(t *testing.T) string {
 	return newID("tnt")
 }
 
+// acting returns a context carrying what a real request carries.
+//
+// These tests called the repository with a bare context.Background(), which
+// worked for as long as nothing on these paths wrote an audit entry — and an
+// audit entry is the one thing that refuses to be written without a tenant and
+// an actor to attribute it to. Nothing ran this suite between the day the
+// entries were added and the day it was wired into check-all, which is why
+// every audited call here failed at once.
+func (f *fixture) acting() context.Context {
+	return tenantctx.WithActor(
+		tenantdb.WithTenant(context.Background(), f.tenantID),
+		tenantctx.Actor{ID: "integration-test"})
+}
+
 type fixture struct {
 	repo     Repository
 	tenantID string
@@ -65,7 +82,7 @@ type fixture struct {
 func setup(t *testing.T) *fixture {
 	t.Helper()
 	ctx := context.Background()
-	r := New(pool(t))
+	r := New(pool(t), sys.IDs{})
 	tenantID := freshTenant(t)
 
 	device, err := r.CreateDevice(ctx, &domain.Device{
@@ -116,7 +133,7 @@ func newID(prefix string) string {
 
 func (f *fixture) deliver(t *testing.T, sequence int64, payload string) *IngestResult {
 	t.Helper()
-	res, err := f.repo.Ingest(context.Background(), IngestInput{
+	res, err := f.repo.Ingest(f.acting(), IngestInput{
 		TenantID:          f.tenantID,
 		DeviceID:          f.device.ID,
 		Generation:        f.device.CurrentGeneration,
@@ -157,7 +174,7 @@ func TestIngestAcceptsThenReplays(t *testing.T) {
 
 func TestIngestIsIdempotentOverManyRedeliveries(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	first := f.deliver(t, 1, "aaa")
 	for i := 0; i < 20; i++ {
@@ -196,7 +213,7 @@ func TestConcurrentDeliveriesOfOneRecordAdmitItOnce(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			res, err := f.repo.Ingest(context.Background(), IngestInput{
+			res, err := f.repo.Ingest(f.acting(), IngestInput{
 				TenantID:          f.tenantID,
 				DeviceID:          f.device.ID,
 				Generation:        f.device.CurrentGeneration,
@@ -249,7 +266,7 @@ func TestConcurrentDeliveriesOfOneRecordAdmitItOnce(t *testing.T) {
 		}
 	}
 
-	session, err := f.repo.GetSession(context.Background(), f.session.ID, f.tenantID)
+	session, err := f.repo.GetSession(f.acting(), f.session.ID, f.tenantID)
 	if err != nil {
 		t.Fatalf("get session: %v", err)
 	}
@@ -260,7 +277,7 @@ func TestConcurrentDeliveriesOfOneRecordAdmitItOnce(t *testing.T) {
 
 func TestIngestQuarantinesAConflictAndKeepsThePayload(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	f.deliver(t, 1, "aaa")
 	conflict := f.deliver(t, 1, "bbb")
@@ -301,7 +318,7 @@ func TestIngestQuarantinesAConflictAndKeepsThePayload(t *testing.T) {
 
 func TestSessionHighWaterMarkAdvancesOnlyForward(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	f.deliver(t, 1, "a")
 	f.deliver(t, 5, "b")
@@ -336,7 +353,7 @@ func TestSessionHighWaterMarkAdvancesOnlyForward(t *testing.T) {
 // that must not collide with the run it had before the reset.
 func TestRollingAGenerationGivesAFreshSequenceSpace(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	if res := f.deliver(t, 1, "before"); res.Decision.Outcome != domain.OutcomeAccepted {
 		t.Fatalf("pre-reset delivery: got %s", res.Decision.Outcome)
@@ -390,7 +407,7 @@ func TestRollingAGenerationGivesAFreshSequenceSpace(t *testing.T) {
 
 func TestStaleGenerationIsHeldNotDropped(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	if _, err := f.repo.RollGeneration(ctx, f.tenantID, f.device.ID, domain.ReasonAppReinstall, newID("gen"), "tester"); err != nil {
 		t.Fatalf("roll generation: %v", err)
@@ -426,7 +443,7 @@ func TestStaleGenerationIsHeldNotDropped(t *testing.T) {
 
 func TestOpenSessionIsIdempotent(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	again, err := f.repo.OpenSession(ctx, &domain.CaptureSession{
 		ID: newID("ses"), TenantID: f.tenantID, DeviceID: f.device.ID,
@@ -443,7 +460,7 @@ func TestOpenSessionIsIdempotent(t *testing.T) {
 
 func TestResolveQuarantineRecordsTheDecision(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	f.deliver(t, 1, "aaa")
 	conflict := f.deliver(t, 1, "bbb")

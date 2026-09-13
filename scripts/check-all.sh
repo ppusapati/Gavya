@@ -55,7 +55,23 @@ fi
 # database and the suite still passes, which is worse than failing.
 if [ -n "${TEST_DATABASE_DSN:-}" ]; then
   case "$TEST_DATABASE_DSN" in
-    *%s*) step "e2e" bash -c "cd '$ROOT/e2e' && go test -count=1 -tags e2e -timeout 30m ./..." ;;
+    *%s*)
+      # The repository suites tagged dbintegration read a plain DSN to a
+      # database that already holds every schema, and apply nothing themselves.
+      # Nothing provisioned one, so from the day they were written nothing ran
+      # them. Provision it here, once, from the same template the e2e harness
+      # uses, and run every module that carries such a suite.
+      if url="$(cd "$ROOT/e2e" && go run ./cmd/provision -dsn "$TEST_DATABASE_DSN" -root "$ROOT")"; then
+        for dir in $(grep -rl --include='*_test.go' '^//go:build dbintegration' "$ROOT/services" \
+                     | xargs -n1 dirname | sort -u); do
+          rel="${dir#$ROOT/}"
+          step "dbintegration $rel" bash -c \
+            "cd '$dir' && TEST_DATABASE_URL='$url' go test -count=1 -tags dbintegration ."
+        done
+      else
+        echo "    FAILED: provision the dbintegration database"; fail=1
+      fi
+      step "e2e" bash -c "cd '$ROOT/e2e' && go test -count=1 -tags e2e -timeout 30m ./..." ;;
     *) echo; echo "==> e2e: TEST_DATABASE_DSN has no %s in it."
        echo "    Every service would share one database and the suite would pass anyway."
        fail=1 ;;

@@ -29,6 +29,7 @@ import (
 
 	"github.com/ppusapati/gavya/libs/integrity/money"
 	"github.com/ppusapati/gavya/libs/integrity/origin"
+	"github.com/ppusapati/gavya/libs/integrity/sys"
 	"github.com/ppusapati/gavya/libs/integrity/tenantctx"
 	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
 	"github.com/ppusapati/gavya/services/pooling-service/internal/domain"
@@ -74,6 +75,20 @@ var (
 	y2026       = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 )
 
+// acting returns a context carrying what a real request carries.
+//
+// These tests called the repository with a bare context.Background(), which
+// worked for as long as nothing on these paths wrote an audit entry — and an
+// audit entry is the one thing that refuses to be written without a tenant and
+// an actor to attribute it to. Nothing ran this suite between the day the
+// entries were added and the day it was wired into check-all, which is why
+// every audited call here failed at once.
+func (f *fixture) acting() context.Context {
+	return tenantctx.WithActor(
+		tenantdb.WithTenant(context.Background(), f.tenantID),
+		tenantctx.Actor{ID: "integration-test"})
+}
+
 type fixture struct {
 	repo     Repository
 	tenantID string
@@ -81,7 +96,7 @@ type fixture struct {
 
 func setup(t *testing.T) *fixture {
 	t.Helper()
-	return &fixture{repo: New(pgpool(t)), tenantID: newID("tnt")}
+	return &fixture{repo: New(pgpool(t), sys.IDs{}), tenantID: newID("tnt")}
 }
 
 func rate(t *testing.T, s string, scale int32) money.Rate {
@@ -95,7 +110,7 @@ func rate(t *testing.T, s string, scale int32) money.Rate {
 
 func (f *fixture) pool(t *testing.T) *domain.Pool {
 	t.Helper()
-	p, err := f.repo.CreatePool(context.Background(), &domain.Pool{
+	p, err := f.repo.CreatePool(f.acting(), &domain.Pool{
 		ID:          newID("pol"),
 		TenantID:    f.tenantID,
 		Name:        "january-2026",
@@ -115,7 +130,7 @@ func (f *fixture) pool(t *testing.T) *domain.Pool {
 
 func (f *fixture) addMilk(t *testing.T, poolID, ref, quantity, fat, snf string) *domain.ProducerMilk {
 	t.Helper()
-	m, err := f.repo.AddProducerMilk(context.Background(), &domain.ProducerMilk{
+	m, err := f.repo.AddProducerMilk(f.acting(), &domain.ProducerMilk{
 		ID:          newID("mlk"),
 		TenantID:    f.tenantID,
 		PoolID:      poolID,
@@ -137,7 +152,7 @@ func (f *fixture) addMilk(t *testing.T, poolID, ref, quantity, fat, snf string) 
 
 func (f *fixture) addUtilisation(t *testing.T, poolID string, class domain.UtilisationClass, quantity, price string) {
 	t.Helper()
-	if _, err := f.repo.AddUtilisation(context.Background(), &domain.ClassifiedUtilisation{
+	if _, err := f.repo.AddUtilisation(f.acting(), &domain.ClassifiedUtilisation{
 		ID:        newID("utl"),
 		TenantID:  f.tenantID,
 		PoolID:    poolID,
@@ -200,7 +215,7 @@ func (f *fixture) value(t *testing.T, p *domain.Pool) *domain.ValuationResult {
 func (f *fixture) save(t *testing.T, p *domain.Pool, res *domain.ValuationResult) (*domain.PoolValuation, []domain.Allocation) {
 	t.Helper()
 	valuation, allocations := f.build(p, res)
-	saved, stored, err := f.repo.SaveValuation(context.Background(), valuation, allocations)
+	saved, stored, err := f.repo.SaveValuation(f.acting(), valuation, allocations)
 	if err != nil {
 		t.Fatalf("save valuation: %v", err)
 	}
@@ -241,7 +256,7 @@ func (f *fixture) build(p *domain.Pool, res *domain.ValuationResult) (*domain.Po
 // after the amounts have been through PostgreSQL and back.
 func TestAllocationsStillConserveThePoolValueAfterARoundTrip(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	p := f.loaded(t)
 	res := f.value(t, p)
@@ -324,7 +339,7 @@ func TestProducerQuantityKeepsItsThirdDecimal(t *testing.T) {
 
 	f.addMilk(t, p.ID, "prod-1", "1234.567", "49.383", "104.938")
 
-	list, err := f.repo.ListProducerMilk(context.Background(), f.tenantID, p.ID)
+	list, err := f.repo.ListProducerMilk(f.acting(), f.tenantID, p.ID)
 	if err != nil {
 		t.Fatalf("list producer milk: %v", err)
 	}
@@ -349,7 +364,7 @@ func TestProducerQuantityKeepsItsThirdDecimal(t *testing.T) {
 // a value no producer has a share of.
 func TestSaveValuationWritesEverythingOrNothing(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	p := f.loaded(t)
 	res := f.value(t, p)
@@ -379,7 +394,7 @@ func TestSaveValuationWritesEverythingOrNothing(t *testing.T) {
 // they can drift apart, the payment advice does not describe the payment.
 func TestAllocationTotalMustEqualItsParts(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	p := f.loaded(t)
 	res := f.value(t, p)
@@ -402,7 +417,7 @@ func TestAllocationTotalMustEqualItsParts(t *testing.T) {
 // live valuations would leave settlement free to pay from either.
 func TestSavingAgainSupersedesThePreviousValuation(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	p := f.loaded(t)
 	first, _ := f.save(t, p, f.value(t, p))
@@ -459,7 +474,7 @@ func (f *fixture) settled(t *testing.T) (*domain.Pool, []domain.Allocation, []do
 			CreatedBy:    "tester",
 		})
 	}
-	stored, err := f.repo.CreateEconomicEvents(context.Background(), events)
+	stored, err := f.repo.CreateEconomicEvents(f.acting(), events)
 	if err != nil {
 		t.Fatalf("raise original events: %v", err)
 	}
@@ -493,7 +508,7 @@ func TestOriginalEventsCarryTheAllocationTotals(t *testing.T) {
 		}
 	}
 
-	listed, err := f.repo.ListEconomicEvents(context.Background(), f.tenantID, p.ID, "prod-2", 10, 0)
+	listed, err := f.repo.ListEconomicEvents(f.acting(), f.tenantID, p.ID, "prod-2", 10, 0)
 	if err != nil {
 		t.Fatalf("list events: %v", err)
 	}
@@ -510,7 +525,7 @@ func TestOriginalEventsCarryTheAllocationTotals(t *testing.T) {
 // correction of one. Either lets a producer be paid twice with no row saying so.
 func TestCorrectionMustNameWhatItSupersedes(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 	p, allocations, events := f.settled(t)
 
 	orphan := domain.ProducerEconomicEvent{
@@ -561,7 +576,7 @@ func TestCorrectionMustNameWhatItSupersedes(t *testing.T) {
 // unpaid with nothing in the data saying which was which.
 func TestEconomicEventBatchIsAllOrNothing(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 	p, allocations, _ := f.settled(t)
 
 	before, err := f.repo.ListEconomicEvents(ctx, f.tenantID, p.ID, "", 100, 0)
@@ -613,7 +628,7 @@ func TestAProducerMayPoolMilkOnlyOncePerPool(t *testing.T) {
 
 	f.addMilk(t, p.ID, "prod-1", "400.000", "16.000", "34.000")
 
-	_, err := f.repo.AddProducerMilk(context.Background(), &domain.ProducerMilk{
+	_, err := f.repo.AddProducerMilk(f.acting(), &domain.ProducerMilk{
 		ID:          newID("mlk"),
 		TenantID:    f.tenantID,
 		PoolID:      p.ID,
@@ -636,7 +651,7 @@ func TestAProducerMayPoolMilkOnlyOncePerPool(t *testing.T) {
 // answers about whether it may reopen a settled pool.
 func TestOnlyOneRetroactivityPolicyMayBeInForce(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	if _, err := f.repo.CreateRetroactivityPolicy(ctx, f.policy("standing", domain.RetroApplyIncremental, 90, y2020, nil)); err != nil {
 		t.Fatalf("create policy: %v", err)
@@ -650,7 +665,7 @@ func TestOnlyOneRetroactivityPolicyMayBeInForce(t *testing.T) {
 
 func TestEffectivePolicyIsTheOneInForceAtTheInstantAsked(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	closed := y2024
 	if _, err := f.repo.CreateRetroactivityPolicy(ctx, f.policy("early", domain.RetroDoNotReopen, 0, y2020, &closed)); err != nil {
@@ -733,7 +748,7 @@ func TestSetPoolStatusMovesThePoolThroughItsLifecycle(t *testing.T) {
 
 func TestListPoolsFiltersByPeriod(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	january := f.pool(t)
 	march, err := f.repo.CreatePool(ctx, &domain.Pool{
@@ -779,7 +794,7 @@ func TestListPoolsFiltersByPeriod(t *testing.T) {
 func TestTenantIsolation(t *testing.T) {
 	a := setup(t)
 	b := setup(t)
-	ctx := context.Background()
+	ctx := b.acting()
 
 	p, allocations, events := a.settled(t)
 

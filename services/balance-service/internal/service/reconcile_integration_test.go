@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ppusapati/gavya/libs/integrity/mlclient"
+	"github.com/ppusapati/gavya/libs/integrity/sys"
 	"p9e.in/samavaya/packages/p9log"
 
 	"github.com/ppusapati/gavya/services/balance-service/internal/domain"
@@ -44,7 +45,7 @@ func TestASeriesNodeReconcilesAgainstTheRealReconcilerAndWithoutIt(t *testing.T)
 	defer pool.Close()
 
 	baseURL := startReconciler(t)
-	repo := repository.New(pool)
+	repo := repository.New(pool, sys.IDs{})
 	log := p9log.NewHelper(p9log.DefaultLogger)
 	tenantID := fmt.Sprintf("tnt%d", time.Now().UnixNano())
 

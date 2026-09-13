@@ -29,6 +29,9 @@ import (
 
 	"github.com/ppusapati/gavya/libs/integrity/bitemporal"
 	"github.com/ppusapati/gavya/libs/integrity/origin"
+	"github.com/ppusapati/gavya/libs/integrity/sys"
+	"github.com/ppusapati/gavya/libs/integrity/tenantctx"
+	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
 	"github.com/ppusapati/gavya/services/observation-service/internal/domain"
 )
 
@@ -66,6 +69,20 @@ func newID(prefix string) string {
 	return body + strings.Repeat("0", 26-len(body))
 }
 
+// acting returns a context carrying what a real request carries.
+//
+// These tests called the repository with a bare context.Background(), which
+// worked for as long as nothing on these paths wrote an audit entry — and an
+// audit entry is the one thing that refuses to be written without a tenant and
+// an actor to attribute it to. Nothing ran this suite between the day the
+// entries were added and the day it was wired into check-all, which is why
+// every audited call here failed at once.
+func (f *fixture) acting() context.Context {
+	return tenantctx.WithActor(
+		tenantdb.WithTenant(context.Background(), f.tenantID),
+		tenantctx.Actor{ID: "integration-test"})
+}
+
 type fixture struct {
 	repo     Repository
 	tenantID string
@@ -77,7 +94,7 @@ type fixture struct {
 func setup(t *testing.T) *fixture {
 	t.Helper()
 	return &fixture{
-		repo:     New(pool(t)),
+		repo:     New(pool(t), sys.IDs{}),
 		tenantID: newID("tnt"),
 		subject:  domain.SubjectRef{Kind: domain.SubjectCattle, ID: newID("cow")},
 	}
@@ -105,7 +122,7 @@ func (f *fixture) observation(quantity domain.QuantityKind, value float64, valid
 
 func (f *fixture) record(t *testing.T, quantity domain.QuantityKind, value float64, validFrom time.Time) *domain.Observation {
 	t.Helper()
-	out, err := f.repo.CreateObservation(context.Background(), f.observation(quantity, value, validFrom))
+	out, err := f.repo.CreateObservation(f.acting(), f.observation(quantity, value, validFrom))
 	if err != nil {
 		t.Fatalf("create observation (%s=%v): %v", quantity, value, err)
 	}
@@ -127,7 +144,7 @@ var morning = time.Date(2026, 3, 1, 5, 30, 0, 0, time.UTC)
 
 func TestBitemporalRoundTrip(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	created := f.record(t, domain.QuantityVolumeLitres, 12.375, morning)
 
@@ -166,7 +183,7 @@ func TestBitemporalRoundTrip(t *testing.T) {
 
 func TestEverySubjectKindRoundTrips(t *testing.T) {
 	ctx := context.Background()
-	r := New(pool(t))
+	r := New(pool(t), sys.IDs{})
 	tenantID := newID("tnt")
 
 	for _, kind := range []domain.SubjectKind{
@@ -200,7 +217,7 @@ func TestEverySubjectKindRoundTrips(t *testing.T) {
 // keeps the number a payment may already have been made on.
 func TestCorrectionLeavesBothVersionsReadable(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	original := f.record(t, domain.QuantityVolumeLitres, 12.5, morning)
 
@@ -264,7 +281,7 @@ func TestCorrectionLeavesBothVersionsReadable(t *testing.T) {
 // instant must see the number the platform believed then.
 func TestAsOfQueryReturnsWhatWasKnownThen(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	original := f.record(t, domain.QuantityFatPercent, 4.2, morning)
 
@@ -327,7 +344,7 @@ func TestAsOfQueryReturnsWhatWasKnownThen(t *testing.T) {
 
 func TestValidAtSelectsTheIntervalCoveringTheInstant(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	evening := morning.Add(12 * time.Hour)
 
@@ -424,7 +441,7 @@ func TestSchemaRejectsAnUnknownQuantityKind(t *testing.T) {
 // contradictory answers to the same question.
 func TestOnlyOneLiveVersionPerSubjectQuantityAndInstant(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	first := f.record(t, domain.QuantityVolumeLitres, 12.5, morning)
 
@@ -455,7 +472,7 @@ func TestOnlyOneLiveVersionPerSubjectQuantityAndInstant(t *testing.T) {
 
 func TestSupersedeIsRefusedTwice(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	o := f.record(t, domain.QuantityVolumeLitres, 12.5, morning)
 	if err := f.repo.SupersedeObservation(ctx, f.tenantID, o.ID, newID("obs")); err != nil {
@@ -471,7 +488,7 @@ func TestSupersedeIsRefusedTwice(t *testing.T) {
 
 func TestAttachUncertainty(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	o := f.record(t, domain.QuantityVolumeLitres, 12.5, morning)
 	est := domain.UncertaintyEstimate{
@@ -528,7 +545,7 @@ func TestAttachUncertainty(t *testing.T) {
 // nothing that could be mistaken for a real estimate.
 func TestObservationWithoutAnEstimateIsStillReadable(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	o := f.record(t, domain.QuantityVolumeLitres, 12.5, morning)
 
@@ -549,7 +566,7 @@ func TestObservationWithoutAnEstimateIsStillReadable(t *testing.T) {
 
 func TestAttachAnomalyWithBounds(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	o := f.record(t, domain.QuantityVolumeLitres, 31.0, morning)
 	lower, upper := 8.0, 16.0
@@ -606,7 +623,7 @@ func TestAttachAnomalyWithBounds(t *testing.T) {
 // would read as an infinitely tight band.
 func TestAttachAnomalyWithUnboundedBand(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	o := f.record(t, domain.QuantityVolumeLitres, 12.5, morning)
 	if err := f.repo.AttachAnomaly(ctx, f.tenantID, o.ID, domain.AnomalyAssessment{
@@ -639,7 +656,7 @@ func TestAttachAnomalyWithUnboundedBand(t *testing.T) {
 
 func TestFlaggedQueueHoldsLiveFlagsOnly(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	flagged := f.record(t, domain.QuantityVolumeLitres, 31.0, morning)
 	clean := f.record(t, domain.QuantityFatPercent, 4.1, morning)
@@ -681,7 +698,7 @@ func TestFlaggedQueueHoldsLiveFlagsOnly(t *testing.T) {
 
 func TestCertificateLookupPrefersTheCoveringPeriod(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	instrument, err := f.repo.CreateInstrument(ctx, &domain.Instrument{
 		ID: newID("ins"), TenantID: f.tenantID, Serial: newID("wb"),
@@ -727,7 +744,7 @@ func TestCertificateLookupPrefersTheCoveringPeriod(t *testing.T) {
 // instrument behind what looks like missing paperwork.
 func TestCertificateLookupFallsBackToTheLatestLapsedOne(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	instrument, err := f.repo.CreateInstrument(ctx, &domain.Instrument{
 		ID: newID("ins"), TenantID: f.tenantID, Serial: newID("ma"),
@@ -749,7 +766,7 @@ func TestCertificateLookupFallsBackToTheLatestLapsedOne(t *testing.T) {
 	if got.ID != lapsed.ID {
 		t.Fatalf("lookup returned %s, want the lapsed %s", got.CertificateNumber, lapsed.CertificateNumber)
 	}
-	verdict := domain.AssessEligibility(got, morning, domain.QuantityMassKG)
+	verdict := domain.AssessEligibility(domain.RegimeIndiaLegalMetrology, got, morning, domain.QuantityMassKG)
 	if verdict.Verdict != domain.EligibilityNotEligible {
 		t.Errorf("verdict on a lapsed certificate = %s (%s), want NOT_ELIGIBLE", verdict.Verdict, verdict.Reason)
 	}
@@ -765,7 +782,7 @@ func TestCertificateLookupFallsBackToTheLatestLapsedOne(t *testing.T) {
 	if _, err := f.repo.GetActiveCertificate(ctx, f.tenantID, bare.ID, morning); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("lookup on an uncertificated instrument returned %v, want ErrNotFound", err)
 	}
-	if v := domain.AssessEligibility(nil, morning, domain.QuantityMassKG); v.Verdict != domain.EligibilityUnknown {
+	if v := domain.AssessEligibility(domain.RegimeIndiaLegalMetrology, nil, morning, domain.QuantityMassKG); v.Verdict != domain.EligibilityUnknown {
 		t.Errorf("verdict with no certificate = %s, want UNKNOWN", v.Verdict)
 	}
 }
@@ -774,7 +791,7 @@ func TestCertificateLookupFallsBackToTheLatestLapsedOne(t *testing.T) {
 // makes its verdict UNKNOWN rather than a guess.
 func TestBlankCertificateFieldsSurviveAndYieldUnknown(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	instrument, err := f.repo.CreateInstrument(ctx, &domain.Instrument{
 		ID: newID("ins"), TenantID: f.tenantID, Serial: newID("wb"),
@@ -806,14 +823,14 @@ func TestBlankCertificateFieldsSurviveAndYieldUnknown(t *testing.T) {
 	if got.Origin.Kind != origin.Imported || got.Origin.SourceRecordID != "CERT-ROW-17" {
 		t.Errorf("origin = %+v, want the imported provenance", got.Origin)
 	}
-	if v := domain.AssessEligibility(got, morning, domain.QuantityMassKG); v.Verdict != domain.EligibilityUnknown {
+	if v := domain.AssessEligibility(domain.RegimeIndiaLegalMetrology, got, morning, domain.QuantityMassKG); v.Verdict != domain.EligibilityUnknown {
 		t.Errorf("verdict on a blank certificate = %s (%s), want UNKNOWN", v.Verdict, v.Reason)
 	}
 }
 
 func TestImportedOriginRoundTrips(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	ctx := f.acting()
 
 	imported, err := origin.NewImported(newID("src"), newID("bat"), "ROW-4711", origin.HashPayload([]byte("12.5")))
 	if err != nil {
@@ -879,7 +896,7 @@ func TestSchemaRejectsAHalfPopulatedUncertaintyBudget(t *testing.T) {
 func TestTenantIsolation(t *testing.T) {
 	a := setup(t)
 	b := setup(t)
-	ctx := context.Background()
+	ctx := b.acting()
 
 	o := a.record(t, domain.QuantityVolumeLitres, 12.5, morning)
 	if err := a.repo.AttachAnomaly(ctx, a.tenantID, o.ID, domain.AnomalyAssessment{
@@ -934,7 +951,7 @@ func TestTenantIsolation(t *testing.T) {
 func TestInstrumentTenantIsolation(t *testing.T) {
 	a := setup(t)
 	b := setup(t)
-	ctx := context.Background()
+	ctx := b.acting()
 
 	instrument, err := a.repo.CreateInstrument(ctx, &domain.Instrument{
 		ID: newID("ins"), TenantID: a.tenantID, Serial: newID("wb"),
