@@ -369,6 +369,19 @@ func (r *repo) ResolveConflict(ctx context.Context, tenantID, slotID, authoritat
 	}
 	defer tx.Rollback(ctx)
 
+	// The slot as it stood, under the lock the update will take. The entry
+	// recorded the resolution and nothing about what was resolved: which
+	// reference the slot pointed at before, if any, and that it was in
+	// conflict. A resolution with no before is a decision whose alternative
+	// nobody can see afterwards.
+	var beforeStatus, beforeRef, beforeResolution string
+	if err := tx.QueryRow(ctx,
+		`SELECT status, COALESCE(authoritative_ref,''), COALESCE(resolution,'')
+		   FROM authoritative_collection_slots WHERE tenant_id=$1 AND id=$2 FOR UPDATE`,
+		tenantID, slotID).Scan(&beforeStatus, &beforeRef, &beforeResolution); err != nil {
+		return nil, err
+	}
+
 	const q = `UPDATE authoritative_collection_slots
 		SET authoritative_ref=$3, status='SETTLED', resolution=$4,
 		    resolved_at=NOW(), resolved_by=$5, updated_at=NOW(), updated_by=$5
@@ -381,7 +394,13 @@ func (r *repo) ResolveConflict(ctx context.Context, tenantID, slotID, authoritat
 
 	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
 		Action: "resolve_slot_conflict", ResourceType: "collection_slot", ResourceID: slotID,
+		Before: map[string]any{
+			"status":            beforeStatus,
+			"authoritative_ref": beforeRef,
+			"resolution":        beforeResolution,
+		},
 		After: map[string]any{
+			"status":            "SETTLED",
 			"authoritative_ref": authoritativeRef,
 			"resolution":        resolution,
 			"slot_key":          slot.SlotKey,

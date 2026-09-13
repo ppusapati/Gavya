@@ -7,6 +7,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ppusapati/gavya/libs/integrity/audit"
+	"github.com/ppusapati/gavya/libs/integrity/sys"
+
 	"github.com/ppusapati/gavya/services/reporting-service/internal/domain"
 )
 
@@ -39,10 +42,14 @@ type Repository interface {
 
 type repo struct {
 	pool *pgxpool.Pool
+	ids  audit.IDs
 }
 
+// serviceName is what this service's audit entries are attributed to.
+const serviceName = "reporting-service"
+
 func New(pool *pgxpool.Pool) Repository {
-	return &repo{pool: pool}
+	return &repo{pool: pool, ids: sys.IDs{}}
 }
 
 type scanner interface {
@@ -140,12 +147,37 @@ func (r *repo) UpdateScheduleActive(ctx context.Context, id, tenantID string, is
 	return scanSchedule(row)
 }
 
+// SoftDeleteSchedule removes a schedule and records what it was.
+//
+// A schedule that stops producing a report is noticed weeks later, when the
+// report is missed. The trail has to say what the schedule was — which report,
+// how often — because by then the row says only that something was deleted.
 func (r *repo) SoftDeleteSchedule(ctx context.Context, id, tenantID, updatedBy string) error {
-	_, err := r.pool.Exec(ctx,
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	before, err := scanSchedule(tx.QueryRow(ctx,
+		`SELECT `+scheduleCols+` FROM report_schedules WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL FOR UPDATE`,
+		id, tenantID))
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx,
 		`UPDATE report_schedules SET deleted_at=NOW(),updated_by=$3,updated_at=NOW() WHERE id=$1 AND tenant_id=$2`,
-		id, tenantID, updatedBy,
-	)
-	return err
+		id, tenantID, updatedBy); err != nil {
+		return err
+	}
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "delete_report_schedule", ResourceType: "report_schedule", ResourceID: id,
+		Before:      before,
+		ServiceName: serviceName,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func scanReport(s scanner) (*domain.Report, error) {

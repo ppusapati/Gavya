@@ -8,6 +8,9 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ppusapati/gavya/libs/integrity/audit"
+	"github.com/ppusapati/gavya/libs/integrity/sys"
+
 	"github.com/ppusapati/gavya/services/farm-service/internal/domain"
 )
 
@@ -43,10 +46,14 @@ type Repository interface {
 
 type repo struct {
 	pool *pgxpool.Pool
+	ids  audit.IDs
 }
 
+// serviceName is what this service's audit entries are attributed to.
+const serviceName = "farm-service"
+
 func New(pool *pgxpool.Pool) Repository {
-	return &repo{pool: pool}
+	return &repo{pool: pool, ids: sys.IDs{}}
 }
 
 type scanner interface {
@@ -95,22 +102,57 @@ func (r *repo) ListFarms(ctx context.Context, tenantID string) ([]*domain.Farm, 
 	return result, rows.Err()
 }
 
+// UpdateFarm rewrites a farm's record and keeps what it said before.
+//
+// A farm's manager and status decide who is answerable for the animals on it.
+// The row afterwards named the last person to touch it and nothing said what
+// it had been.
 func (r *repo) UpdateFarm(ctx context.Context, f *domain.Farm) (*domain.Farm, error) {
-	row := r.pool.QueryRow(ctx,
+	return r.recordedFarmUpdate(ctx, f.ID, f.TenantID, "update_farm",
 		`UPDATE farms SET name=$3,address=$4,city=$5,state=$6,country=$7,manager_id=$8,status=$9,updated_by=$10,updated_at=NOW()
 		 WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL RETURNING `+farmCols,
-		f.ID, f.TenantID, f.Name, f.Address, f.City, f.State, f.Country,
-		f.ManagerID, f.Status, f.UpdatedBy,
-	)
-	return scanFarm(row)
+		[]any{f.ID, f.TenantID, f.Name, f.Address, f.City, f.State, f.Country,
+			f.ManagerID, f.Status, f.UpdatedBy})
 }
 
+// UpdateFarmCapacity changes how many animals a farm may hold.
 func (r *repo) UpdateFarmCapacity(ctx context.Context, id, tenantID string, capacity int, updatedBy string) (*domain.Farm, error) {
-	row := r.pool.QueryRow(ctx,
-		`UPDATE farms SET capacity=$3,updated_by=$4,updated_at=NOW() WHERE id=$1 AND tenant_id=$2 RETURNING `+farmCols,
-		id, tenantID, capacity, updatedBy,
-	)
-	return scanFarm(row)
+	return r.recordedFarmUpdate(ctx, id, tenantID, "update_farm_capacity",
+		`UPDATE farms SET capacity=$3,updated_by=$4,updated_at=NOW() WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL RETURNING `+farmCols,
+		[]any{id, tenantID, capacity, updatedBy})
+}
+
+// recordedFarmUpdate applies an update and records the whole row either side.
+//
+// The before is read under the lock the update will take; both are written in
+// the transaction that makes the change, so a trail that cannot be written
+// takes the change down with it rather than leaving one without the other.
+func (r *repo) recordedFarmUpdate(ctx context.Context, id, tenantID, action, query string, args []any) (*domain.Farm, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	before, err := scanFarm(tx.QueryRow(ctx,
+		`SELECT `+farmCols+` FROM farms WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL FOR UPDATE`, id, tenantID))
+	if err != nil {
+		return nil, err
+	}
+	after, err := scanFarm(tx.QueryRow(ctx, query, args...))
+	if err != nil {
+		return nil, err
+	}
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: action, ResourceType: "farm", ResourceID: id,
+		Before: before, After: after, ServiceName: serviceName,
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return after, nil
 }
 
 func (r *repo) CreateFarmSection(ctx context.Context, s *domain.FarmSection) (*domain.FarmSection, error) {

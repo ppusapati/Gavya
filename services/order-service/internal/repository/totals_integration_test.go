@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -15,6 +16,8 @@ import (
 
 	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/libs/integrity/money"
+	"github.com/ppusapati/gavya/libs/integrity/tenantctx"
+	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
 	"github.com/ppusapati/gavya/services/order-service/internal/domain"
 )
 
@@ -62,12 +65,23 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 
-	schema, err := os.ReadFile(filepath.Join("..", "db", "schema.sql"))
-	if err != nil {
-		t.Fatalf("read schema: %v", err)
-	}
-	if _, err := pool.Exec(ctx, string(schema)); err != nil {
-		t.Fatalf("apply schema: %v", err)
+	// This service's own schema, and the audit schema beside it: audit_logs
+	// lives in audit-service's schema and deployment applies it to every
+	// service's database. The moment this repository started recording what it
+	// overwrote, a harness that applied only the first failed on a missing
+	// table — less faithful than production in exactly the place the change
+	// was made.
+	for _, path := range []string{
+		filepath.Join("..", "db", "schema.sql"),
+		filepath.Join("..", "..", "..", "audit-service", "internal", "db", "schema.sql"),
+	} {
+		schema, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if _, err := pool.Exec(ctx, string(schema)); err != nil {
+			t.Fatalf("apply %s: %v", path, err)
+		}
 	}
 	return pool
 }
@@ -87,6 +101,20 @@ const taxRate = "18.000"
 
 // INR at two decimals, unless a test says otherwise.
 var rupees = Money{Code: "INR", Scale: 2}
+
+// acting returns a context carrying what a real request carries.
+//
+// These tests called the repository with a bare context.Background(), which
+// worked for as long as nothing on this path wrote an audit entry — and an audit
+// entry is the one thing that refuses to be written without a tenant and an actor
+// to attribute it to. A repository test that acts as nobody is testing the path a
+// gateway never produces.
+func (f *fixture) acting() context.Context {
+	return tenantctx.WithActor(
+		tenantdb.WithTenant(context.Background(), f.tenant),
+		tenantctx.Actor{ID: "US_TEST_00000000000000000"},
+	)
+}
 
 type fixture struct {
 	repo    Repository
@@ -138,7 +166,7 @@ func (f *fixture) addAt(t *testing.T, quantity, unitPrice float64, rate string) 
 		t.Fatalf("unit price %v: %v", unitPrice, err)
 	}
 	actor := newTestID("usr")
-	return f.repo.AddItemAndRetotal(context.Background(), &domain.OrderItem{
+	return f.repo.AddItemAndRetotal(f.acting(), &domain.OrderItem{
 		ID:        newTestID("itm"),
 		TenantID:  f.tenant,
 		OrderID:   f.order,
@@ -325,7 +353,7 @@ func TestAFailedLineLeavesTheOrderUntouched(t *testing.T) {
 
 	// A duplicate id cannot be inserted, so the whole transaction must roll back.
 	actor := newTestID("usr")
-	_, err = f.repo.AddItemAndRetotal(context.Background(), &domain.OrderItem{
+	_, err = f.repo.AddItemAndRetotal(f.acting(), &domain.OrderItem{
 		ID:        first.Item.ID,
 		TenantID:  f.tenant,
 		OrderID:   f.order,
@@ -425,5 +453,43 @@ func TestTaxInclusiveOrdersExtractRatherThanAdd(t *testing.T) {
 	}
 	if out.Order.SubTotal.String() != "100.00" {
 		t.Errorf("net = %s, want 100.00", out.Order.SubTotal)
+	}
+}
+
+// Adding a line is recorded with the totals it overwrote, in the same transaction.
+//
+// Present is not the same as tested: a before-image written to the wrong place,
+// or written empty, or written in a separate transaction that commits when the
+// change does not, reads exactly like one that works. This reads the trail back
+// out of audit_logs after the change and requires the old totals to be there and
+// to differ from the new.
+func TestAddingALineRecordsTheTotalsItOverwrote(t *testing.T) {
+	f := newFixture(t)
+	pool := testPool(t)
+
+	if _, err := f.addAt(t, 2, 10.50, "5"); err != nil {
+		t.Fatalf("add a line: %v", err)
+	}
+
+	var entries int
+	var oldValue, newValue *string
+	if err := pool.QueryRow(context.Background(), `
+		SELECT count(*), max(old_value::text), max(new_value::text)
+		  FROM audit_logs
+		 WHERE tenant_id = $1 AND action = 'add_order_item' AND resource_id = $2`,
+		f.tenant, f.order).Scan(&entries, &oldValue, &newValue); err != nil {
+		t.Fatalf("read the trail: %v", err)
+	}
+	if entries == 0 {
+		t.Fatal("the line committed and no audit entry was written for it")
+	}
+	if oldValue == nil || *oldValue == "" || *oldValue == "null" {
+		t.Fatal("the entry records what the order became and nothing about what it was")
+	}
+	if !strings.Contains(*oldValue, `"total_amount"`) {
+		t.Errorf("the before-image does not carry the total: %s", *oldValue)
+	}
+	if newValue == nil || *newValue == *oldValue {
+		t.Errorf("old and new totals are identical (%v), so the entry records no change", oldValue)
 	}
 }

@@ -105,18 +105,56 @@ LIMIT $3 OFFSET $4`
 	return result, rows.Err()
 }
 
+// UpdateCattle changes an animal's status and weight and records what they were.
+//
+// The core entity of the herd, edited in place with no before-image: an animal
+// marked sold or dead, a weight restated, and the row afterwards said only who
+// had last touched it. A dispute over which animal was sold, or what it weighed
+// when it was, had nothing to check against.
 func (r *repo) UpdateCattle(ctx context.Context, c *domain.Cattle) (*domain.Cattle, error) {
-	const q = `
-UPDATE cattle
-SET status = $3, weight = $4, updated_by = $5, updated_at = NOW()
-WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
-RETURNING id, tenant_id, tag_number, COALESCE(name,''), COALESCE(breed_id,''),
+	const cols = `id, tenant_id, tag_number, COALESCE(name,''), COALESCE(breed_id,''),
           date_of_birth, gender, status, weight, COALESCE(color,''),
           COALESCE(owner_id,''), COALESCE(farm_id,''),
           created_at, updated_at, created_by, updated_by, deleted_at`
 
-	row := r.db.QueryRow(ctx, q, c.ID, c.TenantID, c.Status, c.Weight, c.UpdatedBy)
-	return scanCattle(row)
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	before, err := scanCattle(tx.QueryRow(ctx,
+		`SELECT `+cols+` FROM cattle WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL FOR UPDATE`,
+		c.ID, c.TenantID))
+	if err != nil {
+		return nil, err
+	}
+
+	after, err := scanCattle(tx.QueryRow(ctx, `
+UPDATE cattle
+SET status = $3, weight = $4, updated_by = $5, updated_at = NOW()
+WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+RETURNING `+cols, c.ID, c.TenantID, c.Status, c.Weight, c.UpdatedBy))
+	if err != nil {
+		return nil, err
+	}
+
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "update_cattle", ResourceType: "cattle", ResourceID: c.ID,
+		Before: map[string]any{
+			"tag_number": before.TagNumber, "status": before.Status, "weight": before.Weight,
+		},
+		After: map[string]any{
+			"tag_number": after.TagNumber, "status": after.Status, "weight": after.Weight,
+		},
+		ServiceName: serviceName,
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return after, nil
 }
 
 // SoftDeleteCattle marks an animal deleted and records who did it.

@@ -7,6 +7,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ppusapati/gavya/libs/integrity/audit"
+	"github.com/ppusapati/gavya/libs/integrity/sys"
+
 	"github.com/ppusapati/gavya/services/file-service/internal/domain"
 )
 
@@ -31,10 +34,14 @@ type Repository interface {
 
 type repo struct {
 	pool *pgxpool.Pool
+	ids  audit.IDs
 }
 
+// serviceName is what this service's audit entries are attributed to.
+const serviceName = "file-service"
+
 func New(pool *pgxpool.Pool) Repository {
-	return &repo{pool: pool}
+	return &repo{pool: pool, ids: sys.IDs{}}
 }
 
 type scanner interface {
@@ -80,12 +87,43 @@ func (r *repo) ListEntityFiles(ctx context.Context, tenantID, entityType, entity
 	return result, rows.Err()
 }
 
+// SoftDeleteFile marks a file deleted and records what was deleted.
+//
+// A deletion has no after; what the trail needs is the before — which file,
+// attached to what, stored where — so that "who deleted the vet's certificate
+// for this animal" has an answer. The row kept deleted_at and the last
+// updated_by, which says when and by whom and nothing about what.
 func (r *repo) SoftDeleteFile(ctx context.Context, id, tenantID, updatedBy string) error {
-	_, err := r.pool.Exec(ctx,
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	before, err := scanFileRecord(tx.QueryRow(ctx,
+		`SELECT `+fileRecordCols+` FROM file_records WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL FOR UPDATE`,
+		id, tenantID))
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx,
 		`UPDATE file_records SET deleted_at=NOW(),updated_by=$3,updated_at=NOW() WHERE id=$1 AND tenant_id=$2`,
-		id, tenantID, updatedBy,
-	)
-	return err
+		id, tenantID, updatedBy); err != nil {
+		return err
+	}
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "delete_file", ResourceType: "file", ResourceID: id,
+		Before: map[string]any{
+			"original_name": before.OriginalName, "content_type": before.ContentType,
+			"size_bytes": before.SizeBytes, "storage_path": before.StoragePath,
+			"entity_type": before.EntityType, "entity_id": before.EntityID,
+			"uploaded_by": before.UploadedBy,
+		},
+		ServiceName: serviceName,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func scanFileRecord(s scanner) (*domain.FileRecord, error) {

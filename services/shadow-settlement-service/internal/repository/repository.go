@@ -274,6 +274,18 @@ func (r *repo) ResolveDivergence(ctx context.Context, id, tenantID string, statu
 	}
 	defer tx.Rollback(ctx)
 
+	// The divergence as it stood, under the lock the update will take. This is
+	// somebody deciding which of two figures for a producer's fortnight is
+	// right, and the entry said what they decided and nothing about what the
+	// row said before — including whether it had already been decided once.
+	var beforeStatus, beforeResolution string
+	if err := tx.QueryRow(ctx,
+		`SELECT status, COALESCE(resolution,'') FROM settlement_divergences
+		  WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL FOR UPDATE`,
+		id, tenantID).Scan(&beforeStatus, &beforeResolution); err != nil {
+		return nil, err
+	}
+
 	const q = `UPDATE settlement_divergences
 		SET status=$3, resolution=$4, resolved_at=NOW(), resolved_by=$5,
 		    updated_at=NOW(), updated_by=$5
@@ -287,6 +299,7 @@ func (r *repo) ResolveDivergence(ctx context.Context, id, tenantID string, statu
 	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
 		Action: "resolve_settlement_divergence", ResourceType: "settlement_divergence",
 		ResourceID: id,
+		Before:     map[string]any{"status": beforeStatus, "resolution": beforeResolution},
 		After: map[string]any{
 			"status":            string(status),
 			"resolution":        resolution,

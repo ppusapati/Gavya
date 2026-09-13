@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ppusapati/gavya/libs/integrity/audit"
 	"github.com/ppusapati/gavya/libs/integrity/currency"
 	"github.com/ppusapati/gavya/libs/integrity/money"
 
@@ -163,19 +164,53 @@ LIMIT $2 OFFSET $3`
 	return result, rows.Err()
 }
 
+// UpdateListingStatus moves a listing between states and records what it was.
+//
+// Withdrawing or closing a listing is a seller's decision about an animal
+// somebody may have bid on. The row afterwards named the last person to touch
+// it and nothing said what state it had been in.
 func (r *repo) UpdateListingStatus(ctx context.Context, id, tenantID, status, updatedBy string) (*domain.CattleListing, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	// The before-read is where a row that is not this tenant's is found out, so
+	// it has to answer the way the update used to: not found, not "no rows".
+	// TestOneTenantCannotChangeAnothersBid is what noticed the difference.
+	var was string
+	if err := tx.QueryRow(ctx,
+		`SELECT status FROM cattle_listings WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL FOR UPDATE`,
+		id, tenantID).Scan(&was); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
 	const q = `
 UPDATE cattle_listings
 SET status = $3, updated_by = $4, updated_at = NOW()
 WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
 RETURNING id, tenant_id, cattle_id, seller_id, title, description, asking_price, currency,
           listing_type, status, expires_at, created_at, updated_at, created_by, updated_by, deleted_at`
-
-	row := r.db.QueryRow(ctx, q, id, tenantID, status, updatedBy)
-	return scanListing(row)
+	listing, err := scanListing(tx.QueryRow(ctx, q, id, tenantID, status, updatedBy))
+	if err != nil {
+		return nil, err
+	}
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "update_listing_status", ResourceType: "cattle_listing", ResourceID: id,
+		Before:      map[string]any{"status": was},
+		After:       map[string]any{"status": status},
+		ServiceName: serviceName,
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return listing, nil
 }
-
-// ─── CattleBid ────────────────────────────────────────────────────────────────
 
 func (r *repo) CreateBid(ctx context.Context, b *domain.CattleBid) (*domain.CattleBid, error) {
 	const q = `
@@ -217,19 +252,53 @@ ORDER BY bid_amount DESC`
 	return result, rows.Err()
 }
 
+// UpdateBidStatus accepts or rejects a bid and records what it was.
+//
+// A bid accepted is money agreed; a bid rejected is somebody's offer refused.
+// Both are decisions a buyer or seller may dispute, and the row recorded only
+// its final state.
 func (r *repo) UpdateBidStatus(ctx context.Context, id, tenantID, status, updatedBy string) (*domain.CattleBid, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	// The before-read is where a row that is not this tenant's is found out, so
+	// it has to answer the way the update used to: not found, not "no rows".
+	// TestOneTenantCannotChangeAnothersBid is what noticed the difference.
+	var was string
+	if err := tx.QueryRow(ctx,
+		`SELECT status FROM cattle_bids WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL FOR UPDATE`,
+		id, tenantID).Scan(&was); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
 	const q = `
 UPDATE cattle_bids
 SET status = $3, updated_by = $4, updated_at = NOW()
 WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
 RETURNING id, tenant_id, listing_id, bidder_id, bid_amount, currency, status, message,
           created_at, updated_at, created_by, updated_by, deleted_at`
-
-	row := r.db.QueryRow(ctx, q, id, tenantID, status, updatedBy)
-	return scanBid(row)
+	bid, err := scanBid(tx.QueryRow(ctx, q, id, tenantID, status, updatedBy))
+	if err != nil {
+		return nil, err
+	}
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "update_bid_status", ResourceType: "cattle_bid", ResourceID: id,
+		Before:      map[string]any{"status": was},
+		After:       map[string]any{"status": status},
+		ServiceName: serviceName,
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return bid, nil
 }
-
-// ─── CattleSale ───────────────────────────────────────────────────────────────
 
 func (r *repo) CreateSale(ctx context.Context, s *domain.CattleSale) (*domain.CattleSale, error) {
 	const q = `

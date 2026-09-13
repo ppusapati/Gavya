@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ppusapati/gavya/libs/integrity/audit"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -91,6 +92,19 @@ func (r *repo) ApplyStockMovement(ctx context.Context, m *domain.StockMovement, 
 		return nil, fmt.Errorf("unknown movement type %q", m.MovementType)
 	}
 
+	// The shelf's count as a decimal literal, before and after, read as text so
+	// the trail carries the figure the column holds rather than the float the
+	// domain type still reads it into. Stock is counted in a stocktake against
+	// what the platform said it was; a trail of floats is a trail somebody can
+	// dispute on the third decimal.
+	var onHandBefore string
+	if err := tx.QueryRow(ctx,
+		`SELECT quantity_on_hand::text FROM inventory_items
+		  WHERE tenant_id=$1 AND warehouse_id=$2 AND sku_id=$3`,
+		m.TenantID, m.WarehouseID, m.SKUID).Scan(&onHandBefore); err != nil {
+		return nil, fmt.Errorf("read stock before the movement: %w", err)
+	}
+
 	item, err := scanInventoryItem(tx.QueryRow(ctx,
 		`UPDATE inventory_items
 		 SET quantity_on_hand = `+set+`, last_updated_at=NOW(), updated_at=NOW(), updated_by=$5
@@ -116,6 +130,28 @@ func (r *repo) ApplyStockMovement(ctx context.Context, m *domain.StockMovement, 
 		m.ReferenceID, m.ReferenceType, m.Notes, m.MovedAt, m.MovedBy, m.CreatedBy, m.UpdatedBy))
 	if err != nil {
 		return nil, fmt.Errorf("record movement: %w", err)
+	}
+
+	var onHandAfter string
+	if err := tx.QueryRow(ctx,
+		`SELECT quantity_on_hand::text FROM inventory_items
+		  WHERE tenant_id=$1 AND warehouse_id=$2 AND sku_id=$3`,
+		m.TenantID, m.WarehouseID, m.SKUID).Scan(&onHandAfter); err != nil {
+		return nil, fmt.Errorf("read stock after the movement: %w", err)
+	}
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "apply_stock_movement", ResourceType: "inventory_item", ResourceID: item.ID,
+		Before: map[string]any{"quantity_on_hand": onHandBefore},
+		After: map[string]any{
+			"quantity_on_hand": onHandAfter,
+			"movement_type":    string(m.MovementType),
+			"quantity":         quantity,
+			"warehouse_id":     m.WarehouseID,
+			"sku_id":           m.SKUID,
+		},
+		ServiceName: serviceName,
+	}); err != nil {
+		return nil, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {

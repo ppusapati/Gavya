@@ -91,10 +91,17 @@ func TestEveryUpdateRecordsWhatItOverwrote(t *testing.T) {
 		unrecorded = append(unrecorded, key+" ("+u.tables+") "+what)
 	}
 
-	for key := range noBeforeImage {
+	for key, reason := range noBeforeImage {
 		if !seen[key] {
 			staleExemption = append(staleExemption,
 				key+" is exempted and no longer exists")
+		}
+		// An exemption is a reason. "OPEN" was how this list carried the ones
+		// with no reason yet, and it worked — sixteen were closed — so it is now
+		// refused: a gap goes in the code or in a real reason, not in a list.
+		if strings.HasPrefix(strings.TrimSpace(reason), "OPEN") {
+			staleExemption = append(staleExemption,
+				key+" is marked OPEN, which is a to-do and not a reason")
 		}
 	}
 
@@ -133,9 +140,12 @@ func TestEveryUpdateRecordsWhatItOverwrote(t *testing.T) {
 //     writes machine state nobody disputes. A before-image of null is noise.
 //   - "recorded elsewhere" — the change is written to a table of its own that
 //     keeps both states, so an audit entry would be a second copy.
-//   - "OPEN" — it should have one and does not. These are not exemptions, they
-//     are a list. Written down so they are countable rather than invisible,
-//     which is the state all seventy were in.
+//
+// There is no "OPEN" kind any more. There was: twenty-one updates that should
+// have had a before-image and did not, listed so they were countable rather than
+// invisible. Fourteen now record one and the rest were read and given a reason,
+// and the test below refuses an entry whose reason begins with OPEN, so the list
+// cannot quietly become a to-do list again.
 var noBeforeImage = map[string]string{
 	// Nothing to record.
 	"ingestion-service.advanceSession":           "machine state: a capture session moving through its own lifecycle, driven by the device rather than by a person",
@@ -163,28 +173,20 @@ var noBeforeImage = map[string]string{
 	"breeding-service.ConfirmPregnancyForCycle":       "fills in a field that was empty, as above",
 	"breeding-service.RecordCalvingAndClosePregnancy": "fills in a field that was empty, as above",
 
-	// OPEN. These should record what they overwrote and do not.
-	"cattle-service.UpdateCattle":                   "OPEN: the core ERP entity, edited in place with no before-image",
-	"farm-service.UpdateFarm":                       "OPEN",
-	"farm-service.UpdateFarmCapacity":               "OPEN",
-	"milk-service.UpdateSessionStatus":              "OPEN",
-	"inventory-service.ApplyStockMovement":          "OPEN: stock levels move with no record of what they were",
-	"order-service.AddItemAndRetotal":               "OPEN: changes an order's money",
-	"pooling-service.SetPoolStatus":                 "OPEN",
-	"identity-service.RevokeSession":                "OPEN: a session ended by somebody, with no record of whose",
-	"identity-service.RevokeSessionsFor":            "OPEN, as above",
-	"file-service.SoftDeleteFile":                   "OPEN: low value, listed rather than argued about",
-	"notification-service.MarkNotificationRead":     "OPEN: low value",
-	"notification-service.MarkAllNotificationsRead": "OPEN: low value",
-	"notification-service.UpdateNotificationStatus": "OPEN: low value",
-	"reporting-service.UpdateReportStatus":          "OPEN: low value",
-	"reporting-service.UpdateScheduleActive":        "OPEN: low value",
-	"reporting-service.SoftDeleteSchedule":          "OPEN: low value",
-	"balance-service.AcceptRun":                     "OPEN: accepting a reconciliation run is a decision about whether the milk balances, and it records what it became and not what it was",
-	"canonical-service.ResolveConflict":             "OPEN: records the resolution and not the state of the slot before it",
-	"shadow-settlement-service.ResolveDivergence":   "OPEN: records the resolution and not the divergence as it stood",
-	"cattle-market-service.UpdateBidStatus":         "OPEN",
-	"cattle-market-service.UpdateListingStatus":     "OPEN",
+	// Decided not to record, on reading each one.
+	//
+	// These were the twenty-one "OPEN" entries — updates that should have had a
+	// before-image and did not. Fourteen now record one. These five were read
+	// and found not to be a decision anybody would ask about afterwards, and
+	// two more were found to be a consequence of a decision that is already
+	// recorded with its before-image.
+	"notification-service.MarkNotificationRead":     "a reader marking their own mail read; the before is unread by definition and nobody asks who read a notification",
+	"notification-service.MarkAllNotificationsRead": "as above, for all of one recipient's mail at once",
+	"notification-service.UpdateNotificationStatus": "the inbox's own bookkeeping of a message's state, not a change to anything the message is about",
+	"reporting-service.UpdateReportStatus":          "machine state: a report job moving queued → running → done, driven by the worker rather than by a person",
+	"reporting-service.UpdateScheduleActive":        "a boolean toggle whose before is the negation of its after, so the after alone is the whole record",
+	"identity-service.RevokeSession":                "the row keeps revoked_at and revoked_reason and names its own user; this runs on the sign-out path, where an audit write refused for want of an actor would stop a person signing out — a worse failure than the gap",
+	"identity-service.RevokeSessionsFor":            "a consequence of a suspension or a password change, each of which is recorded with its before-image; the rows keep when and why",
 }
 
 // spreadThroughHelpers marks an update as audited when a function it calls does

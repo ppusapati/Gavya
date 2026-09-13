@@ -109,11 +109,42 @@ func (r *repo) ListPools(ctx context.Context, tenantID string, from, to time.Tim
 	return out, rows.Err()
 }
 
+// SetPoolStatus moves a pool between states and records what it was.
+//
+// A pool closed is a period's milk fixed for valuation; a pool reopened is a
+// valuation somebody may have already paid on being reconsidered. The row
+// recorded only where it ended up.
 func (r *repo) SetPoolStatus(ctx context.Context, tenantID, id string, status domain.PoolStatus, actor string) (*domain.Pool, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	var was string
+	if err := tx.QueryRow(ctx,
+		`SELECT status FROM pools WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, tenantID, id).Scan(&was); err != nil {
+		return nil, err
+	}
 	const q = `UPDATE pools SET status=$3, updated_at=NOW(), updated_by=$4
 		WHERE tenant_id=$1 AND id=$2
 		RETURNING ` + poolCols
-	return scanPool(r.db.QueryRow(ctx, q, tenantID, id, string(status), actor))
+	pool, err := scanPool(tx.QueryRow(ctx, q, tenantID, id, string(status), actor))
+	if err != nil {
+		return nil, err
+	}
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "set_pool_status", ResourceType: "pool", ResourceID: id,
+		Before:      map[string]any{"status": was},
+		After:       map[string]any{"status": string(status)},
+		ServiceName: serviceName,
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return pool, nil
 }
 
 // Quantities cross the boundary as decimal literals at three decimals. The

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ppusapati/gavya/libs/integrity/audit"
 
 	"github.com/jackc/pgx/v5"
 
@@ -53,6 +54,22 @@ type ItemOutcome struct {
 //
 // quantity, unitPrice and taxRate are decimal literals, so what the caller asked
 // for is what the database multiplies.
+// orderTotals is what an audit entry records about an order: the figures and
+// the status, as decimal literals, and not the whole row. A reader asking what
+// changed about the money should not have to find three fields among twenty.
+func orderTotals(o *domain.Order) map[string]any {
+	if o == nil {
+		return nil
+	}
+	return map[string]any{
+		"status":       o.Status,
+		"sub_total":    o.SubTotal.String(),
+		"tax_amount":   o.TaxAmount.String(),
+		"total_amount": o.TotalAmount.String(),
+		"currency":     o.TotalAmount.Currency,
+	}
+}
+
 func (r *repo) AddItemAndRetotal(ctx context.Context, item *domain.OrderItem, quantity, unitPrice, taxRate string, money Money) (*ItemOutcome, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -62,20 +79,24 @@ func (r *repo) AddItemAndRetotal(ctx context.Context, item *domain.OrderItem, qu
 
 	// FOR UPDATE holds the order for the rest of the transaction, so its status
 	// cannot change between being checked and being relied on.
-	var status string
-	var taxInclusive bool
-	if err := tx.QueryRow(ctx,
-		`SELECT status, tax_inclusive FROM orders
+	// The whole order, not just the two fields this needs, because it is also
+	// the before-image. Adding a line changes what a customer owes, and the row
+	// afterwards said who had last touched it and nothing said what the totals
+	// had been.
+	before, err := scanOrder(tx.QueryRow(ctx,
+		`SELECT `+orderCols+` FROM orders
 		 WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL FOR UPDATE`,
-		item.OrderID, item.TenantID).Scan(&status, &taxInclusive); err != nil {
+		item.OrderID, item.TenantID))
+	if err != nil {
 		if isNoRows(err) {
 			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("lock order: %w", err)
 	}
-	if status != domain.OrderDraft {
-		return nil, fmt.Errorf("%w: this one is %s", ErrNotDraft, status)
+	if before.Status != domain.OrderDraft {
+		return nil, fmt.Errorf("%w: this one is %s", ErrNotDraft, before.Status)
 	}
+	taxInclusive := before.TaxInclusive
 	if err := pinCurrency(ctx, tx, item.TenantID, money.Code, money.Scale); err != nil {
 		return nil, err
 	}
@@ -120,6 +141,15 @@ func (r *repo) AddItemAndRetotal(ctx context.Context, item *domain.OrderItem, qu
 		item.OrderID, item.TenantID, taxInclusive, money.Scale, item.UpdatedBy))
 	if err != nil {
 		return nil, fmt.Errorf("retotal order: %w", err)
+	}
+
+	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
+		Action: "add_order_item", ResourceType: "order", ResourceID: item.OrderID,
+		Before:      orderTotals(before),
+		After:       orderTotals(order),
+		ServiceName: serviceName,
+	}); err != nil {
+		return nil, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {

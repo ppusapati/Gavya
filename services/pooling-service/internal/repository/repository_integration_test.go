@@ -29,6 +29,8 @@ import (
 
 	"github.com/ppusapati/gavya/libs/integrity/money"
 	"github.com/ppusapati/gavya/libs/integrity/origin"
+	"github.com/ppusapati/gavya/libs/integrity/tenantctx"
+	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
 	"github.com/ppusapati/gavya/services/pooling-service/internal/domain"
 )
 
@@ -702,7 +704,12 @@ func (f *fixture) policy(name string, mode domain.RetroactivityMode, lookback in
 
 func TestSetPoolStatusMovesThePoolThroughItsLifecycle(t *testing.T) {
 	f := setup(t)
-	ctx := context.Background()
+	// SetPoolStatus now records what the status was, and an audit entry refuses
+	// to be written without a tenant and an actor to attribute it to. A bare
+	// context here is the path a gateway never produces.
+	ctx := tenantctx.WithActor(
+		tenantdb.WithTenant(context.Background(), f.tenantID),
+		tenantctx.Actor{ID: "integration-test"})
 	p := f.pool(t)
 
 	if p.Status != domain.PoolOpen {

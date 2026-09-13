@@ -8,6 +8,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/ppusapati/gavya/libs/integrity/audit"
+	"github.com/ppusapati/gavya/libs/integrity/sys"
 	"github.com/ppusapati/gavya/services/inventory-service/internal/domain"
 )
 
@@ -52,10 +55,14 @@ type Repository interface {
 
 type repo struct {
 	pool *pgxpool.Pool
+	ids  audit.IDs
 }
 
+// serviceName is what this service's audit entries are attributed to.
+const serviceName = "inventory-service"
+
 func New(pool *pgxpool.Pool) Repository {
-	return &repo{pool: pool}
+	return &repo{pool: pool, ids: sys.IDs{}}
 }
 
 type scanner interface {

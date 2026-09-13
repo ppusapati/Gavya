@@ -248,6 +248,27 @@ func (r *repo) AcceptRun(ctx context.Context, tenantID, runID, actor string) (*d
 	}
 	defer tx.Rollback(ctx)
 
+	// What is about to be overwritten, under locks. The window's status is the
+	// thing accepting a run changes — OPEN to ACCEPTED — and the entry recorded
+	// the residuals of the run and nothing about the window: a reader could see
+	// what was accepted and not that a window was open until this.
+	var windowID string
+	var wasAccepted bool
+	if err := tx.QueryRow(ctx,
+		`SELECT window_id, accepted_at IS NOT NULL FROM reconciliation_runs
+		  WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, tenantID, runID).Scan(&windowID, &wasAccepted); err != nil {
+		if isNoRowsErr(err) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	var windowStatus string
+	if err := tx.QueryRow(ctx,
+		`SELECT status FROM balance_windows WHERE tenant_id=$1 AND id=$2 FOR UPDATE`,
+		tenantID, windowID).Scan(&windowStatus); err != nil {
+		return nil, fmt.Errorf("lock window: %w", err)
+	}
+
 	const accept = `UPDATE reconciliation_runs
 		SET accepted_at=NOW(), accepted_by=$3
 		WHERE tenant_id=$1 AND id=$2 AND accepted_at IS NULL
@@ -276,6 +297,8 @@ func (r *repo) AcceptRun(ctx context.Context, tenantID, runID, actor string) (*d
 	// entry saying only that a window was accepted answers nothing about what was
 	// accepted, and the figure is the whole question a loss enquiry asks.
 	after := map[string]any{
+		"window_status":   "ACCEPTED",
+		"run_accepted":    true,
 		"window_id":       run.WindowID,
 		"converged":       run.Converged,
 		"residual_before": run.ResidualBefore,
@@ -293,7 +316,9 @@ func (r *repo) AcceptRun(ctx context.Context, tenantID, runID, actor string) (*d
 	}
 	if err := audit.Write(ctx, tx, r.ids, audit.Entry{
 		Action: "accept_reconciliation_run", ResourceType: "balance_window",
-		ResourceID: run.WindowID, After: after, ServiceName: serviceName,
+		ResourceID: run.WindowID,
+		Before:     map[string]any{"window_status": windowStatus, "run_accepted": wasAccepted},
+		After:      after, ServiceName: serviceName,
 	}); err != nil {
 		return nil, err
 	}
@@ -397,3 +422,5 @@ func isUniqueViolation(err error, constraint string) bool {
 	// 23505 is unique_violation.
 	return errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == constraint
 }
+
+func isNoRowsErr(err error) bool { return errors.Is(err, pgx.ErrNoRows) }

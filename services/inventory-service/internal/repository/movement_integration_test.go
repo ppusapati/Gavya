@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ppusapati/gavya/libs/integrity/tenantctx"
+	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
 	"github.com/ppusapati/gavya/services/inventory-service/internal/domain"
 )
 
@@ -61,12 +64,23 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 
-	schema, err := os.ReadFile(filepath.Join("..", "db", "schema.sql"))
-	if err != nil {
-		t.Fatalf("read schema: %v", err)
-	}
-	if _, err := pool.Exec(ctx, string(schema)); err != nil {
-		t.Fatalf("apply schema: %v", err)
+	// This service's own schema, and the audit schema beside it: audit_logs
+	// lives in audit-service's schema and deployment applies it to every
+	// service's database. The moment this repository started recording what it
+	// overwrote, a harness that applied only the first failed on a missing
+	// table — less faithful than production in exactly the place the change
+	// was made.
+	for _, path := range []string{
+		filepath.Join("..", "db", "schema.sql"),
+		filepath.Join("..", "..", "..", "audit-service", "internal", "db", "schema.sql"),
+	} {
+		schema, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if _, err := pool.Exec(ctx, string(schema)); err != nil {
+			t.Fatalf("apply %s: %v", path, err)
+		}
 	}
 	return pool
 }
@@ -83,6 +97,21 @@ func newTestID(prefix string) string {
 
 // fixture is one tenant with one warehouse and one SKU, isolated from every
 // other test by its identifiers.
+
+// acting returns a context carrying what a real request carries.
+//
+// These tests called the repository with a bare context.Background(), which
+// worked for as long as nothing on this path wrote an audit entry — and an audit
+// entry is the one thing that refuses to be written without a tenant and an actor
+// to attribute it to. A repository test that acts as nobody is testing the path a
+// gateway never produces.
+func (f *fixture) acting() context.Context {
+	return tenantctx.WithActor(
+		tenantdb.WithTenant(context.Background(), f.tenant),
+		tenantctx.Actor{ID: "US_TEST_00000000000000000"},
+	)
+}
+
 type fixture struct {
 	repo      Repository
 	tenant    string
@@ -115,7 +144,7 @@ func (f *fixture) move(t *testing.T, kind domain.MovementType, q float64) (*Move
 		t.Fatalf("FormatQuantity(%v): %v", q, err)
 	}
 	actor := newTestID("usr")
-	return f.repo.ApplyStockMovement(context.Background(), &domain.StockMovement{
+	return f.repo.ApplyStockMovement(f.acting(), &domain.StockMovement{
 		ID:           newTestID("mov"),
 		TenantID:     f.tenant,
 		WarehouseID:  f.warehouse,
@@ -360,5 +389,47 @@ func TestStockIsHeldPerTenant(t *testing.T) {
 
 	if _, err := f.repo.GetInventoryItem(context.Background(), f.warehouse, f.sku, f.tenant); !errors.Is(err, ErrNotFound) {
 		t.Errorf("err = %v, want another tenant to see nothing", err)
+	}
+}
+
+// A movement is recorded with the count it overwrote, as the literal the column
+// holds, in the same transaction.
+//
+// Present is not the same as tested: a before-image written to the wrong place,
+// or written empty, or written in a separate transaction that commits when the
+// change does not, reads exactly like one that works. This reads the trail back
+// out of audit_logs and requires the old count to be there, to differ from the
+// new, and to be the exact decimal rather than a float rendering of it.
+func TestAMovementRecordsTheCountItOverwrote(t *testing.T) {
+	f := newFixture(t)
+	pool := testPool(t)
+
+	if _, err := f.move(t, domain.MovementIn, 12.5); err != nil {
+		t.Fatalf("first movement: %v", err)
+	}
+	if _, err := f.move(t, domain.MovementIn, 7.25); err != nil {
+		t.Fatalf("second movement: %v", err)
+	}
+
+	// The second movement's entry: it overwrote 12.500 with 19.750.
+	var oldValue, newValue string
+	if err := pool.QueryRow(context.Background(), `
+		SELECT old_value::text, new_value::text
+		  FROM audit_logs
+		 WHERE tenant_id = $1 AND action = 'apply_stock_movement'
+		 ORDER BY created_at DESC LIMIT 1`, f.tenant).Scan(&oldValue, &newValue); err != nil {
+		t.Fatalf("read the trail: %v", err)
+	}
+	if !strings.Contains(oldValue, `"12.5`) {
+		t.Errorf("the before-image does not carry the count before the movement: %s", oldValue)
+	}
+	if !strings.Contains(newValue, `"19.75`) {
+		t.Errorf("the after-image does not carry the count after the movement: %s", newValue)
+	}
+	// As a quoted decimal literal, not a bare float: the column is NUMERIC and
+	// the domain type is still float64, and a trail of floats is a trail
+	// somebody can dispute on the third decimal.
+	if strings.Contains(oldValue, `"quantity_on_hand":12.5`) {
+		t.Errorf("the before-image renders the count as a float rather than the column's literal: %s", oldValue)
 	}
 }

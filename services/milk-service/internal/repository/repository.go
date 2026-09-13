@@ -64,9 +64,42 @@ func (r *repo) ListSessions(ctx context.Context, tenantID string, limit, offset 
 	return out, rows.Err()
 }
 
+// UpdateSessionStatus moves a milking session between states and records
+// what it was.
+//
+// A session closed is a shift's milk fixed; a session reopened is a shift whose
+// figures somebody may already have used being reconsidered. The row recorded
+// only where it ended up.
 func (r *repo) UpdateSessionStatus(ctx context.Context, id, tenantID, status, updatedBy string) (*domain.MilkSession, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	var was string
+	if err := tx.QueryRow(ctx,
+		`SELECT status FROM milk_sessions WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL FOR UPDATE`,
+		id, tenantID).Scan(&was); err != nil {
+		return nil, err
+	}
 	const q = `UPDATE milk_sessions SET status=$3,updated_by=$4,updated_at=NOW() WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL RETURNING id,tenant_id,cattle_id,session_date,shift_type,status,created_at,updated_at,created_by,updated_by,deleted_at`
-	return scanSession(r.db.QueryRow(ctx, q, id, tenantID, status, updatedBy))
+	session, err := scanSession(tx.QueryRow(ctx, q, id, tenantID, status, updatedBy))
+	if err != nil {
+		return nil, err
+	}
+	if err := audit.Write(ctx, tx, ids{}, audit.Entry{
+		Action: "update_milk_session_status", ResourceType: "milk_session", ResourceID: id,
+		Before:      map[string]any{"status": was},
+		After:       map[string]any{"status": status},
+		ServiceName: "milk-service",
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return session, nil
 }
 
 // CreateRecord writes a collection and the record of who wrote it, together.
