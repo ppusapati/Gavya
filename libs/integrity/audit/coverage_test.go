@@ -4,7 +4,6 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -206,14 +205,12 @@ func spreadThroughHelpers(t *testing.T, dirs []string, found []update) {
 			"internal/repository", "internal/service", "internal/handler",
 			"repository", "service", "handler",
 		} {
-			fset := token.NewFileSet()
-			pkgs, err := parser.ParseDir(fset, filepath.Join(dir, layer),
-				func(fi fs.FileInfo) bool { return !strings.HasSuffix(fi.Name(), "_test.go") }, 0)
+			files, err := nonTestGoFiles(filepath.Join(dir, layer))
 			if err != nil {
 				continue
 			}
-			for _, pkg := range pkgs {
-				for _, file := range pkg.Files {
+			{
+				for _, file := range files {
 					for _, decl := range file.Decls {
 						fn, ok := decl.(*ast.FuncDecl)
 						if !ok || fn.Body == nil {
@@ -268,6 +265,32 @@ func spreadThroughHelpers(t *testing.T, dirs []string, found []update) {
 	}
 }
 
+// nonTestGoFiles parses every non-test Go file in one directory.
+//
+// go/parser.ParseDir is deprecated and, more to the point, groups files into
+// packages without regard to build tags; this check wants every file, tags or
+// not, because a repository method behind a tag is still a repository method.
+func nonTestGoFiles(dir string) ([]*ast.File, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	fset := token.NewFileSet()
+	var files []*ast.File
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, 0)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, f)
+	}
+	return files, nil
+}
+
 // update is one function that runs an UPDATE.
 type update struct {
 	service, function, tables string
@@ -294,14 +317,12 @@ func updateFunctions(t *testing.T, dirs []string) []update {
 			"internal/repository", "internal/service", "internal/handler",
 			"repository", "service", "handler",
 		} {
-			fset := token.NewFileSet()
-			pkgs, err := parser.ParseDir(fset, filepath.Join(dir, layer),
-				func(fi fs.FileInfo) bool { return !strings.HasSuffix(fi.Name(), "_test.go") }, 0)
+			files, err := nonTestGoFiles(filepath.Join(dir, layer))
 			if err != nil {
 				continue
 			}
-			for _, pkg := range pkgs {
-				for _, file := range pkg.Files {
+			{
+				for _, file := range files {
 					for _, decl := range file.Decls {
 						fn, ok := decl.(*ast.FuncDecl)
 						if !ok || fn.Body == nil {

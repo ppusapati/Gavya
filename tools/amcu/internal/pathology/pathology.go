@@ -484,7 +484,7 @@ func looksMojibake(s string) bool {
 		return true
 	}
 	// The classic UTF-8-read-as-Latin-1 signatures.
-	for _, sig := range []string{"Ã", "â", "Ð", "à¤"} {
+	for _, sig := range []string{"Ã", "â\u0080", "Ð", "à¤"} {
 		if strings.Contains(s, sig) {
 			return true
 		}

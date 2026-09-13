@@ -6,7 +6,10 @@ COPY services/gateway-service/go.mod services/gateway-service/go.sum* ./services
 WORKDIR /workspace/services/gateway-service
 RUN go mod download
 COPY services/gateway-service/ .
-RUN CGO_ENABLED=0 go build -o /bin/server ./cmd/server
+# -trimpath strips the build machine's paths from the binary and -s -w drop the
+# symbol and DWARF tables; neither is needed at runtime and together they take a
+# third off every image, thirty times over.
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /bin/server ./cmd/server
 
 FROM gcr.io/distroless/static-debian12
 COPY --from=builder /bin/server /server
