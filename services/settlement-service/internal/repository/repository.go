@@ -56,6 +56,13 @@ type Repository interface {
 	HoldPayable(ctx context.Context, tenantID, id, reason, actor string) (*domain.ProducerPayable, error)
 
 	Statement(ctx context.Context, tenantID, cycleID, producerRef string) (*domain.Statement, error)
+
+	// The notification outbox. NotificationsToDeliver reads across tenants
+	// through a definer-rights function; the other two run under the row's
+	// tenant, which the caller puts on the context.
+	NotificationsToDeliver(ctx context.Context, limit int) ([]*domain.QueuedNotification, error)
+	NotificationDelivered(ctx context.Context, id string) error
+	NotificationFailed(ctx context.Context, id, reason string) error
 }
 
 // Gathered is everything one settlement run produced, ready to be written
@@ -390,10 +397,10 @@ func (r *repo) ApproveCycle(ctx context.Context, tenantID, cycleID, actor string
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 
-	var status string
+	var status, name string
 	if err := tx.QueryRow(ctx,
-		`SELECT status FROM payment_cycles WHERE tenant_id=$1 AND id=$2 AND deleted_at IS NULL FOR UPDATE`,
-		tenantID, cycleID).Scan(&status); err != nil {
+		`SELECT status, name FROM payment_cycles WHERE tenant_id=$1 AND id=$2 AND deleted_at IS NULL FOR UPDATE`,
+		tenantID, cycleID).Scan(&status, &name); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -416,10 +423,11 @@ func (r *repo) ApproveCycle(ctx context.Context, tenantID, cycleID, actor string
 	// A held payable stays held. Approving a cycle is approving the figures, and
 	// a hold is a decision about one producer that a bulk approval must not
 	// quietly undo.
-	if _, err := tx.Exec(ctx,
+	approved, err := tx.Exec(ctx,
 		`UPDATE producer_payables SET status=$3, approved_at=NOW(), approved_by=$4, updated_at=NOW()
 		 WHERE tenant_id=$1 AND cycle_id=$2 AND status='PAYABLE' AND kind='SETTLEMENT'`,
-		tenantID, cycleID, string(domain.PayableApproved), actor); err != nil {
+		tenantID, cycleID, string(domain.PayableApproved), actor)
+	if err != nil {
 		return nil, err
 	}
 
@@ -428,6 +436,15 @@ func (r *repo) ApproveCycle(ctx context.Context, tenantID, cycleID, actor string
 		Before:      map[string]any{"status": status},
 		After:       map[string]any{"status": string(domain.CycleApproved)},
 		ServiceName: serviceName,
+	}); err != nil {
+		return nil, err
+	}
+	if err := r.queueForRoles(ctx, tx, tenantID, actor, domain.QueuedNotification{
+		Event: domain.EventCycleApproved,
+		Title: fmt.Sprintf("Cycle %s approved", name),
+		Body: fmt.Sprintf("%s approved the %s cycle: %d producers' payments may now be paid",
+			actor, name, approved.RowsAffected()),
+		ReferenceType: "payment_cycle", ReferenceID: cycleID,
 	}); err != nil {
 		return nil, err
 	}
@@ -595,6 +612,15 @@ func (r *repo) RaiseAdjustment(ctx context.Context, p *domain.ProducerPayable, a
 	}); err != nil {
 		return nil, err
 	}
+	if err := r.queueForRoles(ctx, tx, p.TenantID, actor, domain.QueuedNotification{
+		Event: domain.EventAdjustmentRaised,
+		Title: fmt.Sprintf("Adjustment of %s raised for %s", p.Net, p.ProducerRef),
+		Body: fmt.Sprintf("%s raised an adjustment of %s for %s outside the settlement: %s",
+			actor, p.Net, p.ProducerRef, p.Reason),
+		ReferenceType: "producer_payable", ReferenceID: p.ID,
+	}); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
@@ -615,10 +641,16 @@ func (r *repo) ApprovePayable(ctx context.Context, tenantID, id, actor string) (
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 
-	var status string
+	// What a message about this payable needs, read under the same lock as the
+	// status. The notification is queued in this transaction, so it has to be
+	// composed from what this transaction saw.
+	var status, producerRef, cycleID, currency string
+	var scale int32
+	var net int64
 	if err := tx.QueryRow(ctx,
-		`SELECT status FROM producer_payables WHERE tenant_id=$1 AND id=$2 FOR UPDATE`,
-		tenantID, id).Scan(&status); err != nil {
+		`SELECT status, producer_ref, cycle_id, currency, amount_scale, net_minor_units
+		   FROM producer_payables WHERE tenant_id=$1 AND id=$2 FOR UPDATE`,
+		tenantID, id).Scan(&status, &producerRef, &cycleID, &currency, &scale, &net); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -641,6 +673,14 @@ func (r *repo) ApprovePayable(ctx context.Context, tenantID, id, actor string) (
 		Before:      map[string]any{"status": status},
 		After:       map[string]any{"status": string(domain.PayableApproved)},
 		ServiceName: serviceName,
+	}); err != nil {
+		return nil, err
+	}
+	if err := r.queueForRoles(ctx, tx, tenantID, actor, domain.QueuedNotification{
+		Event:         domain.EventPayableApproved,
+		Title:         fmt.Sprintf("Payment to %s approved", producerRef),
+		Body:          fmt.Sprintf("%s's payment of %s was approved by %s and may now be paid", producerRef, amount(net, scale, currency), actor),
+		ReferenceType: "producer_payable", ReferenceID: id,
 	}); err != nil {
 		return nil, err
 	}
@@ -687,10 +727,16 @@ func (r *repo) MarkPaid(ctx context.Context, tenantID, id, reference, actor stri
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 
-	var status string
+	// What a message about this payable needs, read under the same lock as the
+	// status. The notification is queued in this transaction, so it has to be
+	// composed from what this transaction saw.
+	var status, producerRef, cycleID, currency string
+	var scale int32
+	var net int64
 	if err := tx.QueryRow(ctx,
-		`SELECT status FROM producer_payables WHERE tenant_id=$1 AND id=$2 FOR UPDATE`,
-		tenantID, id).Scan(&status); err != nil {
+		`SELECT status, producer_ref, cycle_id, currency, amount_scale, net_minor_units
+		   FROM producer_payables WHERE tenant_id=$1 AND id=$2 FOR UPDATE`,
+		tenantID, id).Scan(&status, &producerRef, &cycleID, &currency, &scale, &net); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -725,6 +771,18 @@ func (r *repo) MarkPaid(ctx context.Context, tenantID, id, reference, actor stri
 	}); err != nil {
 		return nil, err
 	}
+	body := fmt.Sprintf("%s was paid %s by %s", producerRef, amount(net, scale, currency), actor)
+	if reference != "" {
+		body += ", reference " + reference
+	}
+	if err := r.queueForRoles(ctx, tx, tenantID, actor, domain.QueuedNotification{
+		Event:         domain.EventPayablePaid,
+		Title:         fmt.Sprintf("%s paid", producerRef),
+		Body:          body,
+		ReferenceType: "producer_payable", ReferenceID: id,
+	}); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
@@ -741,10 +799,16 @@ func (r *repo) HoldPayable(ctx context.Context, tenantID, id, reason, actor stri
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 
-	var status string
+	// What a message about this payable needs, read under the same lock as the
+	// status. The notification is queued in this transaction, so it has to be
+	// composed from what this transaction saw.
+	var status, producerRef, cycleID, currency string
+	var scale int32
+	var net int64
 	if err := tx.QueryRow(ctx,
-		`SELECT status FROM producer_payables WHERE tenant_id=$1 AND id=$2 FOR UPDATE`,
-		tenantID, id).Scan(&status); err != nil {
+		`SELECT status, producer_ref, cycle_id, currency, amount_scale, net_minor_units
+		   FROM producer_payables WHERE tenant_id=$1 AND id=$2 FOR UPDATE`,
+		tenantID, id).Scan(&status, &producerRef, &cycleID, &currency, &scale, &net); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -765,6 +829,14 @@ func (r *repo) HoldPayable(ctx context.Context, tenantID, id, reason, actor stri
 		Before:      map[string]any{"status": status},
 		After:       map[string]any{"status": string(domain.PayableHeld), "reason": reason},
 		ServiceName: serviceName,
+	}); err != nil {
+		return nil, err
+	}
+	if err := r.queueForRoles(ctx, tx, tenantID, actor, domain.QueuedNotification{
+		Event:         domain.EventPayableHeld,
+		Title:         fmt.Sprintf("Payment to %s held", producerRef),
+		Body:          fmt.Sprintf("%s's payment of %s is held: %s", producerRef, amount(net, scale, currency), reason),
+		ReferenceType: "producer_payable", ReferenceID: id,
 	}); err != nil {
 		return nil, err
 	}
@@ -978,4 +1050,101 @@ func sqlState(err error) string {
 		return c.SQLState()
 	}
 	return ""
+}
+
+// ---------------------------------------------------------------------------
+// Notifications owed
+// ---------------------------------------------------------------------------
+
+// queueForRoles writes one outbox row per role the event is routed to, inside
+// the transaction that makes the change.
+//
+// Inside it, deliberately. A message sent from the handler after the commit is
+// lost whenever notification-service is down, and lost silently — the hold
+// succeeds and nobody is told. A row in the same transaction exists exactly when
+// the change does, and stays until it has been delivered.
+func (r *repo) queueForRoles(ctx context.Context, tx pgx.Tx, tenantID, actor string, n domain.QueuedNotification) error {
+	for _, role := range domain.RecipientsFor(n.Event) {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO notification_outbox
+				(id, tenant_id, event, recipient_type, recipient_id, title, body,
+				 reference_type, reference_id, created_by)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+			r.ids.New(), tenantID, string(n.Event), domain.RecipientRole, role,
+			n.Title, n.Body, n.ReferenceType, n.ReferenceID, actor); err != nil {
+			return fmt.Errorf("queue notification for %s: %w", role, err)
+		}
+	}
+	return nil
+}
+
+// amount renders a figure for a message, from the columns a row holds it in.
+func amount(minorUnits int64, scale int32, currency string) string {
+	m, err := money.New(minorUnits, scale, currency)
+	if err != nil {
+		// A figure that cannot be rendered is still a figure somebody should be
+		// told about; the raw units are better than an empty string.
+		return fmt.Sprintf("%d (scale %d) %s", minorUnits, scale, currency)
+	}
+	return m.String()
+}
+
+const outboxCols = `id, tenant_id, event, recipient_type, recipient_id, title, body,
+	reference_type, reference_id, created_at, created_by, attempts,
+	COALESCE(last_error, ''), delivered_at`
+
+// NotificationsToDeliver is every row due for a try, across every tenant.
+//
+// Through the definer-rights function in schema.sql, because the isolation
+// policies refuse a read with no tenant set — correctly — and the sweep has no
+// single tenant. This is the one place settlement reads across tenants, and the
+// function limits it to this table and this question.
+func (r *repo) NotificationsToDeliver(ctx context.Context, limit int) ([]*domain.QueuedNotification, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT `+outboxCols+` FROM gavya_settlement_notifications_to_deliver($1)`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("read the notification outbox: %w", err)
+	}
+	defer rows.Close()
+	var out []*domain.QueuedNotification
+	for rows.Next() {
+		n := &domain.QueuedNotification{}
+		var event string
+		if err := rows.Scan(&n.ID, &n.TenantID, &event, &n.RecipientType, &n.RecipientID,
+			&n.Title, &n.Body, &n.ReferenceType, &n.ReferenceID, &n.CreatedAt, &n.CreatedBy,
+			&n.Attempts, &n.LastError, &n.DeliveredAt); err != nil {
+			return nil, err
+		}
+		n.Event = domain.NotificationEvent(event)
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
+// NotificationDelivered records that notification-service accepted a message.
+//
+// Under the row's tenant, which the caller has put on the context. Machine
+// state: the delivery bookkeeping of a message, not a change anybody made.
+func (r *repo) NotificationDelivered(ctx context.Context, id string) error {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE notification_outbox
+		   SET attempts = attempts + 1, last_attempt_at = NOW(), last_error = NULL,
+		       delivered_at = NOW()
+		 WHERE id = $1 AND delivered_at IS NULL`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// NotificationFailed records one failed try and why.
+func (r *repo) NotificationFailed(ctx context.Context, id, reason string) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE notification_outbox
+		   SET attempts = attempts + 1, last_attempt_at = NOW(), last_error = $2
+		 WHERE id = $1 AND delivered_at IS NULL`, id, reason)
+	return err
 }

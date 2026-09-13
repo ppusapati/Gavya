@@ -147,6 +147,8 @@ var noBeforeImage = map[string]string{
 	"shadow-settlement-service.AttachHypotheses": "fills in a field that was empty: hypotheses attached to a divergence already recorded",
 	"pooling-service.SaveValuation":              "the first write of a valuation for a pool; there is no previous one to record",
 	"settlement-service.Gather":                  "gathering populates an empty cycle from the collections; the before is empty by construction and the collections are the record",
+	"settlement-service.NotificationDelivered":   "machine state: the delivery bookkeeping of a queued message, which nobody decides",
+	"settlement-service.NotificationFailed":      "machine state: one failed try at delivering a queued message, and why",
 
 	// Recorded elsewhere.
 	"shadow-settlement-service.SupersedeComputation":  "both states are rows: superseding keeps the old computation and writes a new one, and the pair is the record",

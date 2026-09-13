@@ -30,7 +30,7 @@ type Repository interface {
 	UpdateNotificationStatus(ctx context.Context, id, tenantID, status, updatedBy string) (*domain.Notification, error)
 	MarkNotificationRead(ctx context.Context, id, tenantID, updatedBy string) (*domain.Notification, error)
 	MarkAllNotificationsRead(ctx context.Context, recipientID, tenantID, updatedBy string) error
-	ListNotifications(ctx context.Context, tenantID, channel, status string) ([]*domain.Notification, error)
+	ListNotifications(ctx context.Context, tenantID, channel, status, recipientID, recipientType string) ([]*domain.Notification, error)
 	GetUnreadCount(ctx context.Context, tenantID, recipientID string) (int64, error)
 	CreateNotificationTemplate(ctx context.Context, t *domain.NotificationTemplate) (*domain.NotificationTemplate, error)
 	ListNotificationTemplates(ctx context.Context, tenantID string) ([]*domain.NotificationTemplate, error)
@@ -100,15 +100,17 @@ func (r *repo) MarkAllNotificationsRead(ctx context.Context, recipientID, tenant
 // and no indication why. An empty list is indistinguishable from a tenant with
 // no notifications, so the mistake is invisible from the caller's side: the
 // obvious call returns the obviously wrong answer and looks right doing it.
-func (r *repo) ListNotifications(ctx context.Context, tenantID, channel, status string) ([]*domain.Notification, error) {
+func (r *repo) ListNotifications(ctx context.Context, tenantID, channel, status, recipientID, recipientType string) ([]*domain.Notification, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT `+notificationCols+` FROM notifications
 		 WHERE tenant_id=$1
 		   AND ($2 = '' OR channel = $2)
 		   AND ($3 = '' OR status = $3)
+		   AND ($4 = '' OR recipient_id = $4)
+		   AND ($5 = '' OR recipient_type = $5)
 		   AND deleted_at IS NULL
 		 ORDER BY created_at DESC`,
-		tenantID, channel, status,
+		tenantID, channel, status, recipientID, recipientType,
 	)
 	if err != nil {
 		return nil, err

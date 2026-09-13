@@ -41,6 +41,27 @@ type Service struct {
 	// explain is what Explain reads other services through. Optional; see
 	// WithExplainers.
 	explain Explainers
+
+	// kick asks the notification dispatcher to sweep now. Optional: without it
+	// queued messages go at the next tick rather than immediately.
+	kick Kicker
+}
+
+// Kicker asks for the outbox to be swept now.
+type Kicker interface{ Kick() }
+
+// WithKicker gives the service a way to have queued notifications delivered
+// promptly after a commit.
+func (s *Service) WithKicker(k Kicker) *Service {
+	s.kick = k
+	return s
+}
+
+// kicked runs after a change that queued a notification.
+func (s *Service) kicked() {
+	if s.kick != nil {
+		s.kick.Kick()
+	}
 }
 
 func New(r repository.Repository, milk Collections, ids IDs, clock Clock, log Logger) *Service {
@@ -238,7 +259,11 @@ func (s *Service) ApproveCycle(ctx context.Context, tenantID, cycleID, actor str
 		return nil, errors.New("actor is required: approval is a person taking responsibility " +
 			"for what several hundred people are about to be paid")
 	}
-	return s.repo.ApproveCycle(ctx, tenantID, cycleID, actor)
+	c, err := s.repo.ApproveCycle(ctx, tenantID, cycleID, actor)
+	if err == nil {
+		s.kicked()
+	}
+	return c, err
 }
 
 func (s *Service) ListPayables(ctx context.Context, tenantID, cycleID string) ([]*domain.ProducerPayable, error) {
@@ -253,7 +278,11 @@ func (s *Service) MarkPaid(ctx context.Context, tenantID, id, reference, actor s
 	if actor == "" {
 		return nil, errors.New("actor is required")
 	}
-	return s.repo.MarkPaid(ctx, tenantID, id, reference, actor, s.clock.Now())
+	p, err := s.repo.MarkPaid(ctx, tenantID, id, reference, actor, s.clock.Now())
+	if err == nil {
+		s.kicked()
+	}
+	return p, err
 }
 
 // RaiseAdjustment records money owed after a cycle was already settled.
@@ -281,7 +310,11 @@ func (s *Service) RaiseAdjustment(ctx context.Context, p *domain.ProducerPayable
 	// not a fortnight with recoveries taken out of it.
 	p.Gross, p.Deducted = p.Net, money.Zero(p.Net.Scale, p.Net.Currency)
 	p.CarriedForward = money.Zero(p.Net.Scale, p.Net.Currency)
-	return s.repo.RaiseAdjustment(ctx, p, actor)
+	out, err := s.repo.RaiseAdjustment(ctx, p, actor)
+	if err == nil {
+		s.kicked()
+	}
+	return out, err
 }
 
 // ApprovePayable signs off one payable, which is how an adjustment raised
@@ -290,14 +323,22 @@ func (s *Service) ApprovePayable(ctx context.Context, tenantID, id, actor string
 	if actor == "" {
 		return nil, errors.New("actor is required")
 	}
-	return s.repo.ApprovePayable(ctx, tenantID, id, actor)
+	p, err := s.repo.ApprovePayable(ctx, tenantID, id, actor)
+	if err == nil {
+		s.kicked()
+	}
+	return p, err
 }
 
 func (s *Service) HoldPayable(ctx context.Context, tenantID, id, reason, actor string) (*domain.ProducerPayable, error) {
 	if actor == "" {
 		return nil, errors.New("actor is required")
 	}
-	return s.repo.HoldPayable(ctx, tenantID, id, reason, actor)
+	p, err := s.repo.HoldPayable(ctx, tenantID, id, reason, actor)
+	if err == nil {
+		s.kicked()
+	}
+	return p, err
 }
 
 func (s *Service) Statement(ctx context.Context, tenantID, cycleID, producerRef string) (*domain.Statement, error) {

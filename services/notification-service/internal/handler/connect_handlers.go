@@ -82,6 +82,12 @@ type ListNotificationsRequest struct {
 	TenantID string `json:"tenant_id"`
 	Channel  string `json:"channel"`
 	Status   string `json:"status"`
+	// Who the inbox belongs to. Both optional and both filters when set. Until
+	// these existed the only listing was the whole tenant's, which is not an
+	// inbox — it is everybody's mail on one table. A person reads their own
+	// (recipient_type user) and the roles they hold (recipient_type role).
+	RecipientID   string `json:"recipient_id,omitempty"`
+	RecipientType string `json:"recipient_type,omitempty"`
 }
 
 type ListNotificationsResponse struct {
@@ -164,7 +170,7 @@ func (h *Handler) GetNotification(ctx context.Context, req *connect.Request[IDTe
 
 func (h *Handler) ListNotifications(ctx context.Context, req *connect.Request[ListNotificationsRequest]) (*connect.Response[ListNotificationsResponse], error) {
 	m := req.Msg
-	out, err := h.svc.ListNotifications(ctx, m.TenantID, m.Channel, m.Status)
+	out, err := h.svc.ListNotifications(ctx, m.TenantID, m.Channel, m.Status, req.Msg.RecipientID, req.Msg.RecipientType)
 	if err != nil {
 		return nil, classify(err)
 	}

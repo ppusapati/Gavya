@@ -62,11 +62,11 @@ func (s *Service) GetNotification(ctx context.Context, id, tenantID string) (*do
 	return s.repo.GetNotification(ctx, id, tenantID)
 }
 
-func (s *Service) ListNotifications(ctx context.Context, tenantID, channel, status string) ([]*domain.Notification, error) {
+func (s *Service) ListNotifications(ctx context.Context, tenantID, channel, status string, recipientID, recipientType string) ([]*domain.Notification, error) {
 	if tenantID == "" {
 		return nil, invalid("tenant_id is required")
 	}
-	return s.repo.ListNotifications(ctx, tenantID, channel, status)
+	return s.repo.ListNotifications(ctx, tenantID, channel, status, recipientID, recipientType)
 }
 
 func (s *Service) MarkAsRead(ctx context.Context, id, tenantID, updatedBy string) (*domain.Notification, error) {

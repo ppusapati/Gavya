@@ -150,6 +150,9 @@ services:
       # what an imported member number has meant, when a payment is explained.
       PROCUREMENT_URL: "http://127.0.0.1:8080"
       CANONICAL_URL: "http://127.0.0.1:8080"
+      # And notification, for telling somebody a payment was held, approved or
+      # paid. Also this process.
+      NOTIFICATION_URL: "http://127.0.0.1:8080"
       # And the identity it reads as. Settlement reads collections on its own
       # behalf rather than as whoever pressed the button, so the trail needs a
       # name for it; unset, every gather is attributed to nothing.

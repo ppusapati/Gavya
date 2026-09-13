@@ -94,6 +94,12 @@ var services = []service{
 	// Procurement is the native path: a society prices its own collections from
 	// its own chart, rather than the platform recomputing somebody else's.
 	{name: "procurement-service", database: "e2e_procurement", schema: "services/procurement-service/internal/db/schema.sql"},
+	// The inboxes. Declared before settlement because settlement writes to them
+	// — a held or paid payment queues a message here — and the needs check below
+	// asks that a dependency be declared before the service that depends on it.
+	// It used to sit with the other pre-integrity services further down, and the
+	// harness refused to start with it there.
+	{name: "notification-service", database: "e2e_notification", schema: "services/notification-service/internal/db/schema.sql"},
 	// Settlement turns a fortnight of priced milk into what each producer is
 	// actually handed. It reads the collections from procurement rather than
 	// recomputing them, so the URL is not optional — a settlement service
@@ -102,14 +108,19 @@ var services = []service{
 	{
 		name: "settlement-service", database: "e2e_settlement",
 		schema: "services/settlement-service/internal/db/schema.sql",
-		needs:  []string{"procurement-service", "canonical-service"},
+		needs:  []string{"procurement-service", "canonical-service", "notification-service"},
 		envOfDep: map[string]string{
 			"procurement-service": "PROCUREMENT_URL",
 			// For explaining a payment: what an imported member number meant,
 			// retired mappings included. canonical-service is declared first in
 			// this list, which is what the needs check above asks for.
 			"canonical-service": "CANONICAL_URL",
+			// For telling somebody a payment was held, approved or paid.
+			"notification-service": "NOTIFICATION_URL",
 		},
+		// A commit kicks a sweep, so this is the retry cadence; short here so a
+		// test that has to wait for a retry does not wait long.
+		env: []string{"NOTIFY_INTERVAL=500ms"},
 	},
 	// Material flow is the physical layer balance-service was missing: a node
 	// is a cooler with a code and a tanker with a registration rather than a
@@ -139,7 +150,6 @@ var services = []service{
 	{name: "cattle-market-service", database: "e2e_cattlemarket", schema: "services/cattle-market-service/internal/db/schema.sql"},
 	{name: "breeding-service", database: "e2e_breeding", schema: "services/breeding-service/internal/db/schema.sql"},
 	{name: "feed-service", database: "e2e_feed", schema: "services/feed-service/internal/db/schema.sql"},
-	{name: "notification-service", database: "e2e_notification", schema: "services/notification-service/internal/db/schema.sql"},
 
 	// The rest of the tree. Adding the seven above left eleven services still
 	// unstarted by anything, which made "every service in the platform answers

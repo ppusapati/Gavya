@@ -1,6 +1,6 @@
 # Who may reach notification-service.
 #
-# gateway-service, and nothing else.
+# gateway-service, settlement-service, and nothing else.
 #
 # This service takes the tenant it acts for and the permissions it acts with from
 # headers the gateway sets. Any pod that can reach this port can send a tenant of
@@ -27,6 +27,9 @@ spec:
         - podSelector:
             matchLabels:
               app: gateway-service
+        - podSelector:
+            matchLabels:
+              app: settlement-service
       ports:
         - protocol: TCP
           port: 8080

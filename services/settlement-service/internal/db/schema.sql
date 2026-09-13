@@ -446,3 +446,93 @@ DROP TRIGGER IF EXISTS producer_payables_not_deleted_once_paid ON producer_payab
 CREATE TRIGGER producer_payables_not_deleted_once_paid
     BEFORE DELETE ON producer_payables
     FOR EACH ROW EXECUTE FUNCTION gavya_payable_is_not_deleted_once_paid();
+
+-- ---------------------------------------------------------------------------
+-- Notifications owed and not yet delivered
+-- ---------------------------------------------------------------------------
+
+-- What somebody is owed being told, kept until it has been.
+--
+-- notification-service holds the inbox; this holds the debt. A row is written
+-- in the same transaction as the change it describes — a hold, an approval, a
+-- payment — so the message exists exactly when the change does. It is delivered
+-- afterwards by a sweep in this service, and stays here until notification-
+-- service has accepted it.
+--
+-- Written here rather than sent from the handler because a send from the handler
+-- is a message that is lost whenever notification-service is down, and is lost
+-- silently: the hold succeeds, the caller sees success, and nobody is told. An
+-- outbox turns that outage into a delay.
+CREATE TABLE IF NOT EXISTS notification_outbox (
+    id             VARCHAR(26) PRIMARY KEY,
+    tenant_id      VARCHAR(26) NOT NULL,
+    event          VARCHAR(40) NOT NULL,
+
+    -- A role, today. See RecipientsFor in the domain package for why a role and
+    -- not a person: nothing links a producer_ref to anyone who can sign in.
+    recipient_type VARCHAR(30) NOT NULL,
+    recipient_id   VARCHAR(26) NOT NULL,
+
+    title          VARCHAR(300) NOT NULL,
+    body           TEXT NOT NULL,
+    reference_type VARCHAR(50) NOT NULL,
+    reference_id   VARCHAR(26) NOT NULL,
+
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_by     VARCHAR(26) NOT NULL,
+
+    -- The delivery record. attempts counts every try; last_error is why the
+    -- most recent one failed; delivered_at is set once, when it succeeded.
+    attempts       INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    last_error     TEXT,
+    last_attempt_at TIMESTAMPTZ,
+    delivered_at   TIMESTAMPTZ,
+
+    -- A row cannot be delivered without having been tried. The failure this
+    -- refuses is a repair script marking things delivered to make a queue look
+    -- empty.
+    CONSTRAINT notification_outbox_delivery_was_attempted
+        CHECK (delivered_at IS NULL OR attempts > 0)
+);
+
+CREATE INDEX IF NOT EXISTS notification_outbox_undelivered
+    ON notification_outbox (created_at)
+    WHERE delivered_at IS NULL;
+
+-- The sweep reads across every tenant, and the tenant isolation policies
+-- refuse exactly that: a connection with no tenant set sees nothing, which is
+-- the whole point of them. So the sweep asks through a definer-rights function,
+-- the way identity-service's pre-authentication lookups do. It returns the rows
+-- due for a try — never tried, or tried long enough ago — oldest first, and
+-- nothing else about the table is reachable this way. Marking a row delivered
+-- or failed happens under that row's tenant, through the ordinary policies.
+--
+-- The wait between tries grows with the count of failures, ten seconds a time
+-- and capped at ten, so a notification-service that is down for an hour is
+-- asked every hundred seconds rather than every sweep, and one that is back is
+-- caught up with quickly.
+CREATE OR REPLACE FUNCTION gavya_settlement_notifications_to_deliver(p_limit integer)
+RETURNS SETOF notification_outbox AS $fn$
+BEGIN
+    RETURN QUERY
+        SELECT * FROM notification_outbox
+         WHERE delivered_at IS NULL
+           AND (last_attempt_at IS NULL
+                OR last_attempt_at + (LEAST(attempts, 10) * interval '10 seconds') <= NOW())
+         ORDER BY created_at
+         LIMIT p_limit;
+END
+$fn$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public;
+
+-- Granted to the application role where that role exists. It exists wherever
+-- libs/integrity/isolation has been applied — every deployment — and not in a
+-- test database built from this file alone, where the schema-applying user runs
+-- the sweep itself.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gavya_app') THEN
+        REVOKE ALL ON FUNCTION gavya_settlement_notifications_to_deliver(integer) FROM PUBLIC;
+        GRANT EXECUTE ON FUNCTION gavya_settlement_notifications_to_deliver(integer) TO gavya_app;
+    END IF;
+END
+$$;

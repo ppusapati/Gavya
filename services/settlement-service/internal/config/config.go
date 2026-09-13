@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"time"
 
 	"github.com/ppusapati/gavya/libs/integrity/ports"
 )
@@ -29,6 +30,18 @@ type Config struct {
 	// trace; what would not be worth having is one that looked complete.
 	CanonicalURL string
 
+	// NotificationURL is where the inboxes are, for telling somebody a payment
+	// was held, approved or paid.
+	//
+	// Optional, and its absence is loud rather than quiet: the messages are
+	// still queued, and every sweep of the queue logs that they are owed and
+	// nothing is configured to deliver them.
+	NotificationURL string
+
+	// NotifyInterval is how often the outbox is swept. A commit kicks a sweep
+	// immediately, so this is the retry cadence rather than the latency.
+	NotifyInterval time.Duration
+
 	// ServiceIdentity is who this service is when it calls another one. A
 	// service borrowing a person's name produces an audit trail that attributes
 	// its actions to somebody who was not there.
@@ -53,6 +66,8 @@ func Load() *Config {
 		DatabaseURL:     os.Getenv("DATABASE_URL"),
 		ProcurementURL:  os.Getenv("PROCUREMENT_URL"),
 		CanonicalURL:    os.Getenv("CANONICAL_URL"),
+		NotificationURL: os.Getenv("NOTIFICATION_URL"),
+		NotifyInterval:  durationEnv("NOTIFY_INTERVAL", 5*time.Second),
 		ServiceIdentity: getEnv("SERVICE_IDENTITY", "SVC_SETTLEMENT"),
 	}
 }
@@ -60,6 +75,22 @@ func Load() *Config {
 func getEnv(k, d string) string {
 	if v := os.Getenv(k); v != "" {
 		return v
+	}
+	return d
+}
+
+// durationEnv reads a duration, falling back when unset or unreadable.
+//
+// Unreadable falls back rather than failing: a sweep interval is not a setting
+// a service should refuse to start over, and the default is a reasonable one.
+func durationEnv(key string, def time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		return def
 	}
 	return d
 }

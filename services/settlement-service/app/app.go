@@ -26,6 +26,7 @@ import (
 	"github.com/ppusapati/gavya/services/settlement-service/internal/canonical"
 	"github.com/ppusapati/gavya/services/settlement-service/internal/config"
 	"github.com/ppusapati/gavya/services/settlement-service/internal/handler"
+	"github.com/ppusapati/gavya/services/settlement-service/internal/notify"
 	"github.com/ppusapati/gavya/services/settlement-service/internal/procurement"
 	"github.com/ppusapati/gavya/services/settlement-service/internal/repository"
 	"github.com/ppusapati/gavya/services/settlement-service/internal/service"
@@ -92,6 +93,37 @@ func Build(ctx context.Context, log *p9log.Helper) (serve.Registrar, *pgxpool.Po
 	if readers != nil {
 		svc.WithExplainers(readers)
 	}
+
+	// Delivering what the outbox owes.
+	//
+	// The dispatcher runs whether or not there is anywhere to deliver to. With
+	// no NOTIFICATION_URL it still sweeps, and every sweep that finds messages
+	// owed says so in the log — because an outbox that fills in silence is a
+	// queue nobody knows about, which is the failure this whole arrangement
+	// exists to remove. With one, a commit kicks a sweep and a held payment is
+	// in the supervisor's inbox in milliseconds.
+	//
+	// Started here, on the context Build was given, and never stopped: the
+	// process ending ends it, and there is nothing to flush — anything not yet
+	// delivered is still in the table for the next start.
+	var sender notify.Sender
+	if cfg.NotificationURL != "" {
+		if readers == nil {
+			readers = &scoped{identity: cfg.ServiceIdentity}
+		}
+		sender = notify.NewClient(svcclient.New(svcclient.Config{
+			BaseURL:     cfg.NotificationURL,
+			Timeout:     10 * time.Second,
+			MaxAttempts: 1, // the outbox is the retry
+		}), readers.options)
+	} else {
+		log.Infof("NOTIFICATION_URL is not set: notifications will be queued and every sweep " +
+			"will report them as owed")
+	}
+	dispatcher := notify.New(repo, sender, log, cfg.NotifyInterval)
+	svc.WithKicker(dispatcher)
+	go dispatcher.Run(ctx)
+
 	return handler.New(svc), pool, nil
 }
 
