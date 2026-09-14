@@ -21,18 +21,24 @@ Two things to know about how to read it:
 
 ## What is built
 
-Twenty-nine Go services, five Rust ML services, one shared Go library and one
-shared Rust crate.
+Twenty-nine Go services and a thirtieth binary that is all of them, four Rust ML
+services, one shared Go library and one shared Rust crate.
 
 ```sh
-# everything, from the repository root
-for d in $(go list -m -f '{{.Dir}}' | grep -v '/pkg$'); do (cd "$d" && go test ./...); done
-cd ml && cargo test --workspace
-
-# end to end: builds the real binaries, real PostgreSQL, real HTTP
-cd e2e && TEST_DATABASE_DSN="postgres://user@host:port/%s?sslmode=disable" \
-  go test -tags e2e ./...
+# everything: eighty steps, in the order that fails fastest
+TEST_DATABASE_DSN="postgres://user@host:port/%s?sslmode=disable" \
+  bash scripts/check-all.sh
 ```
+
+That script is the whole gate and it is worth reading rather than trusting. It
+formats, vets and tests every module in the workspace; builds and tests the Rust
+tier and drives it through the real typed client; provisions one database and
+runs the repository suites that carry a build tag, which a plain `go test`
+cannot see; and finishes with the end-to-end suite, which builds the real
+binaries and talks to them over real HTTP. Every step uses `-count=1`, because
+several tests read files the Go test cache does not track — compose, the
+Kubernetes manifests, the schemas — and a cached pass on those is a check that
+appears to run and does nothing.
 
 The `%s` in that DSN is not decoration — it is where each service's own database
 name is substituted. A DSN without it silently puts every service in one database,
@@ -83,31 +89,54 @@ its own number.
 
 ### The ML tier
 
-Five Rust services in `ml/`: anomaly, uncertainty, divergence, reconciliation, and
-the shared `mlcore` crate. Every call is advisory; every caller has a complete
-deterministic answer without it.
+Four Rust services in `ml/` — anomaly, uncertainty, divergence and reconciliation
+— over the shared `mlcore` crate. Every call is advisory; every caller has a
+complete deterministic answer without it.
 
-**Currently disabled in every deployment.** Each Go caller reads its endpoint from
-an environment variable that defaults to empty, and logs at boot that the tier is
-off. See *Open work* below.
+**Off unless a deployment turns it on, and every deployment now does.** Each Go
+caller reads its endpoint from an environment variable that defaults to empty and
+logs at boot that the tier is off, so the platform is complete without it. Both
+compose files and the three callers' Kubernetes manifests wire all four URLs, and
+a check keeps the two in step — it does not require the tier to be enabled, only
+that the descriptors agree, because Kubernetes once wired one of four and nothing
+anywhere said whether that was a decision.
 
 ### Cross-cutting
 
 - **Tenant isolation** in the database, not in every query. `tenant_id` on every
   table, RLS with FORCE, and a role that cannot bypass it.
 - **A hash-chained append-only audit** written inside the caller's transaction, so
-  a change and its record land together or not at all — **used by six services**,
-  not all of them. `procurement`, `settlement`, `material`, `laboratory`,
-  `production` and `milk`. The integrity spine does not need it, because its
-  records are append-only and bitemporal and the history is the data. The older
-  ERP services do need it and do not have it: see open work below.
+  a change and its record land together or not at all — **used by twenty-five of
+  the twenty-nine services**. It was six when this document was first written.
+  The four that write nothing are `audit` itself, which is the trail; `gateway`,
+  which proxies and decides nothing; `notification`, whose mark-as-read is one
+  person's own mail and not a decision anybody disputes; and `feed`, which is the
+  one place the absence is a judgement rather than an argument. Every update that
+  overwrites a figure somebody could be asked to defend now records what it
+  overwrote, and the test that says so refuses an exemption that does not carry
+  its reason.
 - **Reference decisions.** Every reference-shaped column that carries no foreign
   key is decided by a person and recorded in
   `libs/integrity/isolation/references.sql`, with the reason. The deploy fails
   rather than warns on an undecided one.
-- **Exact money and exact quantities.** `libs/integrity/money` and
-  `libs/integrity/quantity`. No float touches a currency amount or a measured
-  volume on the integrity path.
+- **Exact money, exact quantities, exact measurements.** `libs/integrity/money`,
+  `libs/integrity/quantity` and `libs/integrity/exact`. **No float touches a
+  recorded figure anywhere in the platform**, which is a stronger claim than this
+  document could make when it was written: then it held on the integrity path
+  and nowhere else. A quantity on an invoice line, a tax rate, a kilogram of
+  feed, a litre of milk, a fat percentage, the count on a shelf, the size of a
+  pack, an animal's weight and an observation's value were all float64 from the
+  wire to the column and back. What remains float is the output of floating-point
+  computation in the Rust tier, and only that.
+- **Authorization**, in `libs/integrity/authz`. Seven roles, a permission that is
+  a domain and an action, and a table naming the one permission each of the 261
+  procedures requires. It fails closed: a procedure absent from the table is
+  refused, and the test in the package fails the build rather than waiting for a
+  route to be added without one.
+- **One server every service runs**, in `libs/integrity/serve`. Timeouts, the
+  authorization check, a per-caller rate limit, readiness, liveness and metrics
+  are properties of that function rather than of twenty-nine main functions that
+  each had to remember.
 
 ---
 
@@ -157,7 +186,33 @@ and it has caught more real problems than reading the code did.
 
 ## Open work
 
-Ordered by what would be lost if it were left undone.
+Almost none, which is worth saying plainly rather than leaving a reader to infer
+it from seven items that all end in "closed". What is genuinely outstanding, as
+of this writing:
+
+- **`observation-service` reports every failure as the caller's mistake.** Its
+  handler uses two codes across sixteen call sites, invalid-argument and
+  not-found, and never internal. `RecordObservation` matches a missing row and
+  falls through to invalid-argument for everything else, so a database outage is
+  reported to the caller as something they typed wrong. It is the same defect
+  fixed in `cattle-service`, sitting in the service the settlement path reads
+  from.
+- **`cattle-service`'s other five procedures still choose by position.** Two of
+  them were fixed because a weight refusal had to be reported correctly; the rest
+  were left rather than swept up in a change about weights, and the handler says
+  so where somebody looking will find it. `GetCattle` still reports an unreachable
+  database as an animal that does not exist.
+- **`feed-service` writes nothing to the audit trail.** It is one of four, and the
+  only one where that is a judgement rather than an argument: a nutrition plan
+  being changed is arguably a decision somebody could be asked to defend.
+
+Three things cannot be verified in a container and are not claimed here: that the
+images build, since no Docker daemon runs in the environment this was developed
+in, though the build lines were run directly; that the manifests behave on a real
+cluster; and that TLS works against real certificates.
+
+Everything below is closed. It is kept because the reasoning is the expensive
+part and it is not visible in the diff — which is this document's whole job.
 
 ### 1. The ML tier — **connected**
 
@@ -316,7 +371,15 @@ that the old shape had been hiding, none of them about floats:
   What it cannot do is tell whether an endpoint does the right thing — only
   whether it is capable of doing anything at all. The real answer to that is
   end-to-end coverage. That was around 137 of 245 registered routes when this
-  started and is around 109 of 249 now — the four new ones are returns.
+  started and around 109 of 249 at the time this paragraph was written. Every
+  route has since been given end-to-end coverage, over the run of commits whose
+  messages begin "Cover", and the administration routes added afterwards are
+  exercised in `onboarding_test.go`.
+
+  The count is no longer tracked, because the paragraph below is right that grep
+  cannot do it. Checking that claim while updating this document made the same
+  mistake a third time: a search for each administration procedure found nothing
+  and the routes are covered, for exactly the reason given below.
 
   "Around", because counting this by grep is unreliable in both directions and
   the first attempt got it wrong: identity-service builds its procedure name at
@@ -641,11 +704,12 @@ found the hard way: the first draft of that correction claimed these services
 carry the audit trail. They did not — they updated content in place and wrote no
 audit entry at all.
 
-(Since then seven of them have been given entries for the transitions that
-destroy a figure, so thirteen of the twenty-nine services write to the trail
-rather than six. Sixteen still write nothing, and six of those are the integrity
-spine, which does not need it. The rest of this section is the reasoning that got
-there.)
+(Seven of them were given entries for the transitions that destroy a figure,
+taking the count from six services to thirteen. It has since gone to twenty-five,
+and the four that write nothing are named at the top of this document. The rest
+of this section is the reasoning that got to thirteen; the reasoning that got to
+twenty-five is in *What an edit overwrote*, and it is the same argument applied
+to ordinary edits rather than to money.)
 
 Narrowing it down mattered, because "these services have no audit trail" and
 "one figure is destroyed" are different problems:
@@ -900,6 +964,294 @@ like it does.
 
 ---
 
+## Nobody could be told what they may not do
+
+The platform authenticated from early on and authorised nothing. A session proved
+which tenant somebody acted for, and all of them were then open to them: a
+collector at a village booth could approve a settlement cycle, rewrite a rate
+card, or read every producer's payment history. The tenant boundary held; inside
+it there was none.
+
+The model is deliberately small, because one nobody can hold in their head is one
+that gets bypassed. A permission is a domain and an action, `settlement.approve`.
+There are tens, not hundreds. A role is a named set of them, and there are seven,
+drawn from the jobs that exist in a dairy co-operative rather than from the way
+the code is split — pooling, settlement and shadow-settlement are one domain
+here, because "may approve what a producer is paid" is one job and it would be a
+strange role that could do it in two of the three.
+
+Three decisions in it are worth keeping:
+
+- **The route table is written out, not derived.** A rule that computes a
+  permission from a method name silently mis-files the one procedure whose name
+  does not fit the pattern. The first draft *was* generated that way and then read
+  by hand, and ten entries were wrong. `ResolveIdentity` is a lookup that every
+  collection performs on its way in, and the rule filed it with `ResolveConflict`,
+  which is a supervisor adjudicating a disputed slot. `CorrectCollection`
+  re-prices against the rate card in force, so it changes what a producer is paid,
+  and the rule called it an ordinary write — which would have let the collector
+  who recorded a figure amend it afterwards with nobody else involved.
+  `ConfirmPregnancy` records a vet's finding and "Confirm" made it an approval,
+  which would have stopped a clerk entering it.
+- **It fails closed, and somebody finds out.** A procedure absent from the table
+  is refused. Fail-closed only helps if it is noticed, so the exhaustive test
+  fails the build when a route is added without an entry or an entry names a
+  route that no longer exists — finding out at build time beats finding out when
+  a co-operative cannot record its morning collection.
+- **The check is in the server, not in the handlers.** `serve.New` wraps the mux,
+  so a service cannot serve a route it forgot to guard. The alternative is a note
+  in a README asking twenty-nine main functions to remember, which is the
+  arrangement that produced the gap.
+
+The gateway decides the same question once, against the procedure it is about to
+proxy, and then forwards; it is the single caller allowed to run unguarded, and
+the test in the package names it so a second one is a failing build rather than a
+quiet decision.
+
+Administration came with it. A co-operative can now be set up — users, roles,
+service identities — without somebody opening a database console, which is what
+setting one up had previously required.
+
+---
+
+## One process, one door
+
+Twenty-nine services is the right shape for the problem and the wrong shape for a
+society with one server in a back office. The modulith is the same code mounted
+on one mux behind one port: every module, one binary, one image, one compose file.
+
+It is the shape that ships, and that has a consequence the code now takes
+seriously. A defence present only in the deployment nobody runs is not a weaker
+defence, it is none — so the parity between the two is tested rather than
+intended. `serve.Unguarded`, which the modulith's gateway uses, is rate-limited
+like every other server; the sign-in limiter is in an app package both shapes
+wire; and a test fails the build if a service-level defence exists in one shape
+and not the other.
+
+Mounting twenty-eight services on one mux also found a defect that the separate
+shape could never have shown. Every service registered its own `/healthz`, and an
+`http.ServeMux` panics on a duplicate pattern, so the modulith would have died at
+startup on the second one. The check that existed for exactly this counted module
+names instead of registering them, which is a control that reports success while
+doing nothing. `/healthz` now lives in `serve` with `/readyz` and `/metrics`.
+
+---
+
+## What a service does when it is actually deployed
+
+Six things were true of the platform in a test harness and of nothing in a
+cluster.
+
+**Nothing had timeouts.** A handful of slow connections hold sockets until the
+process runs out, and the process that runs out is the one taking the morning's
+collections. `ReadHeaderTimeout` is the one that matters for the attack; the write
+timeout is generous because a settlement print over a large plant is genuinely
+slow, and a report that dies halfway is worse than one that takes a minute.
+
+**Nothing bounded how fast one caller could ask.** Not a defence against a
+distributed attacker and not meant to be: it stops one misbehaving client starving
+everyone else, which is the failure a co-operative actually meets. The general
+limit is generous on purpose, because a booth recording a morning's collections
+must never come near it — a limit that catches ordinary work is a limit somebody
+turns off. Sign-in is stricter and counts failures rather than attempts, so a
+person who mistypes twice is not locked out while somebody guessing is. There is
+deliberately no way to switch either off: a value at or below zero reads as a
+mistake and the default stands, because a control a typo silently removes is the
+shape of failure this platform keeps finding.
+
+**The gateway trusted headers it should not have.** `X-Forwarded-For` and
+`X-Real-Ip` arrive from the caller and are now stripped, with the peer address
+written into a header the services read. A rate limit keyed on a header the
+attacker sets is a rate limit with a bypass in it.
+
+**Probes could not fail.** `/readyz` now asks the service's dependencies.
+Liveness stays unconditional and that is deliberate: a failing liveness probe gets
+the pod killed, so tying it to the database turns a recoverable outage into a
+crash loop across the platform. Readiness is the one that asks.
+
+**TLS was a README item.** `serve.Run` serves it when a certificate and key are
+configured, refuses a half-configuration rather than guessing, and can be made to
+refuse plaintext outright. The database connection is the other half: a DSN with
+`sslmode` absent, or set to `disable`, `allow` or `prefer`, is now refused unless
+the deployment says in a full sentence that plaintext to the database is
+acceptable there. The sentence is the point. A boolean would have been set to true
+once and forgotten.
+
+**And nothing was compiled in.** No service carries a default database URL any
+more, and a test refuses the build if one reappears.
+
+The cluster path is the same argument one level out. One Ingress is the only door;
+a default-deny policy sits under everything; and each of the twenty-nine services
+carries a NetworkPolicy naming exactly the callers that exist and an egress policy
+naming exactly the calls it makes, both generated from the call graph the code
+actually has and checked against it. An early draft of those policies allowed
+`0.0.0.0/0` "for probes", which allowed everything — it is gone, and the test now
+rejects an `ipBlock` outright.
+
+---
+
+## Two things the platform could not do for the people using it
+
+**Nobody was told anything.** `notification-service` had existed for as long as
+the platform, with eight routes and an inbox per recipient, and nothing anywhere
+called it. A payable was held, a fortnight approved, money marked as paid, and the
+only way to learn any of it was to go and look.
+
+The message is queued in the same transaction as the change it describes, so a
+hold that commits has a message and a hold that rolls back has none, and it is
+delivered afterwards by a sweep that keeps trying. That is what makes an outage of
+the notification service a delay rather than a message nobody ever gets.
+
+Who is told is a role, not a person, and that is a limit worth stating plainly: a
+payable names a producer's member code, and nothing in this platform links either
+to somebody who can sign in. Inventing that link would have been inventing it. So
+a hold reaches the supervisor who can resolve it and the accountant who owns the
+money, and money moving reaches the auditor whose job is to see it — not the
+accountant, who did it, because telling somebody what they just did is noise.
+
+**Nobody could ask why a payment was what it was.** Tracing one payable to the
+deliveries gathered into it, the rate card each was priced against and the
+identity mapping that attributed each to the producer took four services and a
+`psql` session. `ExplainPayable` is one call that answers it, retired mappings
+included — which is why the superseded ones had to become readable first, and why
+the exemption that said they were already readable was not true when it was
+written.
+
+---
+
+## Three ways a check can exist and not run
+
+This is the failure this platform keeps finding, and a single pass found three
+more of it.
+
+**A schema that only ever applied to an empty database.** The existing test
+checked that the working-tree schema applies on top of the committed one, which
+catches a statement that errors and not a statement that succeeds and does
+nothing — `CREATE TABLE IF NOT EXISTS` on a table that exists quietly skips every
+column and constraint inside it. It also only ran while the working tree differed
+from HEAD, so the moment a change was committed the upgrade path was never looked
+at again. The replacement builds two databases per service, one from the current
+schema and one by applying every committed version in order, and compares them at
+the catalogue. Its first run found four services whose upgraded database differed
+from a fresh one, every one of which had passed the older test: six CHECK
+constraints missing from settlement's payables, two from procurement's priced
+collections, a column left behind on production's batches, and a currency column
+that was `varchar` on one and `char` on the other.
+
+**Six repository suites nothing had ever run.** They carry a build tag and read a
+variable the gate never set, so from the day they were written `go test` did not
+see them and no one noticed. Running them needed a database holding every
+service's schema — `audit_logs` lives in audit-service's and every service writes
+there — so the gate now provisions one and runs each suite against it. Seven had
+rotted in the meantime and did not compile.
+
+**A module skipped because it did not build.** `pkg` arrived as a library carried
+over from another product: over a hundred packages, most of which did not build
+here because the packages they imported were never brought across. The gate
+skipped the whole module for that reason, which meant the two packages the
+platform genuinely imports were ungated too. It now holds those two and the ULID
+polyfill that deployment applies, and it is gated like everything else. The
+register of known-missing packages went with the packages that needed it.
+
+---
+
+## Every measurement exact, and one place a float is right
+
+Money became exact early and the numbers beside it did not. A quantity on an
+invoice line, a tax rate, a kilogram of feed, a litre of milk, a fat percentage,
+the count on a shelf, the size of a pack, an animal's weight and — in the service
+named for recording measurements — an observation's value were float64 from the
+wire to the column and back.
+
+The boundary was guarded in some of them and the guard was the wrong shape: it
+turned a float into the literal a column would store and refused one finer, which
+left the domain holding 12.5 where the column held 12.500, the response sending a
+number back out, and an audit trail written from the domain carrying whatever the
+float printed as. In cattle and breeding there was no guard at all, so a weight
+entered as 380.567 kg was rounded into its column by PostgreSQL in silence and
+read back as a figure nobody typed, and one too large arrived at the caller as an
+internal failure — advice to retry something that could never succeed.
+
+`exact.Fixed` replaced all of it: a decimal at a stated scale, read from the
+digits that were written rather than through a float, compared and added only at
+that scale, rendered as the literal the column holds, and scanned straight from a
+NUMERIC column. A JSON number is parsed from its own text, which is the difference
+that matters — eighteen significant digits survive, where a float64 holds about
+sixteen and lands on a neighbouring value.
+
+Where the line falls is the part worth keeping. `balance-service` had already
+drawn it correctly without anybody saying so: its measured flows are exact and
+only its statistics — the test statistic, the gross-error threshold — are floats.
+Observation now matches. What was measured is exact; what the Rust tier computed
+from it is a float, because a combined standard uncertainty is a square root of a
+sum of squares and has no exact decimal form. The conversion between them has one
+named door, `exact.Fixed.Float64`, and the comment on it says why that is the one
+place a float is the right answer.
+
+Two checks in it are not symmetrical, and the asymmetry is deliberate. A quantity
+is refused below zero. A reading is not: `TEMPERATURE_C` is a quantity kind and a
+cooling tank at four below is the ordinary case, so a check on the sign would have
+refused every cold-chain reading.
+
+Mutation testing earned its place twice here. A mutant that emptied a validator
+changed nothing, because a second check further down had already refused the same
+values — one check, not two, and the dead one is gone. And a mutant that ignored
+the calf-weight refusal passed, because the test asserting it sat after the
+pregnancy had already calved and was being refused for that instead. It could not
+have failed for the reason it claimed.
+
+---
+
+## What an edit overwrote
+
+The trail recorded money and, for a while, nothing else. Thirteen services wrote
+to it and the entries they wrote were about figures somebody is paid: a payable
+approved, a price changed, an invoice voided. An ordinary edit — an animal's
+weight corrected, a session reopened, a stock count adjusted, a listing withdrawn
+— left a row saying who had last touched it and nothing saying what it had said
+before.
+
+That is a narrower gap than "no audit trail" and a real one. The argument for
+recomputing anything in this platform is that the inputs can be traced to who
+entered them; a figure that changed and cannot be shown to have changed is one
+nobody can defend to the member who asks about it, and that is as true of a
+weight as of a payment.
+
+So every update that overwrites a figure now records what it overwrote, in the
+same transaction as the change. Where an update could not sensibly carry one, the
+exemption is written down with the reason, and the test refuses an entry whose
+reason is missing — an earlier version of that register allowed a placeholder,
+and a register of placeholders is a register nobody reads.
+
+The reasons fall into four kinds, and stating them is what keeps the register
+from becoming a list of things somebody could not be bothered with:
+
+- **Machine state.** A capture session moving through its own lifecycle, a
+  device's key generation advancing, the delivery bookkeeping of a queued
+  message. Nobody decided these, so there is nobody to ask about them.
+- **A field that was empty.** An ML estimate arriving beside a reading already
+  recorded deterministically, a run claiming a window, a cycle recording the
+  event that has just happened to it. There is no previous value.
+- **Both states are rows.** Supersession keeps the old one and writes a new one,
+  and the pair is the record. A second copy in the trail would be a second thing
+  to keep in step.
+- **The record is elsewhere and better.** Inventory writes a stock movement for
+  every adjustment; the movement *is* the history, the way an order's totals are
+  rebuildable from its lines.
+
+One of those exemptions was untrue when it was written, which is the argument for
+making each one say why rather than merely listing it. The canonical identity
+mapping claimed a superseded row stays readable — and the row did stay in the
+table, and nothing returned it. Making it readable came first, and then the
+exemption was true.
+
+Writing the entries also found a defect in two services that had nothing to do
+with the trail: reading a row before updating it returned `pgx.ErrNoRows` where
+the rest of the service expected a named not-found error, so a status change
+against something that did not exist was reported as an internal failure.
+
+---
+
 ## Blocked, and has been since early on
 
 None of these can be worked around by writing more code, and each has been
@@ -932,3 +1284,12 @@ diff.
 | Corrections by supersession, never in place | A figure that changed and cannot be shown to have changed is one nobody can defend to the member who asks about it. |
 | Deployment descriptors checked against the code | A service missing from compose starts, answers, and is unreachable. Nothing else in the repository notices, because every other test either does not need the gateway or calls services directly. |
 | Refuse rather than default; report rather than refuse | Two different rules, and which applies depends on whether the platform would be inventing a number (refuse) or judging somebody's process (report). A plant substitutes ingredients; refusing that means the vat is recorded wrongly or not at all, and a gap in the genealogy is worse than a note beside it. |
+| Permissions written out per procedure, not derived from method names | The generated first draft got ten wrong, and the wrong ones were the dangerous ones: a collector able to amend the figure they had just recorded, a clerk unable to enter a vet's finding. A rule silently mis-files whichever procedure does not fit its pattern. |
+| The authorization check in the server, not in the handlers | A service cannot serve a route it forgot to guard. The alternative is a note in a README asking twenty-nine main functions to remember, which is the arrangement that produced the gap. |
+| No way to turn the rate limit off | A value at or below zero reads as a mistake and the default stands. A control a typo silently removes is not a weaker control, it is none — and the limit is set generously precisely so nobody has a reason to want it gone. |
+| Plaintext to the database refused unless a deployment says so in a sentence | The setting is a phrase, not a boolean, because a boolean gets set to true once during a bad afternoon and is never read again. |
+| Liveness unconditional, readiness conditional | A failing liveness probe gets the pod killed, so tying it to the database turns a recoverable outage into a crash loop across the whole platform. |
+| The modulith's defences tested against the separate shape's | A defence present only in the deployment nobody runs is none. The modulith is the shape that ships. |
+| Notifications addressed to roles, not to producers | A payable names a member code and nothing links either to somebody who can sign in. Addressing a person would have meant inventing that link. |
+| A measurement exact, a statistic float | A combined standard uncertainty is a square root of a sum of squares and has no exact decimal form. Forcing it into an exact type would dress a float as exact, which is the failure this platform spends its time refusing. |
+| A quantity refused below zero, a reading not | `TEMPERATURE_C` is a quantity kind and a cooling tank at four below is the ordinary case. A single rule for both would have refused every cold-chain reading. |

@@ -1,7 +1,7 @@
 // Package authz decides whether a caller may invoke a procedure.
 //
 // Until now the platform authenticated and never authorised. A session proved
-// which tenant somebody acted for, and every one of the 249 procedures was then
+// which tenant somebody acted for, and every one of the platform's procedures was then
 // open to them: a collector at a village booth could approve a settlement cycle,
 // rewrite a rate card, or read every producer's payment history. The tenant
 // boundary held; inside it there was none.

@@ -2,8 +2,8 @@
 
 // Authorisation, against services that are really running.
 //
-// libs/integrity/authz proves the model: which permission each of the 249
-// procedures needs, and which roles hold it. Its middleware test proves the
+// libs/integrity/authz proves the model: which permission each procedure needs,
+// and which roles hold it. Its middleware test proves the
 // guard consults that model. Neither proves the guard is actually in front of a
 // service — a platform could have a correct model, a correct middleware, and
 // nothing wired between them, and every one of those tests would pass.
