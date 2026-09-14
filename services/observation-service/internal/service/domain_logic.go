@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"time"
 
 	"github.com/ppusapati/gavya/libs/integrity/bitemporal"
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/libs/integrity/mlclient"
 	"github.com/ppusapati/gavya/libs/integrity/origin"
 	ulidpkg "p9e.in/samavaya/packages/ulid"
@@ -30,7 +30,7 @@ type RecordObservationInput struct {
 	TenantID string
 	Subject  domain.SubjectRef
 	Quantity domain.QuantityKind
-	Value    float64
+	Value    exact.Fixed
 
 	InstrumentID string
 	SessionRef   string
@@ -62,6 +62,28 @@ type RecordObservationInput struct {
 func (s *Service) RecordObservation(ctx context.Context, in RecordObservationInput) (*domain.Observation, error) {
 	if err := validateObservation(in); err != nil {
 		return nil, err
+	}
+	// The reading's one check, and the place it is held at the column's scale,
+	// so what is stored, what is answered and what the ML tier is asked about
+	// are one number.
+	//
+	// There was a check before and it caught NaN and infinity only. A reading
+	// finer than the column's six decimals was rounded into it by PostgreSQL
+	// without anyone being told, and one wider reached the database as a
+	// constraint violation reported as an internal failure. NaN and infinity
+	// need no check of their own now: neither can be written as a decimal
+	// literal, so neither can be read into an exact.Fixed at all.
+	//
+	// Column and not NonNegativeColumn: TEMPERATURE_C is a quantity kind here,
+	// and a cooling tank below zero is the ordinary case.
+	//
+	// One check, not two. A second in validateObservation refused the same
+	// values and was written first; a mutant that emptied it changed nothing,
+	// because this line had already refused them. A check that cannot fail is
+	// worse than none, because the next person reads it as the one that matters.
+	value, err := in.Value.Column(domain.ValueScale, domain.ValuePrecision)
+	if err != nil {
+		return nil, exact.Field("value", err)
 	}
 
 	validTo := in.ValidTo
@@ -98,7 +120,7 @@ func (s *Service) RecordObservation(ctx context.Context, in RecordObservationInp
 		TenantID:                 in.TenantID,
 		Subject:                  in.Subject,
 		Quantity:                 in.Quantity,
-		Value:                    in.Value,
+		Value:                    value,
 		Unit:                     in.Quantity.Unit(),
 		InstrumentID:             in.InstrumentID,
 		SessionRef:               in.SessionRef,
@@ -162,7 +184,7 @@ func (s *Service) attachUncertainty(ctx context.Context, o *domain.Observation, 
 		TenantID:            o.TenantID,
 		UncertaintyModelID:  o.UncertaintyModelID,
 		Quantity:            string(o.Quantity),
-		MeasuredValue:       o.Value,
+		MeasuredValue:       o.Value.Float64(),
 		Unit:                o.Unit,
 		Inputs:              in.UncertaintyInputs,
 		CoverageProbability: in.CoverageProbability,
@@ -219,7 +241,7 @@ func (s *Service) attachAnomaly(ctx context.Context, o *domain.Observation) {
 		Candidate: mlclient.SeriesPoint{
 			ObservationID: o.ID,
 			ValidAt:       o.ValidFrom.UTC().Format(time.RFC3339),
-			Value:         o.Value,
+			Value:         o.Value.Float64(),
 		},
 		History: history,
 	}, mlclient.CallOptions{TenantID: o.TenantID, RequestID: o.ID})
@@ -274,7 +296,7 @@ func (s *Service) history(ctx context.Context, o *domain.Observation) ([]mlclien
 		point := mlclient.SeriesPoint{
 			ObservationID: p.ID,
 			ValidAt:       p.ValidFrom.UTC().Format(time.RFC3339),
-			Value:         p.Value,
+			Value:         p.Value.Float64(),
 		}
 		// A less precise instrument widens the tolerance band instead of being
 		// flagged, but only where an estimate exists to widen it by.
@@ -409,8 +431,6 @@ func validateObservation(in RecordObservationInput) error {
 		return fmt.Errorf("subject %s:%s is not a valid reference", in.Subject.Kind, in.Subject.ID)
 	case !in.Quantity.Valid():
 		return fmt.Errorf("quantity kind %q is not recognised", in.Quantity)
-	case math.IsNaN(in.Value) || math.IsInf(in.Value, 0):
-		return errors.New("value must be a finite number")
 	case in.ValidFrom.IsZero():
 		return errors.New("valid_from is required: an observation with no instant cannot be settled against")
 	case in.CreatedBy == "":

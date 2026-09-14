@@ -238,3 +238,22 @@ func TestMustFixedPanicsOnABadLiteralInSource(t *testing.T) {
 	}()
 	MustFixed("12.3456", 3)
 }
+
+// Float64 is the boundary to the statistics tier, and the only place a value
+// here becomes a float. It has to be the same number on the way out.
+func TestFloat64IsTheValueAtTheBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		in   Fixed
+		want float64
+	}{
+		{Fixed{12500, 3}, 12.5},
+		{Fixed{0, 6}, 0},
+		{Fixed{-25, 2}, -0.25},
+		{Fixed{410, 2}, 4.10},
+		{Fixed{7, 0}, 7},
+	} {
+		if got := tc.in.Float64(); got != tc.want {
+			t.Errorf("%s.Float64() = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}

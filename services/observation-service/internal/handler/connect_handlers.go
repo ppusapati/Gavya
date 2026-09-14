@@ -9,6 +9,7 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/ppusapati/gavya/libs/integrity/connectjson"
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/libs/integrity/origin"
 
 	"github.com/ppusapati/gavya/services/observation-service/internal/domain"
@@ -34,7 +35,9 @@ type RecordObservationRequest struct {
 	TenantID string       `json:"tenant_id"`
 	Subject  SubjectProto `json:"subject"`
 	Quantity string       `json:"quantity_kind"`
-	Value    float64      `json:"value"`
+	// Value is read from the digits that were sent, whether as a JSON string or
+	// a bare number, and goes back out as a decimal literal.
+	Value exact.Fixed `json:"value"`
 
 	InstrumentID string `json:"instrument_id,omitempty"`
 	SessionRef   string `json:"session_ref,omitempty"`
@@ -88,7 +91,7 @@ type ObservationProto struct {
 	TenantID string       `json:"tenant_id"`
 	Subject  SubjectProto `json:"subject"`
 	Quantity string       `json:"quantity_kind"`
-	Value    float64      `json:"value"`
+	Value    exact.Fixed  `json:"value"`
 	Unit     string       `json:"unit"`
 
 	InstrumentID string `json:"instrument_id,omitempty"`

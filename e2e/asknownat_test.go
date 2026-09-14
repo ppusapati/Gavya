@@ -26,6 +26,7 @@ package e2e
 
 import (
 	"context"
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"testing"
 	"time"
 
@@ -55,14 +56,16 @@ type recordObservationReq struct {
 }
 
 type observationProto struct {
-	ID           string  `json:"id"`
-	Value        float64 `json:"value"`
-	ValidFrom    string  `json:"valid_from"`
-	ValidTo      string  `json:"valid_to,omitempty"`
-	RecordedAt   string  `json:"recorded_at,omitempty"`
-	SupersededAt string  `json:"superseded_at,omitempty"`
-	SupersededBy string  `json:"superseded_by,omitempty"`
-	Supersedes   string  `json:"supersedes,omitempty"`
+	ID string `json:"id"`
+	// A reading comes back as the literal its column holds, at that column's
+	// scale: 4.15 is answered as "4.150000".
+	Value        exact.Fixed `json:"value"`
+	ValidFrom    string      `json:"valid_from"`
+	ValidTo      string      `json:"valid_to,omitempty"`
+	RecordedAt   string      `json:"recorded_at,omitempty"`
+	SupersededAt string      `json:"superseded_at,omitempty"`
+	SupersededBy string      `json:"superseded_by,omitempty"`
+	Supersedes   string      `json:"supersedes,omitempty"`
 }
 
 type recordObservationResp struct {
@@ -155,7 +158,7 @@ func TestACorrectionChangesWhatIsBelievedAndNotWhenItHappened(t *testing.T) {
 		t.Fatalf("as of %s there were %d readings, want the original alone",
 			betweenAt.Format(time.RFC3339), len(before))
 	}
-	if before[0].Value != 4.15 {
+	if before[0].Value != reading("4.150000") {
 		t.Errorf("as of before the correction the reading was %v, want the original 4.15", before[0].Value)
 	}
 
@@ -164,7 +167,7 @@ func TestACorrectionChangesWhatIsBelievedAndNotWhenItHappened(t *testing.T) {
 	if len(now) != 1 {
 		t.Fatalf("%d current readings, want the correction alone", len(now))
 	}
-	if now[0].Value != 3.95 {
+	if now[0].Value != reading("3.950000") {
 		t.Errorf("the current reading is %v, want the corrected 3.95", now[0].Value)
 	}
 
@@ -202,7 +205,7 @@ func TestTheSupersededReadingIsStillReadable(t *testing.T) {
 	if got.Observation == nil {
 		t.Fatal("the superseded reading is gone")
 	}
-	if got.Observation.Value != 4.40 {
+	if got.Observation.Value != reading("4.400000") {
 		t.Errorf("the superseded reading now reads %v; it was edited rather than superseded",
 			got.Observation.Value)
 	}
@@ -274,7 +277,7 @@ func TestCorrectingACorrectionLeavesOneCurrentReading(t *testing.T) {
 
 	now := listAsOf(t, p, subject, "")
 	if len(now) != 1 {
-		var vals []float64
+		var vals []exact.Fixed
 		for _, o := range now {
 			vals = append(vals, o.Value)
 		}
@@ -282,5 +285,51 @@ func TestCorrectingACorrectionLeavesOneCurrentReading(t *testing.T) {
 	}
 	if now[0].ID != third.ID {
 		t.Errorf("the current reading is %s, want the last correction %s", now[0].ID, third.ID)
+	}
+}
+
+// reading is an observation value the way observation-service answers it: at
+// the value column's own scale.
+func reading(s string) exact.Fixed { return exact.MustFixed(s, 6) }
+
+// A reading the column cannot hold is refused, and a cold one still is not.
+//
+// observations.value is NUMERIC(20,6) and the only check on it was for NaN and
+// infinity. A reading finer than six decimals was rounded into the column by
+// PostgreSQL without anyone being told — a fat percentage entered as 4.1500005
+// was stored as 4.150001 and every settlement drawn from it was computed on a
+// figure nobody had written. This is the service the platform's whole claim to
+// integrity rests on, and it was the last one holding its measurement as a
+// float.
+//
+// The temperature case is the other half. The check is on the column, not on
+// the sign: TEMPERATURE_C is a quantity kind here and a cooling tank at four
+// below is ordinary. A check that refused negatives would have refused it.
+func TestAReadingTheColumnCannotHoldIsRefusedAndAColdOneIsNot(t *testing.T) {
+	p := startPlatform(t)
+	subject := subjectProto{Kind: "CATTLE", ID: newID("cat")}
+	at := time.Now().UTC().Format(time.RFC3339)
+
+	// A seventh decimal on a value recorded to six.
+	if _, err := svcclient.Call[recordObservationReq, recordObservationResp](
+		context.Background(), p.observation(), observationSvc+"/RecordObservation",
+		recordObservationReq{
+			TenantID: p.tenant, Subject: subject, Quantity: "FAT_PERCENT",
+			Value: 4.1500005, Origin: originProto{Kind: "NATIVE"},
+			ValidFrom: at, CreatedBy: "operator",
+		}, p.opts()); err == nil {
+		t.Error("4.1500005 was accepted into a column that holds six decimals, so it " +
+			"is stored as 4.150001 and settled against as a reading nobody took")
+	}
+
+	// A reading below zero is a measurement, not a mistake.
+	cold := record(t, p, recordObservationReq{
+		TenantID: p.tenant, Subject: subject, Quantity: "TEMPERATURE_C",
+		Value: -4.5, Origin: originProto{Kind: "NATIVE"},
+		ValidFrom: at, CreatedBy: "operator",
+	})
+	if cold.Value != reading("-4.500000") {
+		t.Errorf("a tank at -4.5°C came back as %v; refusing or mangling a negative "+
+			"reading would make every cold chain record unusable", cold.Value)
 	}
 }

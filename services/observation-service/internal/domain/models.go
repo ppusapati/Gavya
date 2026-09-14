@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"strings"
 	"time"
 
@@ -224,13 +225,32 @@ func (a AnomalyAssessment) Bounded() bool { return a.LowerBound != nil && a.Uppe
 // It is append-only. A correction is a new observation that supersedes this
 // one; the superseded row keeps its original value forever, because a payment
 // already made was made on the number as it stood then.
+// The value column: NUMERIC(20,6). A reading arriving from the wire is checked
+// against it and held at its scale.
+//
+// The check is Column and not NonNegativeColumn: TEMPERATURE_C is a quantity
+// kind here, and a cooling tank below zero is the ordinary case rather than a
+// mistake.
+const (
+	ValueScale     int32 = 6
+	ValuePrecision int32 = 20
+)
+
 type Observation struct {
 	ID       string       `json:"id"`
 	TenantID string       `json:"tenant_id"`
 	Subject  SubjectRef   `json:"subject"`
 	Quantity QuantityKind `json:"quantity_kind"`
-	Value    float64      `json:"value"`
-	Unit     string       `json:"unit"`
+	// Value is what was measured, exact at the column's six decimals.
+	//
+	// It was a float64 from the wire to the column and back, in the one service
+	// whose whole subject is recording measurements. balance-service already
+	// holds its measured flows as exact decimals and only its statistics as
+	// floats; this is the same arrangement. The uncertainty and anomaly figures
+	// below stay floats because they are results of floating-point computation
+	// in the ML tier, not things anybody measured.
+	Value exact.Fixed `json:"value"`
+	Unit  string      `json:"unit"`
 
 	InstrumentID string `json:"instrument_id,omitempty"`
 	// SessionRef names the capture session the reading arrived in. It is a

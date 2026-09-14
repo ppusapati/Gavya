@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/ppusapati/gavya/libs/integrity/money"
@@ -186,6 +187,21 @@ func (f Fixed) Cmp(o Fixed) (int, error) {
 		return 1, nil
 	}
 	return 0, nil
+}
+
+// Float64 is the value as a float, for the one place a float is the right
+// answer: handing a measurement to the tier that computes statistics from it.
+//
+// Uncertainty propagation, reconciliation and anomaly scoring are floating-point
+// mathematics — a combined standard uncertainty is a square root of a sum of
+// squares and has no exact decimal form — and they run in the ML tier, which
+// speaks f64. So the conversion happens, and it happens here, named, at the
+// boundary where exactness stops mattering and statistics begin. What comes back
+// from that tier is a float and is stored as one; what was measured stays exact.
+//
+// Not for arithmetic on this side. Use Add, Sub and Cmp, or do the sum in SQL.
+func (f Fixed) Float64() float64 {
+	return float64(f.Units) / math.Pow(10, float64(f.Scale))
 }
 
 // MarshalJSON writes the value as a decimal literal in a string: "12.500".

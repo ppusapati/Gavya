@@ -20,6 +20,7 @@ package e2e
 
 import (
 	"context"
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"testing"
 	"time"
 
@@ -109,10 +110,10 @@ type listFlaggedReq struct {
 }
 
 type flaggedObservationProto struct {
-	ID       string  `json:"id"`
-	TenantID string  `json:"tenant_id"`
-	Value    float64 `json:"value"`
-	Quantity string  `json:"quantity_kind"`
+	ID       string      `json:"id"`
+	TenantID string      `json:"tenant_id"`
+	Value    exact.Fixed `json:"value"`
+	Quantity string      `json:"quantity_kind"`
 }
 
 type listFlaggedResp struct {

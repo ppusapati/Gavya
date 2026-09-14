@@ -20,6 +20,7 @@ package e2e
 
 import (
 	"context"
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"testing"
 
 	"github.com/ppusapati/gavya/libs/integrity/svcclient"
@@ -57,7 +58,7 @@ type uncertaintyProto struct {
 
 type mlObservationProto struct {
 	ID                 string            `json:"id"`
-	Value              float64           `json:"value"`
+	Value              exact.Fixed       `json:"value"`
 	Uncertainty        *uncertaintyProto `json:"uncertainty,omitempty"`
 	UncertaintyMissing bool              `json:"uncertainty_missing"`
 	EligibilityVerdict string            `json:"eligibility_verdict"`

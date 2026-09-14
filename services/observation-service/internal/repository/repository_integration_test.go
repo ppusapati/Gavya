@@ -28,6 +28,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ppusapati/gavya/libs/integrity/bitemporal"
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/libs/integrity/origin"
 	"github.com/ppusapati/gavya/libs/integrity/sys"
 	"github.com/ppusapati/gavya/libs/integrity/tenantctx"
@@ -100,13 +101,13 @@ func setup(t *testing.T) *fixture {
 	}
 }
 
-func (f *fixture) observation(quantity domain.QuantityKind, value float64, validFrom time.Time) *domain.Observation {
+func (f *fixture) observation(quantity domain.QuantityKind, value string, validFrom time.Time) *domain.Observation {
 	return &domain.Observation{
 		ID:                 newID("obs"),
 		TenantID:           f.tenantID,
 		Subject:            f.subject,
 		Quantity:           quantity,
-		Value:              value,
+		Value:              reading(value),
 		Unit:               quantity.Unit(),
 		SessionRef:         "S-100",
 		ObservedBy:         "op-1",
@@ -120,7 +121,7 @@ func (f *fixture) observation(quantity domain.QuantityKind, value float64, valid
 	}
 }
 
-func (f *fixture) record(t *testing.T, quantity domain.QuantityKind, value float64, validFrom time.Time) *domain.Observation {
+func (f *fixture) record(t *testing.T, quantity domain.QuantityKind, value string, validFrom time.Time) *domain.Observation {
 	t.Helper()
 	out, err := f.repo.CreateObservation(f.acting(), f.observation(quantity, value, validFrom))
 	if err != nil {
@@ -146,13 +147,13 @@ func TestBitemporalRoundTrip(t *testing.T) {
 	f := setup(t)
 	ctx := f.acting()
 
-	created := f.record(t, domain.QuantityVolumeLitres, 12.375, morning)
+	created := f.record(t, domain.QuantityVolumeLitres, "12.375", morning)
 
 	got, err := f.repo.GetObservation(ctx, created.ID, f.tenantID)
 	if err != nil {
 		t.Fatalf("get observation: %v", err)
 	}
-	if got.Value != 12.375 {
+	if got.Value != reading("12.375") {
 		t.Errorf("value = %v, want 12.375; NUMERIC round trip lost precision", got.Value)
 	}
 	if got.Unit != "L" {
@@ -193,7 +194,7 @@ func TestEverySubjectKindRoundTrips(t *testing.T) {
 		subject := domain.SubjectRef{Kind: kind, ID: newID("sub")}
 		f := &fixture{repo: r, tenantID: tenantID, subject: subject}
 
-		created, err := r.CreateObservation(ctx, f.observation(domain.QuantityMassKG, 420.5, morning))
+		created, err := r.CreateObservation(ctx, f.observation(domain.QuantityMassKG, "420.5", morning))
 		if err != nil {
 			t.Fatalf("%s: create: %v", kind, err)
 		}
@@ -219,9 +220,9 @@ func TestCorrectionLeavesBothVersionsReadable(t *testing.T) {
 	f := setup(t)
 	ctx := f.acting()
 
-	original := f.record(t, domain.QuantityVolumeLitres, 12.5, morning)
+	original := f.record(t, domain.QuantityVolumeLitres, "12.5", morning)
 
-	correction := f.observation(domain.QuantityVolumeLitres, 11.25, morning)
+	correction := f.observation(domain.QuantityVolumeLitres, "11.25", morning)
 	correction.Supersedes = original.ID
 	if err := f.repo.SupersedeObservation(ctx, f.tenantID, original.ID, correction.ID); err != nil {
 		t.Fatalf("supersede: %v", err)
@@ -235,7 +236,7 @@ func TestCorrectionLeavesBothVersionsReadable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get superseded observation: %v", err)
 	}
-	if old.Value != 12.5 {
+	if old.Value != reading("12.5") {
 		t.Errorf("superseded observation now reads %v, want the original 12.5; the row was mutated", old.Value)
 	}
 	if old.IsCurrent() {
@@ -252,7 +253,7 @@ func TestCorrectionLeavesBothVersionsReadable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get correction: %v", err)
 	}
-	if fresh.Value != 11.25 {
+	if fresh.Value != reading("11.25") {
 		t.Errorf("correction value = %v, want 11.25", fresh.Value)
 	}
 	if fresh.Supersedes != original.ID {
@@ -283,13 +284,13 @@ func TestAsOfQueryReturnsWhatWasKnownThen(t *testing.T) {
 	f := setup(t)
 	ctx := f.acting()
 
-	original := f.record(t, domain.QuantityFatPercent, 4.2, morning)
+	original := f.record(t, domain.QuantityFatPercent, "4.2", morning)
 
 	time.Sleep(10 * time.Millisecond)
 	beforeCorrection := dbNow(t)
 	time.Sleep(10 * time.Millisecond)
 
-	correction := f.observation(domain.QuantityFatPercent, 3.8, morning)
+	correction := f.observation(domain.QuantityFatPercent, "3.8", morning)
 	correction.Supersedes = original.ID
 	if err := f.repo.SupersedeObservation(ctx, f.tenantID, original.ID, correction.ID); err != nil {
 		t.Fatalf("supersede: %v", err)
@@ -311,7 +312,7 @@ func TestAsOfQueryReturnsWhatWasKnownThen(t *testing.T) {
 	if then[0].ID != original.ID {
 		t.Errorf("as-of query returned %q, want the version known then %q", then[0].ID, original.ID)
 	}
-	if then[0].Value != 4.2 {
+	if then[0].Value != reading("4.2") {
 		t.Errorf("as-of value = %v, want the 4.2 believed at %s", then[0].Value, beforeCorrection)
 	}
 
@@ -325,7 +326,7 @@ func TestAsOfQueryReturnsWhatWasKnownThen(t *testing.T) {
 	if len(now) != 1 || now[0].ID != correction.ID {
 		t.Fatalf("current knowledge returned %d rows (first %v), want only the correction", len(now), firstID(now))
 	}
-	if now[0].Value != 3.8 {
+	if now[0].Value != reading("3.8") {
 		t.Errorf("current value = %v, want 3.8", now[0].Value)
 	}
 
@@ -348,12 +349,12 @@ func TestValidAtSelectsTheIntervalCoveringTheInstant(t *testing.T) {
 
 	evening := morning.Add(12 * time.Hour)
 
-	first := f.observation(domain.QuantityVolumeLitres, 10, morning)
+	first := f.observation(domain.QuantityVolumeLitres, "10", morning)
 	first.ValidTo = evening
 	if _, err := f.repo.CreateObservation(ctx, first); err != nil {
 		t.Fatalf("create morning observation: %v", err)
 	}
-	second := f.observation(domain.QuantityVolumeLitres, 9, evening)
+	second := f.observation(domain.QuantityVolumeLitres, "9", evening)
 	if _, err := f.repo.CreateObservation(ctx, second); err != nil {
 		t.Fatalf("create evening observation: %v", err)
 	}
@@ -443,9 +444,9 @@ func TestOnlyOneLiveVersionPerSubjectQuantityAndInstant(t *testing.T) {
 	f := setup(t)
 	ctx := f.acting()
 
-	first := f.record(t, domain.QuantityVolumeLitres, 12.5, morning)
+	first := f.record(t, domain.QuantityVolumeLitres, "12.5", morning)
 
-	_, err := f.repo.CreateObservation(ctx, f.observation(domain.QuantityVolumeLitres, 11.0, morning))
+	_, err := f.repo.CreateObservation(ctx, f.observation(domain.QuantityVolumeLitres, "11.0", morning))
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
 		t.Fatalf("second live version returned %v, want a unique violation", err)
@@ -460,12 +461,12 @@ func TestOnlyOneLiveVersionPerSubjectQuantityAndInstant(t *testing.T) {
 	if err := f.repo.SupersedeObservation(ctx, f.tenantID, first.ID, newID("obs")); err != nil {
 		t.Fatalf("supersede: %v", err)
 	}
-	if _, err := f.repo.CreateObservation(ctx, f.observation(domain.QuantityVolumeLitres, 11.0, morning)); err != nil {
+	if _, err := f.repo.CreateObservation(ctx, f.observation(domain.QuantityVolumeLitres, "11.0", morning)); err != nil {
 		t.Fatalf("correction after supersession: %v", err)
 	}
 
 	// A different quantity at the same instant is a different question.
-	if _, err := f.repo.CreateObservation(ctx, f.observation(domain.QuantityFatPercent, 4.1, morning)); err != nil {
+	if _, err := f.repo.CreateObservation(ctx, f.observation(domain.QuantityFatPercent, "4.1", morning)); err != nil {
 		t.Fatalf("different quantity at the same instant: %v", err)
 	}
 }
@@ -474,7 +475,7 @@ func TestSupersedeIsRefusedTwice(t *testing.T) {
 	f := setup(t)
 	ctx := f.acting()
 
-	o := f.record(t, domain.QuantityVolumeLitres, 12.5, morning)
+	o := f.record(t, domain.QuantityVolumeLitres, "12.5", morning)
 	if err := f.repo.SupersedeObservation(ctx, f.tenantID, o.ID, newID("obs")); err != nil {
 		t.Fatalf("first supersede: %v", err)
 	}
@@ -490,7 +491,7 @@ func TestAttachUncertainty(t *testing.T) {
 	f := setup(t)
 	ctx := f.acting()
 
-	o := f.record(t, domain.QuantityVolumeLitres, 12.5, morning)
+	o := f.record(t, domain.QuantityVolumeLitres, "12.5", morning)
 	est := domain.UncertaintyEstimate{
 		ModelID:             "milk-analyser-v1",
 		ModelVersion:        "2026.02.11",
@@ -529,7 +530,7 @@ func TestAttachUncertainty(t *testing.T) {
 	if got.Uncertainty.ModelVersion != "2026.02.11" {
 		t.Errorf("model version = %q, want 2026.02.11", got.Uncertainty.ModelVersion)
 	}
-	if got.Value != 12.5 {
+	if got.Value != reading("12.5") {
 		t.Errorf("attaching an estimate changed the measured value to %v", got.Value)
 	}
 
@@ -547,7 +548,7 @@ func TestObservationWithoutAnEstimateIsStillReadable(t *testing.T) {
 	f := setup(t)
 	ctx := f.acting()
 
-	o := f.record(t, domain.QuantityVolumeLitres, 12.5, morning)
+	o := f.record(t, domain.QuantityVolumeLitres, "12.5", morning)
 
 	got, err := f.repo.GetObservation(ctx, o.ID, f.tenantID)
 	if err != nil {
@@ -568,7 +569,7 @@ func TestAttachAnomalyWithBounds(t *testing.T) {
 	f := setup(t)
 	ctx := f.acting()
 
-	o := f.record(t, domain.QuantityVolumeLitres, 31.0, morning)
+	o := f.record(t, domain.QuantityVolumeLitres, "31.0", morning)
 	lower, upper := 8.0, 16.0
 	a := domain.AnomalyAssessment{
 		Score:        4.31,
@@ -607,7 +608,7 @@ func TestAttachAnomalyWithBounds(t *testing.T) {
 		t.Error("the explanation an operator would read was not stored")
 	}
 	// A flag marks for review; it must never alter the measured fact.
-	if got.Value != 31.0 {
+	if got.Value != reading("31.0") {
 		t.Errorf("value = %v, want the recorded 31.0", got.Value)
 	}
 	if !got.IsCurrent() {
@@ -625,7 +626,7 @@ func TestAttachAnomalyWithUnboundedBand(t *testing.T) {
 	f := setup(t)
 	ctx := f.acting()
 
-	o := f.record(t, domain.QuantityVolumeLitres, 12.5, morning)
+	o := f.record(t, domain.QuantityVolumeLitres, "12.5", morning)
 	if err := f.repo.AttachAnomaly(ctx, f.tenantID, o.ID, domain.AnomalyAssessment{
 		Score:       0,
 		Flagged:     false,
@@ -658,8 +659,8 @@ func TestFlaggedQueueHoldsLiveFlagsOnly(t *testing.T) {
 	f := setup(t)
 	ctx := f.acting()
 
-	flagged := f.record(t, domain.QuantityVolumeLitres, 31.0, morning)
-	clean := f.record(t, domain.QuantityFatPercent, 4.1, morning)
+	flagged := f.record(t, domain.QuantityVolumeLitres, "31.0", morning)
+	clean := f.record(t, domain.QuantityFatPercent, "4.1", morning)
 
 	if err := f.repo.AttachAnomaly(ctx, f.tenantID, flagged.ID, domain.AnomalyAssessment{
 		Score: 4.31, Flagged: true, Method: "robust_z", Explanation: "far above the median",
@@ -836,7 +837,7 @@ func TestImportedOriginRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("origin: %v", err)
 	}
-	o := f.observation(domain.QuantityVolumeLitres, 12.5, morning)
+	o := f.observation(domain.QuantityVolumeLitres, "12.5", morning)
 	o.Origin = imported
 
 	stored, err := f.repo.CreateObservation(ctx, o)
@@ -898,7 +899,7 @@ func TestTenantIsolation(t *testing.T) {
 	b := setup(t)
 	ctx := b.acting()
 
-	o := a.record(t, domain.QuantityVolumeLitres, 12.5, morning)
+	o := a.record(t, domain.QuantityVolumeLitres, "12.5", morning)
 	if err := a.repo.AttachAnomaly(ctx, a.tenantID, o.ID, domain.AnomalyAssessment{
 		Score: 4.0, Flagged: true, Method: "robust_z", Explanation: "high",
 	}); err != nil {
@@ -943,7 +944,7 @@ func TestTenantIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get after cross-tenant attempts: %v", err)
 	}
-	if !still.IsCurrent() || still.Value != 12.5 || still.Uncertainty != nil {
+	if !still.IsCurrent() || still.Value != reading("12.5") || still.Uncertainty != nil {
 		t.Errorf("cross-tenant calls altered the observation: %+v", still)
 	}
 }
@@ -1038,4 +1039,10 @@ func firstID(list []*domain.Observation) string {
 		return "<none>"
 	}
 	return list[0].ID
+}
+
+// reading is an observation value at the column's own scale, built from the
+// literal a caller would type.
+func reading(literal string) exact.Fixed {
+	return exact.MustFixed(literal, domain.ValueScale)
 }
