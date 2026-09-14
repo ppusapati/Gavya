@@ -190,13 +190,6 @@ Almost none, which is worth saying plainly rather than leaving a reader to infer
 it from seven items that all end in "closed". What is genuinely outstanding, as
 of this writing:
 
-- **`observation-service` reports every failure as the caller's mistake.** Its
-  handler uses two codes across sixteen call sites, invalid-argument and
-  not-found, and never internal. `RecordObservation` matches a missing row and
-  falls through to invalid-argument for everything else, so a database outage is
-  reported to the caller as something they typed wrong. It is the same defect
-  fixed in `cattle-service`, sitting in the service the settlement path reads
-  from.
 - **`cattle-service`'s other five procedures still choose by position.** Two of
   them were fixed because a weight refusal had to be reported correctly; the rest
   were left rather than swept up in a change about weights, and the handler says
@@ -871,6 +864,36 @@ returns it.
 Found by comparing every exported `Err*` a service defines against what its
 handler package references. `balance` and `ingestion` classify inline rather than
 through a `classify` function and were fine; only the four above were not.
+
+**That method could not find the worst two, and did not.** It compares the errors
+a service defines against the ones its handler matches, so it only sees services
+that already have the vocabulary to be inconsistent. A service with no marker at
+all defines nothing, matches nothing, and comes back clean. Both of the ones it
+missed were exactly that.
+
+`cattle-service` chose by procedure: `CreateCattle` reported every failure as a
+bad request, so an unreachable database looked like a typo, and `UpdateCattle`
+reported every failure as internal, so a weight the column cannot hold looked
+worth retrying. It surfaced only because a weight refusal was being added to both
+paths and would have been misreported on each.
+
+`observation-service` was the same shape and worse placed: two codes across
+sixteen call sites, invalid-argument and not-found, and never internal.
+`RecordObservation` matched a missing row and fell through to invalid-argument
+for everything else, so a database outage reached the caller as something they
+had typed wrong — in the service the settlement path reads from, where a booth
+told its reading was malformed does not send it again.
+
+Both now have the marker and a classifier, and the four codes are distinguished
+by what they ask of whoever sent the request: fix it and resend, do not bother
+resending, or it was not your fault and retrying may work. The last of those was
+the one absent from both.
+
+The lesson is about the detection rather than the defect. A sweep that looks for
+an inconsistency can only find code already articulate enough to be inconsistent;
+finding the silent cases needs a different question, and the one that works is
+how many distinct codes a handler emits across how many call sites. One or two
+across sixteen is the signature.
 
 ---
 

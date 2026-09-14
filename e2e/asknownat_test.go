@@ -25,6 +25,7 @@
 package e2e
 
 import (
+	"connectrpc.com/connect"
 	"context"
 	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"testing"
@@ -320,6 +321,22 @@ func TestAReadingTheColumnCannotHoldIsRefusedAndAColdOneIsNot(t *testing.T) {
 		}, p.opts()); err == nil {
 		t.Error("4.1500005 was accepted into a column that holds six decimals, so it " +
 			"is stored as 4.150001 and settled against as a reading nobody took")
+	} else if code := codeOf(t, err); code != connect.CodeInvalidArgument {
+		// This handler reported every failure as the caller's, so the code was
+		// right here by accident and wrong for an outage. It is now chosen by
+		// what went wrong, and this is the wiring that says the choosing is
+		// reached.
+		t.Errorf("a reading finer than its column is %s, want invalid_argument", code)
+	}
+
+	// And an observation that does not exist is not found rather than refused as
+	// a malformed request, which is the other half of the same distinction.
+	if _, err := svcclient.Call[getObservationReq, getObservationResp](
+		context.Background(), p.observation(), observationSvc+"/GetObservation",
+		getObservationReq{ID: newID("obs"), TenantID: p.tenant}, p.opts()); err == nil {
+		t.Error("an observation that was never recorded came back")
+	} else if code := codeOf(t, err); code != connect.CodeNotFound {
+		t.Errorf("a missing observation is %s, want not_found", code)
 	}
 
 	// A reading below zero is a measurement, not a mistake.

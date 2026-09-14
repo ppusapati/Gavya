@@ -25,6 +25,29 @@ const (
 	anomalyHistoryLimit = 200
 )
 
+// ErrInvalidArgument marks a caller mistake.
+//
+// Without it the handler cannot tell "tenant_id is required" from "the database
+// is unreachable", and it did not: every failure in this service was reported as
+// invalid_argument or not_found and never as internal, so an outage arrived at
+// the caller as something they had typed wrong. A reading refused because it is
+// finer than its column and a reading refused because the database is down want
+// opposite things from whoever sent them.
+var ErrInvalidArgument = errors.New("invalid argument")
+
+// invalidArgument carries the reason alone. The marker is matched through Is, so
+// errors.Is finds it while the message stays free of a prefix the error code
+// already conveys.
+type invalidArgument struct{ reason string }
+
+func (e *invalidArgument) Error() string { return e.reason }
+
+func (e *invalidArgument) Is(target error) bool { return target == ErrInvalidArgument }
+
+func invalid(format string, args ...any) error {
+	return &invalidArgument{reason: fmt.Sprintf(format, args...)}
+}
+
 // RecordObservationInput is one measured fact as its capturer states it.
 type RecordObservationInput struct {
 	TenantID string
@@ -83,7 +106,7 @@ func (s *Service) RecordObservation(ctx context.Context, in RecordObservationInp
 	// worse than none, because the next person reads it as the one that matters.
 	value, err := in.Value.Column(domain.ValueScale, domain.ValuePrecision)
 	if err != nil {
-		return nil, exact.Field("value", err)
+		return nil, invalid("%s", exact.Field("value", err))
 	}
 
 	validTo := in.ValidTo
@@ -97,7 +120,7 @@ func (s *Service) RecordObservation(ctx context.Context, in RecordObservationInp
 	// A half-open interval of zero length is true of no instant, so nothing
 	// could ever select it.
 	if !interval.To.After(interval.From) {
-		return nil, errors.New("valid_to must follow valid_from")
+		return nil, invalid("valid_to must follow valid_from")
 	}
 
 	eligibility, err := s.assessEligibility(ctx, in.TenantID, in.InstrumentID, interval.From, in.Quantity)
@@ -316,13 +339,13 @@ func (s *Service) GetObservation(ctx context.Context, id, tenantID string) (*dom
 // this instant, as we knew it then".
 func (s *Service) ListObservationsForSubject(ctx context.Context, q repository.SubjectQuery) ([]*domain.Observation, error) {
 	if q.TenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	if !q.Subject.Valid() {
-		return nil, fmt.Errorf("subject %s:%s is not a valid reference", q.Subject.Kind, q.Subject.ID)
+		return nil, invalid("subject %s:%s is not a valid reference", q.Subject.Kind, q.Subject.ID)
 	}
 	if q.Quantity != "" && !q.Quantity.Valid() {
-		return nil, fmt.Errorf("quantity kind %q is not recognised", q.Quantity)
+		return nil, invalid("quantity kind %q is not recognised", q.Quantity)
 	}
 	q.Limit, q.Offset = clampLimit(q.Limit), clampOffset(q.Offset)
 	return s.repo.ListObservationsForSubject(ctx, q)
@@ -330,7 +353,7 @@ func (s *Service) ListObservationsForSubject(ctx context.Context, q repository.S
 
 func (s *Service) ListFlaggedObservations(ctx context.Context, tenantID string, limit, offset int) ([]*domain.Observation, error) {
 	if tenantID == "" {
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	return s.repo.ListFlaggedObservations(ctx, tenantID, clampLimit(limit), clampOffset(offset))
 }
@@ -338,14 +361,14 @@ func (s *Service) ListFlaggedObservations(ctx context.Context, tenantID string, 
 func (s *Service) RegisterInstrument(ctx context.Context, tenantID, serial string, kind domain.InstrumentKind, label, manufacturer, model, actor string) (*domain.Instrument, error) {
 	switch {
 	case tenantID == "":
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	case serial == "":
-		return nil, errors.New("serial is required")
+		return nil, invalid("serial is required")
 	case actor == "":
-		return nil, errors.New("actor is required")
+		return nil, invalid("actor is required")
 	}
 	if !kind.Valid() {
-		return nil, fmt.Errorf("instrument kind %q is not recognised", kind)
+		return nil, invalid("instrument kind %q is not recognised", kind)
 	}
 	return s.repo.CreateInstrument(ctx, &domain.Instrument{
 		ID:        ulidpkg.New().String(),
@@ -384,20 +407,20 @@ type RecordCertificateInput struct {
 func (s *Service) RecordCertificate(ctx context.Context, in RecordCertificateInput) (*domain.VerificationCertificate, error) {
 	switch {
 	case in.TenantID == "":
-		return nil, errors.New("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	case in.InstrumentID == "":
-		return nil, errors.New("instrument_id is required")
+		return nil, invalid("instrument_id is required")
 	case in.IssuedAt.IsZero():
-		return nil, errors.New("issued_at is required")
+		return nil, invalid("issued_at is required")
 	case in.ExpiresAt.IsZero():
-		return nil, errors.New("expires_at is required")
+		return nil, invalid("expires_at is required")
 	case !in.ExpiresAt.After(in.IssuedAt):
-		return nil, errors.New("expires_at must follow issued_at: a certificate covering no period verifies nothing")
+		return nil, invalid("expires_at must follow issued_at: a certificate covering no period verifies nothing")
 	case in.CreatedBy == "":
-		return nil, errors.New("created_by is required")
+		return nil, invalid("created_by is required")
 	}
 	if err := in.Origin.Validate(); err != nil {
-		return nil, err
+		return nil, invalid("%s", err)
 	}
 	if _, err := s.repo.GetInstrument(ctx, in.InstrumentID, in.TenantID); err != nil {
 		return nil, fmt.Errorf("load instrument: %w", err)
@@ -426,17 +449,20 @@ func (s *Service) GetActiveCertificate(ctx context.Context, tenantID, instrument
 func validateObservation(in RecordObservationInput) error {
 	switch {
 	case in.TenantID == "":
-		return errors.New("tenant_id is required")
+		return invalid("tenant_id is required")
 	case !in.Subject.Valid():
-		return fmt.Errorf("subject %s:%s is not a valid reference", in.Subject.Kind, in.Subject.ID)
+		return invalid("subject %s:%s is not a valid reference", in.Subject.Kind, in.Subject.ID)
 	case !in.Quantity.Valid():
-		return fmt.Errorf("quantity kind %q is not recognised", in.Quantity)
+		return invalid("quantity kind %q is not recognised", in.Quantity)
 	case in.ValidFrom.IsZero():
-		return errors.New("valid_from is required: an observation with no instant cannot be settled against")
+		return invalid("valid_from is required: an observation with no instant cannot be settled against")
 	case in.CreatedBy == "":
-		return errors.New("created_by is required")
+		return invalid("created_by is required")
 	}
-	return in.Origin.Validate()
+	if err := in.Origin.Validate(); err != nil {
+		return invalid("%s", err)
+	}
+	return nil
 }
 
 func clampLimit(limit int) int {

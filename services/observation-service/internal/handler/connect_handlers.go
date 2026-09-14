@@ -31,6 +31,35 @@ type SubjectProto struct {
 	ID   string `json:"id"`
 }
 
+// classify maps a failure onto the code that describes it.
+//
+// This handler used two codes across sixteen call sites and never internal, so
+// every failure was reported as the caller's: a database outage on
+// RecordObservation arrived as invalid_argument, which tells whoever sent the
+// reading to correct something they typed. This is the service the settlement
+// path reads from, and a booth told its reading was malformed will not send it
+// again.
+//
+// The codes differ in what they ask of the caller, which is the whole point of
+// having more than one. invalid_argument says fix it and resend.
+// failed_precondition says the request was well formed and the state refused it,
+// so resending unchanged will not help. internal says it was not your fault and
+// retrying may work.
+func classify(err error) error {
+	switch {
+	case errors.Is(err, repository.ErrNotFound):
+		return connect.NewError(connect.CodeNotFound, err)
+	case errors.Is(err, repository.ErrAlreadyAttached):
+		// Well formed, and refused because the estimate is write-once. Nothing
+		// the caller can change makes a second one land.
+		return connect.NewError(connect.CodeFailedPrecondition, err)
+	case errors.Is(err, service.ErrInvalidArgument):
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	default:
+		return connect.NewError(connect.CodeInternal, err)
+	}
+}
+
 type RecordObservationRequest struct {
 	TenantID string       `json:"tenant_id"`
 	Subject  SubjectProto `json:"subject"`
@@ -266,10 +295,7 @@ func (h *Handler) RecordObservation(ctx context.Context, req *connect.Request[Re
 	}
 	o, err := h.svc.RecordObservation(ctx, in)
 	if err != nil {
-		if errors.Is(err, repository.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, err)
-		}
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, classify(err)
 	}
 	return connect.NewResponse(&RecordObservationResponse{Observation: toObservationProto(o)}), nil
 }
@@ -277,7 +303,7 @@ func (h *Handler) RecordObservation(ctx context.Context, req *connect.Request[Re
 func (h *Handler) GetObservation(ctx context.Context, req *connect.Request[GetObservationRequest]) (*connect.Response[GetObservationResponse], error) {
 	o, err := h.svc.GetObservation(ctx, req.Msg.ID, req.Msg.TenantID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, err)
+		return nil, classify(err)
 	}
 	return connect.NewResponse(&GetObservationResponse{Observation: toObservationProto(o)}), nil
 }
@@ -303,7 +329,7 @@ func (h *Handler) ListObservationsForSubject(ctx context.Context, req *connect.R
 		Offset:   int(m.Offset),
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, classify(err)
 	}
 	return connect.NewResponse(&ListObservationsForSubjectResponse{Observations: toObservationProtos(list)}), nil
 }
@@ -312,7 +338,7 @@ func (h *Handler) ListFlaggedObservations(ctx context.Context, req *connect.Requ
 	m := req.Msg
 	list, err := h.svc.ListFlaggedObservations(ctx, m.TenantID, int(m.Limit), int(m.Offset))
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, classify(err)
 	}
 	return connect.NewResponse(&ListFlaggedObservationsResponse{Observations: toObservationProtos(list)}), nil
 }
@@ -321,7 +347,7 @@ func (h *Handler) RegisterInstrument(ctx context.Context, req *connect.Request[R
 	m := req.Msg
 	i, err := h.svc.RegisterInstrument(ctx, m.TenantID, m.Serial, domain.InstrumentKind(m.Kind), m.Label, m.Make, m.Model, m.Actor)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, classify(err)
 	}
 	return connect.NewResponse(&RegisterInstrumentResponse{Instrument: toInstrumentProto(i)}), nil
 }
@@ -329,7 +355,7 @@ func (h *Handler) RegisterInstrument(ctx context.Context, req *connect.Request[R
 func (h *Handler) GetInstrument(ctx context.Context, req *connect.Request[GetInstrumentRequest]) (*connect.Response[GetInstrumentResponse], error) {
 	i, err := h.svc.GetInstrument(ctx, req.Msg.ID, req.Msg.TenantID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, err)
+		return nil, classify(err)
 	}
 	return connect.NewResponse(&GetInstrumentResponse{Instrument: toInstrumentProto(i)}), nil
 }
@@ -356,10 +382,7 @@ func (h *Handler) RecordCertificate(ctx context.Context, req *connect.Request[Re
 		CreatedBy:          m.CreatedBy,
 	})
 	if err != nil {
-		if errors.Is(err, repository.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, err)
-		}
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, classify(err)
 	}
 	return connect.NewResponse(&RecordCertificateResponse{Certificate: toCertificateProto(c)}), nil
 }
@@ -376,7 +399,7 @@ func (h *Handler) GetActiveCertificate(ctx context.Context, req *connect.Request
 
 	c, err := h.svc.GetActiveCertificate(ctx, m.TenantID, m.InstrumentID, at)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, err)
+		return nil, classify(err)
 	}
 	out := &GetActiveCertificateResponse{Certificate: toCertificateProto(c)}
 	if m.Quantity != "" {
