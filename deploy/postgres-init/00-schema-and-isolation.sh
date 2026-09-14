@@ -117,6 +117,14 @@ if [ "$audit_writable" != "0" ]; then
     exit 1
 fi
 
+# ---- APPLY ENDS HERE ----
+# Everything below verifies what was applied and changes nothing that the
+# migration runner has to repeat in the same order. The marker is not decoration:
+# tools/dbadmin/internal/schema compares the sequence above against its own copy
+# of it, and reads to this line. gavya_enforce_references() is called again below
+# to report what it refused, and counting that as a step would make the two
+# copies disagree about an order they actually agree on.
+
 # The password is set here rather than in the SQL file, so a credential never
 # enters the repository.
 "${psql[@]}" --command \

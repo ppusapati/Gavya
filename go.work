@@ -5,6 +5,7 @@ use (
 	./libs/integrity
 	./e2e
 	./tools/amcu
+	./tools/dbadmin
 	./services/canonical-service
 	./services/balance-service
 	./services/ingestion-service

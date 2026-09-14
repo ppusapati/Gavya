@@ -25,7 +25,7 @@ Twenty-nine Go services and a thirtieth binary that is all of them, four Rust ML
 services, one shared Go library and one shared Rust crate.
 
 ```sh
-# everything: eighty steps, in the order that fails fastest
+# everything: eighty-three steps, in the order that fails fastest
 TEST_DATABASE_DSN="postgres://user@host:port/%s?sslmode=disable" \
   bash scripts/check-all.sh
 ```
@@ -186,19 +186,36 @@ and it has caught more real problems than reading the code did.
 
 ## Open work
 
-None, which is worth saying plainly rather than leaving a reader to infer it from
-items that all end in "closed". The two that stood here last — `cattle-service`
-classifying its failures by procedure, and `feed-service` writing nothing to the
-audit trail — are both resolved, and the second turned into a check rather than a
-change: see *Errors that told a caller to retry what could never work* and *What
-an edit overwrote*.
+In the code, none. What is open is that **this has never run anywhere**, and that
+is not a small remainder — it is most of the distance to production. Setting it
+out honestly, in the order it would hurt:
 
-Three things cannot be verified in a container and are not claimed here: that the
-images build, since no Docker daemon runs in the environment this was developed
-in, though the build lines were run directly; that the manifests behave on a real
-cluster; and that TLS works against real certificates.
+- **No load test of any kind.** There are no benchmarks. The one predictable
+  spike this platform has is the morning collection, when every booth in a
+  society records at once, and nobody knows what happens at it. That is also the
+  moment it must not fail.
+- **Nothing watches it.** Every service serves `/metrics` and nothing scrapes
+  them. There is no alerting, no tracing across a call chain, and no log
+  aggregation. An outage is noticed by somebody telephoning.
+- **It has never been deployed.** Not to a cluster, not to a single host. No
+  image has been built, because no Docker daemon runs in the environment this was
+  developed in; the build lines were run directly instead, which is weaker.
+- **No real user has ever touched it**, and no real data has ever passed through
+  it. See *Blocked* below, which is the same point from the other end.
 
-What is left is in *Blocked*, and none of it is code.
+The operational gaps that were open alongside these are closed, and how is in
+*What it takes to run this*: backups with a restore that is tested rather than
+believed, a migration path for a database that already exists, the secrets the
+deployments always referenced and nothing produced, and a pipeline that runs the
+gate so it no longer depends on being remembered.
+
+One caution about everything below. It is thorough and it is self-validated:
+every check in this repository was written by the same process that wrote the
+code it checks, against assumptions nobody outside has tested. The concrete
+reason to hold that loosely is that tests which could not fail keep turning up —
+an assertion placed after the state it meant to test, a check made redundant by a
+second one, a coverage figure counted by a grep that cannot count it. Each was
+found by mutation testing. The rate of finding them has not reached zero.
 
 Everything below is closed. It is kept because the reasoning is the expensive
 part and it is not visible in the diff — which is this document's whole job.
@@ -1322,6 +1339,101 @@ genealogy runs through it, `register_instrument` because eligibility does.
 
 ---
 
+## What it takes to run this
+
+Four things stood between a repository that passes its tests and a platform
+somebody could operate, and none of them was about the code.
+
+### A backup, and a restore that has been run
+
+There was neither. This is the system of record for what a co-operative's
+producers are paid, and losing the database had no answer.
+
+`scripts/backup.sh` and `scripts/restore.sh` are the two halves, and three
+details in them are the difference between a backup and a directory nobody has
+opened:
+
+- **The roles are dumped separately.** A database dump does not contain them:
+  `gavya_app` is a cluster object and every row-level security policy in this
+  platform names it. Restore the database alone onto a fresh server and every
+  policy refers to a role that is not there.
+- **The dump is read back** before the script says it worked, which catches the
+  failure that matters most — a dump truncated by a full disk, which pg_dump
+  reports and a pipeline that ignores exit codes turns into a plausible file.
+- **The restore checks properties rather than the exit code.** Losing forced
+  row-level security is silent: the database works, and one table serves every
+  tenant's rows to whoever asks.
+
+The part worth having is `tools/dbadmin/internal/backup`, which does the round
+trip against a real PostgreSQL and compares the two databases — catalogue, row
+counts, isolation, and whether the audit chain still verifies. Two mutants went
+in to see whether it bites: a dump taking the schema without the rows, caught;
+and the roles dump emptied, **not caught**, because roles are cluster-wide and
+`gavya_app` was already on the test server. That check now reads the backup
+rather than the restored database, which is the only honest version of it in an
+environment that cannot stage a fresh server.
+
+One finding worth recording for whoever compares two databases next: pg_dump
+changes how PostgreSQL renders the same predicate. A CHECK written as `IN (...)`
+comes back as `= ANY (ARRAY[('X'::character varying)::text, ...])` where the
+original renders as `= ANY ((ARRAY['X'::character varying, ...])::text[])`.
+Identical meaning, different text, on about forty constraints and one partial
+index. Comparing raw text reports a good restore as broken every time.
+
+### A way to change the schema of a database that exists
+
+`deploy/postgres-init` builds the database, once, when a PostgreSQL data
+directory is first created, and never runs again. Everything after that had no
+procedure: a schema change reached a running deployment by somebody opening psql
+and applying files in an order recorded only in that script's comments.
+
+That order is load-bearing at four points, each of which is a defect somebody
+met — isolation sweeps the tables that exist, foreign keys are made tenant-safe
+after it because row-level security does not reach a foreign key check, the audit
+trail is made append-only after the grants because it revokes some of them back,
+and isolation is swept again because that step creates a table of its own.
+
+`tools/dbadmin/cmd/migrate` applies the same files in the same order, with an
+advisory lock so two rollouts cannot interleave, a record of what was applied and
+when and by whom, and the four refusals the init script ends with. The order now
+lives in one place and a test compares it against the script, because two copies
+of an order this particular will not stay in step. That test found a difference
+the first time it ran, which is why the script now marks where applying stops and
+verifying starts.
+
+### The secrets the deployments named and nothing created
+
+Twenty-eight deployments carried `secretRef: <service>-secret` and no secret
+existed anywhere in the repository, so `kubectl apply` produced twenty-eight pods
+in `CreateContainerConfigError`. That is the good outcome. The bad one is a
+cluster where somebody made them by hand on the first afternoon and the service
+added six months later has none.
+
+`scripts/make-secrets.sh` generates them — never commits them, and refuses to
+invent a password, because a generated default is a credential that looks
+deliberate and is not. It reads which services need one from the deployments
+rather than from a list. Two tests hold it: every referenced secret is produced
+and carries a database URL, and every environment variable a service reads whose
+name says it is a credential is supplied by its ConfigMap or its Secret rather
+than by somebody's shell.
+
+### Something that runs the gate
+
+`scripts/check-all.sh` was the whole of this repository's quality control and
+nothing ran it. It ran when somebody remembered, on a machine whose PostgreSQL
+happened to be up. A check that depends on being remembered stops happening the
+week everyone is busy, which is the week a change most needs it.
+
+The workflow runs the script rather than a list of steps in YAML, because a
+pipeline with its own list drifts from it and then "it passes in CI" and "it
+passes locally" are two claims about two different things. A test fails the build
+if it stops calling the script, if the checkout goes shallow — the upgrade test
+needs the history, and without it compares a version against itself and passes —
+or if the DSN loses its `%s`, which would put every service in one database and
+pass anyway.
+
+---
+
 ## Blocked, and has been since early on
 
 None of these can be worked around by writing more code, and each has been
@@ -1363,3 +1475,7 @@ diff.
 | Notifications addressed to roles, not to producers | A payable names a member code and nothing links either to somebody who can sign in. Addressing a person would have meant inventing that link. |
 | A measurement exact, a statistic float | A combined standard uncertainty is a square root of a sum of squares and has no exact decimal form. Forcing it into an exact type would dress a float as exact, which is the failure this platform spends its time refusing. |
 | A quantity refused below zero, a reading not | `TEMPERATURE_C` is a quantity kind and a cooling tank at four below is the ordinary case. A single rule for both would have refused every cold-chain reading. |
+| A backup is not a backup until it has been restored | The failure arrives months later, at the one moment nobody has time to debug it. The round trip runs against a real PostgreSQL on an ordinary afternoon instead. |
+| The migration runner applies the same files the init script applies | Not a parallel set of migrations. The schemas are re-runnable by design and the upgrade test already proves a fresh database matches an upgraded one; a second set of files would be a second thing to keep true. |
+| Secrets generated, never committed | The alternative is a credential in git. The script refuses to invent a password, because a generated default is a credential that looks deliberate and is not. |
+| CI runs the script, not a list of steps in YAML | A pipeline with its own list drifts from the script, and then "it passes in CI" and "it passes locally" are two claims about two different things — and CI's is the weaker one. |

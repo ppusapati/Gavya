@@ -1,0 +1,127 @@
+# Run the gate, on every push and every pull request.
+#
+# scripts/check-all.sh has been the whole of this repository's quality control
+# for as long as there has been one, and nothing ran it. It ran when somebody
+# remembered, on a machine whose PostgreSQL happened to be up, with whatever was
+# in the Go build cache. A check that depends on being remembered is one that
+# stops happening the week everyone is busy, and the week everyone is busy is
+# when a change most needs it.
+#
+# One job, running the same script a person runs, rather than a reimplementation
+# of it in YAML. A pipeline that lists its own steps drifts from the script, and
+# then "it passes locally" and "it passes in CI" are two different claims about
+# two different things. There is a test that fails the build if this workflow
+# stops calling that script.
+name: check
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+# A second push to the same branch makes the first one's answer irrelevant.
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: scripts/check-all.sh
+    runs-on: ubuntu-24.04
+    # The end-to-end suite builds thirty binaries and drives them over real HTTP,
+    # and the upgrade test builds a database per service from every committed
+    # version of its schema. Generous rather than optimistic: a timeout that
+    # trips on a slow runner teaches people to re-run rather than to look.
+    timeout-minutes: 45
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          # No password, reachable only from this job's network. The platform's
+          # own credential handling is exercised by its tests, not by the CI
+          # database.
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The upgrade test applies every committed version of each schema in
+          # order, so it needs the history. A shallow clone makes it silently
+          # compare one version against itself.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.work
+          cache-dependency-path: |
+            **/go.sum
+            go.work.sum
+
+      - name: Install the PostgreSQL client
+        # The backup round trip shells out to pg_dump, pg_dumpall, pg_restore and
+        # psql, and skips loudly without them — which would mean the one test
+        # that can say "a backup restores" quietly did not run. Version 16 to
+        # match the server: pg_dump refuses a server newer than itself.
+        run: |
+          sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            > /etc/apt/sources.list.d/pgdg.list'
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client-16
+          pg_dump --version
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ml
+
+      - name: Fetch the Rust dependencies
+        # The gate builds the ML tier with --offline, deliberately: a build that
+        # reaches the network mid-run is one that fails for a reason that has
+        # nothing to do with the change. Offline needs the registry populated
+        # first, which is this step's whole job.
+        run: cargo fetch --manifest-path ml/Cargo.toml
+
+      - name: Run the gate
+        env:
+          # The %s is where each service's own database name goes. A DSN without
+          # it silently puts every service in one database and the suite still
+          # passes, which is why the script refuses one.
+          TEST_DATABASE_DSN: 'postgres://postgres@localhost:5432/%s?sslmode=disable'
+        run: bash scripts/check-all.sh
+
+  vulnerabilities:
+    name: govulncheck
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.work
+      - name: Scan every module
+        # Separate from the gate because it asks a question the gate does not:
+        # whether a dependency has a known advisory that this code actually
+        # reaches. It is its own job so a new advisory does not read as a
+        # failure of the change that happened to be pushed that morning.
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          fail=0
+          for dir in $(go list -m -f '{{.Dir}}'); do
+            echo "==> ${dir#"$PWD/"}"
+            ( cd "$dir" && govulncheck ./... ) || fail=1
+          done
+          exit $fail

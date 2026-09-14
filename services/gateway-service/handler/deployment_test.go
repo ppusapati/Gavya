@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -1176,4 +1177,274 @@ func callGraph(t *testing.T, services []string) map[string][]string {
 		}
 	}
 	return calls
+}
+
+// Every secret a deployment references is one something produces.
+//
+// Twenty-eight deployments name a secret in envFrom:
+//
+//	envFrom:
+//	- secretRef:
+//	    name: settlement-service-secret
+//
+// and nothing in this repository created one. Applying the manifests produced
+// twenty-eight pods in CreateContainerConfigError, which is the good outcome.
+// The bad one is a cluster where somebody made the secrets by hand on the first
+// afternoon, and the service added six months later has none — the same failure
+// this file already catches for compose entries and Kubernetes manifests, in the
+// one place it was still possible.
+//
+// scripts/make-secrets.sh produces them, and reads which services need one from
+// the deployments themselves rather than from a list. This runs it and checks
+// that what comes out covers what is asked for, because a generator that reads a
+// glob can stop matching, and then it silently produces nothing.
+func TestEverySecretADeploymentReferencesIsProduced(t *testing.T) {
+	root := repoRoot(t)
+
+	referenced := map[string]string{} // secret name -> service that wants it
+	deployments, err := filepath.Glob(filepath.Join(root, "services", "*", "deployments", "k8s", "deployment.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deployments) < 20 {
+		t.Fatalf("found only %d deployments; the glob has stopped matching and a check "+
+			"that finds nothing passes", len(deployments))
+	}
+	secretRef := regexp.MustCompile(`secretRef:\s*\n\s*name:\s*(\S+)`)
+	for _, path := range deployments {
+		svc := filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(path))))
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range secretRef.FindAllStringSubmatch(string(b), -1) {
+			referenced[m[1]] = svc
+		}
+	}
+	if len(referenced) == 0 {
+		t.Fatal("no deployment references a secret, which cannot be right")
+	}
+
+	out, err := exec.Command(filepath.Join(root, "scripts", "make-secrets.sh"),
+		"--password", "not-a-real-password", "--stdout").Output()
+	if err != nil {
+		t.Fatalf("run scripts/make-secrets.sh: %v", err)
+	}
+
+	produced := map[string]map[string]string{}
+	for _, doc := range strings.Split(string(out), "\n---") {
+		if strings.TrimSpace(doc) == "" {
+			continue
+		}
+		var secret struct {
+			Kind       string                `yaml:"kind"`
+			Metadata   struct{ Name string } `yaml:"metadata"`
+			StringData map[string]string     `yaml:"stringData"`
+		}
+		if err := yaml.Unmarshal([]byte(doc), &secret); err != nil {
+			t.Fatalf("the generator produced something that is not YAML: %v\n%s", err, doc)
+		}
+		if secret.Kind != "Secret" {
+			continue
+		}
+		produced[secret.Metadata.Name] = secret.StringData
+	}
+
+	for name, svc := range referenced {
+		data, ok := produced[name]
+		if !ok {
+			t.Errorf("%s references the secret %q and scripts/make-secrets.sh does not "+
+				"produce it, so the deployment cannot start: the pod sits in "+
+				"CreateContainerConfigError", svc, name)
+			continue
+		}
+		// The one credential every service reads. A secret that exists and is
+		// empty starts the pod and fails at the first query, which is worse:
+		// the deployment looks healthy until something asks it for data.
+		if data["DATABASE_URL"] == "" {
+			t.Errorf("the secret %q carries no DATABASE_URL, so %s starts and fails at its "+
+				"first query rather than at boot", name, svc)
+		}
+	}
+
+	// And nothing spare. A secret produced for a service that does not exist is
+	// a credential distributed for no reason.
+	for name := range produced {
+		if _, ok := referenced[name]; !ok {
+			t.Errorf("scripts/make-secrets.sh produces %q and no deployment references it", name)
+		}
+	}
+
+	t.Logf("%d secrets referenced, %d produced", len(referenced), len(produced))
+}
+
+// Nothing a service reads as a credential is left for somebody to remember.
+//
+// The check above says the secret exists. This one says it is the right shape:
+// every environment variable a service reads whose name says it carries a
+// credential is supplied by its ConfigMap or its Secret, and not by neither.
+//
+// The failure it guards is a service that starts reading a new one — an API key
+// for something, a signing secret — and a deployment that supplies it on the
+// developer's machine through a shell and nowhere else.
+func TestEveryCredentialAServiceReadsIsSuppliedByItsDeployment(t *testing.T) {
+	root := repoRoot(t)
+
+	// Names that say "this is a credential". Deliberately a small list: a
+	// heuristic that matches everything reports noise and gets ignored.
+	credential := regexp.MustCompile(`PASSWORD|SECRET|TOKEN|CREDENTIAL|DATABASE_URL|PRIVATE_KEY`)
+	reads := regexp.MustCompile(`(?:os\.Getenv|getEnv)\("([A-Z][A-Z0-9_]*)"`)
+
+	services, err := filepath.Glob(filepath.Join(root, "services", "*-service"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked := 0
+	for _, dir := range services {
+		svc := filepath.Base(dir)
+		wants := map[string]bool{}
+		err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") ||
+				strings.HasSuffix(path, "_test.go") {
+				return err
+			}
+			b, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			for _, m := range reads.FindAllStringSubmatch(string(b), -1) {
+				if credential.MatchString(m[1]) {
+					wants[m[1]] = true
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(wants) == 0 {
+			continue
+		}
+		checked++
+
+		supplied := map[string]bool{}
+		manifest := filepath.Join(dir, "deployments", "k8s", "service.yaml")
+		if b, err := os.ReadFile(manifest); err == nil {
+			for name := range wants {
+				if strings.Contains(string(b), name+":") {
+					supplied[name] = true
+				}
+			}
+		}
+		deployment := filepath.Join(dir, "deployments", "k8s", "deployment.yaml")
+		b, err := os.ReadFile(deployment)
+		if err != nil {
+			t.Errorf("%s reads %v and has no deployment manifest", svc, keysOf(wants))
+			continue
+		}
+		hasSecret := strings.Contains(string(b), "secretRef")
+
+		for name := range wants {
+			if supplied[name] {
+				continue
+			}
+			// DATABASE_URL is what the generated secret carries; anything else
+			// has to be named somewhere a deployer can see it.
+			if name == "DATABASE_URL" && hasSecret {
+				continue
+			}
+			t.Errorf("%s reads %s and neither its ConfigMap nor its Secret supplies it. "+
+				"A credential that only exists in somebody's shell is one the deployment "+
+				"does not have.", svc, name)
+		}
+	}
+	if checked < 20 {
+		t.Fatalf("only %d services were found to read a credential, and there are more "+
+			"than that; the patterns have stopped matching", checked)
+	}
+	t.Logf("%d services read a credential, and each one's deployment supplies it", checked)
+}
+
+func keysOf(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Continuous integration runs the gate, and not a copy of it.
+//
+// scripts/check-all.sh is the whole of this repository's quality control and
+// nothing ran it: it ran when somebody remembered. The workflow added to run it
+// has the failure mode every pipeline has, which is to grow its own list of
+// steps — `go test ./...` here, a vet there — until "it passes in CI" and "it
+// passes locally" are two claims about two different things, and the one CI
+// makes is the weaker.
+//
+// So the workflow calls the script, and this says so. It also checks the two
+// pieces of setup the gate silently degrades without: a full clone, because the
+// upgrade test applies every committed version of each schema and a shallow one
+// makes it compare a version against itself, and a DSN with a %s in it, because
+// without one every service shares a database and the suite passes anyway.
+func TestContinuousIntegrationRunsTheGate(t *testing.T) {
+	root := repoRoot(t)
+	path := filepath.Join(root, ".github", "workflows", "check.yml")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the workflow: %v\nNothing runs scripts/check-all.sh without it, "+
+			"and a gate that depends on being remembered stops happening the week "+
+			"everyone is busy.", err)
+	}
+
+	var wf struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Uses string            `yaml:"uses"`
+				Run  string            `yaml:"run"`
+				With map[string]any    `yaml:"with"`
+				Env  map[string]string `yaml:"env"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(b, &wf); err != nil {
+		t.Fatalf("the workflow is not valid YAML, so it does not run at all: %v", err)
+	}
+	if len(wf.Jobs) == 0 {
+		t.Fatal("the workflow defines no jobs")
+	}
+
+	var runsGate, fullClone bool
+	var dsn string
+	for _, job := range wf.Jobs {
+		for _, step := range job.Steps {
+			if strings.Contains(step.Run, "check-all.sh") {
+				runsGate = true
+				if v, ok := step.Env["TEST_DATABASE_DSN"]; ok {
+					dsn = v
+				}
+			}
+			if strings.HasPrefix(step.Uses, "actions/checkout") {
+				if depth, ok := step.With["fetch-depth"]; ok {
+					fullClone = fullClone || depth == 0
+				}
+			}
+		}
+	}
+
+	if !runsGate {
+		t.Error("no job in the workflow runs scripts/check-all.sh. A pipeline that lists " +
+			"its own steps drifts from the script, and then what CI checks is not what " +
+			"a person checks.")
+	}
+	if !fullClone {
+		t.Error("no checkout asks for fetch-depth: 0. e2e/upgrade_test.go applies every " +
+			"committed version of each schema in order, and a shallow clone leaves it " +
+			"comparing one version against itself — which passes.")
+	}
+	if !strings.Contains(dsn, "%s") {
+		t.Errorf("the gate runs with TEST_DATABASE_DSN=%q, which has no %%s in it. "+
+			"Every service would share one database and the suite would pass anyway.", dsn)
+	}
 }

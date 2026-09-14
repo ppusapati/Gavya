@@ -10,3 +10,10 @@
 # binary in the tree breaks nothing and every test still passes.
 /services/*/server
 /services/*/cmd/server/server
+
+# Backups and generated secrets. Both contain live data or a live credential and
+# neither belongs in git; scripts/backup.sh and scripts/make-secrets.sh write
+# here by default so that an accident is harder than getting it right.
+/backups/
+/secrets/
+*-secret.yaml

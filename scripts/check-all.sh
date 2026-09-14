@@ -66,11 +66,18 @@ if [ -n "${TEST_DATABASE_DSN:-}" ]; then
       # them. Provision it here, once, from the same template the e2e harness
       # uses, and run every module that carries such a suite.
       if url="$(cd "$ROOT/e2e" && go run ./cmd/provision -dsn "$TEST_DATABASE_DSN" -root "$ROOT")"; then
-        for dir in $(grep -rl --include='*_test.go' '^//go:build dbintegration' "$ROOT/services" \
+        # services and tools both: the backup round trip lives under tools, and
+        # a glob that named only services would have left it unrun, which is the
+        # exact failure this step was added to fix.
+        for dir in $(grep -rl --include='*_test.go' '^//go:build dbintegration' \
+                       "$ROOT/services" "$ROOT/tools" \
                      | xargs -n1 dirname | sort -u); do
           rel="${dir#$ROOT/}"
+          # The backup suite creates and drops databases of its own, so it needs
+          # the template rather than the one provisioned database.
           step "dbintegration $rel" bash -c \
-            "cd '$dir' && TEST_DATABASE_URL='$url' go test -count=1 -tags dbintegration ."
+            "cd '$dir' && TEST_DATABASE_URL='$url' TEST_DATABASE_DSN='$TEST_DATABASE_DSN' \
+             go test -count=1 -tags dbintegration ."
         done
       else
         echo "    FAILED: provision the dbintegration database"; fail=1
