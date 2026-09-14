@@ -1,6 +1,17 @@
 package domain
 
-import "time"
+import (
+	"time"
+
+	"github.com/ppusapati/gavya/libs/integrity/exact"
+)
+
+// The weight column: NUMERIC(8,2), kilograms to the hundredth. A weight
+// arriving from the wire is checked against this and held at its scale.
+const (
+	WeightScale     int32 = 2
+	WeightPrecision int32 = 8
+)
 
 type Cattle struct {
 	ID          string
@@ -11,15 +22,19 @@ type Cattle struct {
 	DateOfBirth time.Time
 	Gender      string // M/F
 	Status      string // active/sold/deceased
-	Weight      float64
-	Color       string
-	OwnerID     string
-	FarmID      string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	CreatedBy   string
-	UpdatedBy   string
-	DeletedAt   *time.Time
+	// Weight is a measurement, exact at the column's two decimals. The column
+	// is nullable — an animal whose weight was never taken is a real thing —
+	// and a NULL reads back as zero, which is what this service has always
+	// written for one.
+	Weight    exact.Fixed
+	Color     string
+	OwnerID   string
+	FarmID    string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	CreatedBy string
+	UpdatedBy string
+	DeletedAt *time.Time
 }
 
 type Breed struct {

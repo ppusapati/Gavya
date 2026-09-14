@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"strings"
 	"time"
 )
@@ -50,22 +51,33 @@ type Pregnancy struct {
 	DeletedAt           *time.Time `json:"deleted_at"`
 }
 
+// The calf_weight column: NUMERIC(6,2), kilograms to the hundredth. A weight
+// arriving from the wire is checked against this and held at its scale.
+const (
+	CalfWeightScale     int32 = 2
+	CalfWeightPrecision int32 = 6
+)
+
 type CalvingRecord struct {
-	ID            string     `json:"id"`
-	TenantID      string     `json:"tenant_id"`
-	PregnancyID   string     `json:"pregnancy_id"`
-	CattleID      string     `json:"cattle_id"`
-	CalfID        *string    `json:"calf_id"`
-	CalvingDate   time.Time  `json:"calving_date"`
-	CalfGender    string     `json:"calf_gender"`
-	CalfWeight    float64    `json:"calf_weight"`
-	Complications string     `json:"complications"`
-	Status        string     `json:"status"` // normal/assisted/emergency
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
-	CreatedBy     string     `json:"created_by"`
-	UpdatedBy     string     `json:"updated_by"`
-	DeletedAt     *time.Time `json:"deleted_at"`
+	ID          string    `json:"id"`
+	TenantID    string    `json:"tenant_id"`
+	PregnancyID string    `json:"pregnancy_id"`
+	CattleID    string    `json:"cattle_id"`
+	CalfID      *string   `json:"calf_id"`
+	CalvingDate time.Time `json:"calving_date"`
+	CalfGender  string    `json:"calf_gender"`
+	// CalfWeight is a measurement, exact at the column's two decimals. The
+	// column is nullable — a calf that was never weighed is a real thing — and
+	// a NULL reads back as zero, which is what this service has always written
+	// for one.
+	CalfWeight    exact.Fixed `json:"calf_weight"`
+	Complications string      `json:"complications"`
+	Status        string      `json:"status"` // normal/assisted/emergency
+	CreatedAt     time.Time   `json:"created_at"`
+	UpdatedAt     time.Time   `json:"updated_at"`
+	CreatedBy     string      `json:"created_by"`
+	UpdatedBy     string      `json:"updated_by"`
+	DeletedAt     *time.Time  `json:"deleted_at"`
 }
 
 // Breeding states, named so a comparison against a literal cannot drift from

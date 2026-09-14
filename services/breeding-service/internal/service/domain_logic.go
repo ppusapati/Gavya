@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/services/breeding-service/internal/domain"
 	ulidpkg "p9e.in/samavaya/packages/ulid"
 )
@@ -130,6 +131,16 @@ func (s *Service) RecordCalving(ctx context.Context, c *domain.CalvingRecord) (*
 	if c.CattleID == "" {
 		return nil, invalid("cattle_id is required")
 	}
+	// calf_weight is NUMERIC(6,2) and nothing checked it: a finer figure was
+	// rounded into the column by PostgreSQL without anyone being told, and one
+	// too large — 10000 and up — reached the database as a constraint violation
+	// reported as an internal failure. A birth weight is the first thing a
+	// growth curve is measured from.
+	weight, err := c.CalfWeight.NonNegativeColumn(domain.CalfWeightScale, domain.CalfWeightPrecision)
+	if err != nil {
+		return nil, invalid(exact.Field("calf_weight", err).Error())
+	}
+	c.CalfWeight = weight
 	c.ID = ulidpkg.New().String()
 	if c.Status == "" {
 		c.Status = "normal"

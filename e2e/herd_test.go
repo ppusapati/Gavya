@@ -23,10 +23,12 @@ package e2e
 
 import (
 	"context"
-	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
+
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/libs/integrity/svcclient"
 )
 
@@ -108,9 +110,9 @@ type updateCattleReq struct {
 
 type updateCattleResp struct {
 	Cattle *struct {
-		ID     string  `json:"id"`
-		Status string  `json:"status"`
-		Weight float64 `json:"weight"`
+		ID     string      `json:"id"`
+		Status string      `json:"status"`
+		Weight exact.Fixed `json:"weight"`
 	} `json:"cattle"`
 }
 
@@ -318,7 +320,7 @@ func TestAnAnimalIsUpdatedAndTheBreedListIsTheTenantsOwn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateCattle: %v", err)
 	}
-	if updated.Cattle.Weight != 412.5 {
+	if updated.Cattle.Weight != exact.MustFixed("412.50", 2) {
 		t.Errorf("the animal weighs %v after being updated to 412.5; an update "+
 			"that answers with the row as it was is a silent no-op",
 			updated.Cattle.Weight)
@@ -584,5 +586,87 @@ func TestAVaccinationHistoryIsOneAnimalsAndTheQueueIsThisWeeks(t *testing.T) {
 		t.Error("a dose two months overdue is in this week's round\n" +
 			"It does need chasing, and not from a list headed 'due this week': " +
 			"a round that mixes the two is a round nobody can work from.")
+	}
+}
+
+// A weight the column cannot hold is refused, and refused as a caller's mistake.
+//
+// Nothing checked either of these. cattle.weight is NUMERIC(8,2) and
+// calving_records.calf_weight is NUMERIC(6,2), and a figure finer than two
+// decimals was rounded into the column by PostgreSQL without anyone being told:
+// an animal entered at 380.567 kg was stored at 380.57 and read back as a
+// weight nobody had typed. One too large for the column reached the database as
+// a constraint violation, which arrived as an internal failure — advice to
+// retry something that cannot succeed.
+//
+// The code matters as much as the refusal. CreateCattle used to report every
+// failure as a bad request and UpdateCattle every failure as internal, each
+// chosen by which procedure it was rather than by what had happened.
+func TestAWeightTheColumnCannotHoldIsRefusedAsTheCallersMistake(t *testing.T) {
+	p := startPlatform(t)
+	ctx := context.Background()
+	tenant := newID("ten")
+	opts := actingAs(tenant, "e2e")
+
+	// A third decimal on a weight recorded to two.
+	_, err := svcclient.Call[createCattleReq, cattleResp](ctx, p.cattle(),
+		cattleSvc+"/CreateCattle", createCattleReq{
+			TenantID: tenant, TagNumber: newID("tag"), Name: "finer",
+			Gender: "F", Weight: 380.567, CreatedBy: "e2e",
+		}, opts)
+	if err == nil {
+		t.Error("380.567 kg was accepted into a column that holds two decimals, " +
+			"so it is stored as 380.57 and read back as a weight nobody entered")
+	} else if code := codeOf(t, err); code != connect.CodeInvalidArgument {
+		t.Errorf("a weight finer than the column is %s, want invalid_argument — "+
+			"it is the caller's to fix and no retry changes it", code)
+	}
+
+	// And one too large for NUMERIC(8,2), whose largest value is 999999.99.
+	_, err = svcclient.Call[createCattleReq, cattleResp](ctx, p.cattle(),
+		cattleSvc+"/CreateCattle", createCattleReq{
+			TenantID: tenant, TagNumber: newID("tag"), Name: "vast",
+			Gender: "F", Weight: 1000000, CreatedBy: "e2e",
+		}, opts)
+	if err == nil {
+		t.Error("a weight past what the column can hold was accepted")
+	} else if code := codeOf(t, err); code != connect.CodeInvalidArgument {
+		t.Errorf("a weight past the column is %s, want invalid_argument", code)
+	}
+
+	// A negative weight is not a weight. This one goes through UpdateCattle,
+	// which reported everything as internal.
+	made, err := svcclient.Call[createCattleReq, cattleResp](ctx, p.cattle(),
+		cattleSvc+"/CreateCattle", createCattleReq{
+			TenantID: tenant, TagNumber: newID("tag"), Name: "real",
+			Gender: "F", Weight: 400, CreatedBy: "e2e",
+		}, opts)
+	if err != nil {
+		t.Fatalf("CreateCattle: %v", err)
+	}
+	_, err = svcclient.Call[updateCattleReq, updateCattleResp](ctx, p.cattle(),
+		cattleSvc+"/UpdateCattle", updateCattleReq{
+			ID: made.Cattle.ID, TenantID: tenant, Status: "active",
+			Weight: -1, UpdatedBy: "e2e",
+		}, opts)
+	if err == nil {
+		t.Error("an animal was recorded as weighing less than nothing")
+	} else if code := codeOf(t, err); code != connect.CodeInvalidArgument {
+		t.Errorf("a negative weight is %s, want invalid_argument — reporting it as "+
+			"internal tells the caller to retry a figure that will never be accepted", code)
+	}
+
+	// A weight the column does hold is still accepted, so none of the above
+	// passes by refusing everything.
+	kept, err := svcclient.Call[updateCattleReq, updateCattleResp](ctx, p.cattle(),
+		cattleSvc+"/UpdateCattle", updateCattleReq{
+			ID: made.Cattle.ID, TenantID: tenant, Status: "active",
+			Weight: 412.5, UpdatedBy: "e2e",
+		}, opts)
+	if err != nil {
+		t.Fatalf("a weight the column holds was refused: %v", err)
+	}
+	if kept.Cattle.Weight != exact.MustFixed("412.50", 2) {
+		t.Errorf("412.5 kg came back as %v", kept.Cattle.Weight)
 	}
 }

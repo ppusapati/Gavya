@@ -2,30 +2,71 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	ulidpkg "p9e.in/samavaya/packages/ulid"
 
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/services/cattle-service/internal/domain"
 )
+
+// ErrInvalidArgument marks a caller mistake. Without it the handler cannot tell
+// "that weight does not fit the column" from "the query failed", and this
+// handler reported the whole of CreateCattle as a bad request and the whole of
+// UpdateCattle as an internal one — a code chosen by which procedure it was
+// rather than by what went wrong.
+var ErrInvalidArgument = errors.New("invalid argument")
+
+// invalidArgument carries the reason alone. The marker is matched through Is,
+// so errors.Is finds it while the message stays free of a prefix the error code
+// already conveys.
+type invalidArgument struct{ reason string }
+
+func (e *invalidArgument) Error() string { return e.reason }
+
+func (e *invalidArgument) Is(target error) bool { return target == ErrInvalidArgument }
+
+func invalid(msg string) error { return &invalidArgument{reason: msg} }
+
+// weightForColumn checks a weight against the column that holds it.
+//
+// Nothing checked it before. A figure finer than two decimals was rounded into
+// NUMERIC(8,2) by PostgreSQL without anyone being told, and one too large
+// reached the database as a constraint violation reported as an internal
+// failure. An animal's weight is what a dose is worked out from and what a sale
+// is priced against, so neither belongs in the set of things somebody discovers
+// afterwards.
+func weightForColumn(w exact.Fixed) (exact.Fixed, error) {
+	at, err := w.NonNegativeColumn(domain.WeightScale, domain.WeightPrecision)
+	if err != nil {
+		return exact.Fixed{}, invalid(exact.Field("weight", err).Error())
+	}
+	return at, nil
+}
 
 // ─── Cattle ──────────────────────────────────────────────────────────────────
 
 // CreateCattle validates input, assigns a ULID, and persists a new cattle record.
 func (s *Service) CreateCattle(ctx context.Context, c *domain.Cattle) (*domain.Cattle, error) {
 	if c.TenantID == "" {
-		return nil, fmt.Errorf("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	if c.TagNumber == "" {
-		return nil, fmt.Errorf("tag_number is required")
+		return nil, invalid("tag_number is required")
 	}
 	if c.Gender != "M" && c.Gender != "F" {
-		return nil, fmt.Errorf("gender must be M or F")
+		return nil, invalid("gender must be M or F")
 	}
 	if c.CreatedBy == "" {
-		return nil, fmt.Errorf("created_by is required")
+		return nil, invalid("created_by is required")
 	}
+	weight, err := weightForColumn(c.Weight)
+	if err != nil {
+		return nil, err
+	}
+	c.Weight = weight
 
 	c.ID = ulidpkg.New().String()
 	if c.Status == "" {
@@ -72,11 +113,16 @@ func (s *Service) ListCattle(ctx context.Context, tenantID, status string, limit
 // UpdateCattle applies status and weight changes to an existing cattle record.
 func (s *Service) UpdateCattle(ctx context.Context, c *domain.Cattle) (*domain.Cattle, error) {
 	if c.ID == "" || c.TenantID == "" {
-		return nil, fmt.Errorf("id and tenant_id are required")
+		return nil, invalid("id and tenant_id are required")
 	}
 	if c.UpdatedBy == "" {
-		return nil, fmt.Errorf("updated_by is required")
+		return nil, invalid("updated_by is required")
 	}
+	weight, err := weightForColumn(c.Weight)
+	if err != nil {
+		return nil, err
+	}
+	c.Weight = weight
 	c.UpdatedAt = time.Now()
 
 	result, err := s.repo.UpdateCattle(ctx, c)

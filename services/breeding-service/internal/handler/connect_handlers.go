@@ -9,6 +9,7 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/ppusapati/gavya/libs/integrity/connectjson"
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/services/breeding-service/internal/domain"
 	"github.com/ppusapati/gavya/services/breeding-service/internal/repository"
 	"github.com/ppusapati/gavya/services/breeding-service/internal/service"
@@ -101,15 +102,17 @@ type PregnancyResponse struct {
 }
 
 type RecordCalvingRequest struct {
-	TenantID      string  `json:"tenant_id"`
-	PregnancyID   string  `json:"pregnancy_id"`
-	CattleID      string  `json:"cattle_id"`
-	CalfID        *string `json:"calf_id"`
-	CalfGender    string  `json:"calf_gender"`
-	CalfWeight    float64 `json:"calf_weight"`
-	Complications string  `json:"complications"`
-	Status        string  `json:"status"`
-	CreatedBy     string  `json:"created_by"`
+	TenantID    string  `json:"tenant_id"`
+	PregnancyID string  `json:"pregnancy_id"`
+	CattleID    string  `json:"cattle_id"`
+	CalfID      *string `json:"calf_id"`
+	CalfGender  string  `json:"calf_gender"`
+	// CalfWeight is read from the digits that were sent, whether as a JSON
+	// string or a bare number, and goes back out as a decimal literal.
+	CalfWeight    exact.Fixed `json:"calf_weight"`
+	Complications string      `json:"complications"`
+	Status        string      `json:"status"`
+	CreatedBy     string      `json:"created_by"`
 }
 
 type CalvingRecordResponse struct {

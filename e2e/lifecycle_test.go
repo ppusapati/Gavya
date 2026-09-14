@@ -389,6 +389,23 @@ func TestABreedingCycleRunsOnceAndCloses(t *testing.T) {
 			"pregnant; the calf now has two sires on record")
 	}
 
+	// A birth weight finer than the column records is refused rather than
+	// rounded into it. calf_weight is NUMERIC(6,2) and nothing checked it, so
+	// 30.555 was stored as 30.56 and the first point of a growth curve was a
+	// figure nobody had written down.
+	//
+	// This has to run while the pregnancy is still open. Placed after the
+	// calving below it is refused for having already calved, and passes whether
+	// the weight is checked or not — which is what it did when it was first
+	// written here.
+	if _, err := svcclient.Call[recordCalvingReq, calvingResp](
+		context.Background(), p.breeding(), breedingSvc+"/RecordCalving",
+		recordCalvingReq{TenantID: p.tenant, PregnancyID: preg.Pregnancy.ID,
+			CattleID: cattle, CalfGender: "male", CalfWeight: 30.555,
+			CreatedBy: "e2e"}, p.opts()); err == nil {
+		t.Error("a calf weight of 30.555 kg was accepted into a column that holds two decimals")
+	}
+
 	if _, err := svcclient.Call[recordCalvingReq, calvingResp](
 		context.Background(), p.breeding(), breedingSvc+"/RecordCalving",
 		recordCalvingReq{TenantID: p.tenant, PregnancyID: preg.Pregnancy.ID,

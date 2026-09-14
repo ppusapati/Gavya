@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/services/breeding-service/internal/domain"
 )
 
@@ -154,7 +155,7 @@ func (h *herd) calve(t *testing.T, p *domain.Pregnancy) (*domain.CalvingRecord, 
 		CalfID:      ptr(newTestID("clf")),
 		CalvingDate: time.Now(),
 		CalfGender:  domain.CalfFemale,
-		CalfWeight:  32.5,
+		CalfWeight:  exact.MustFixed("32.50", domain.CalfWeightScale),
 		Status:      domain.CalvingNormal,
 		CreatedBy:   actor,
 		UpdatedBy:   actor,

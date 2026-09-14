@@ -2,26 +2,51 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"connectrpc.com/connect"
 
 	"github.com/ppusapati/gavya/libs/integrity/connectjson"
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/services/cattle-service/internal/domain"
 	"github.com/ppusapati/gavya/services/cattle-service/internal/service"
 )
+
+// classify maps a failure onto the code that describes it.
+//
+// The two procedures that take a weight chose their code by which procedure
+// they were: CreateCattle reported everything as a bad request, so an
+// unreachable database looked like something the caller had typed wrong, and
+// UpdateCattle reported everything as internal, so a weight the column cannot
+// hold looked like something worth retrying. Neither is retried usefully on the
+// other's advice.
+//
+// The remaining procedures in this file still choose by position. They are left
+// alone here rather than swept up in a change about weights; that they do it is
+// recorded where somebody looking for it will find it.
+func classify(err error) error {
+	switch {
+	case errors.Is(err, service.ErrInvalidArgument):
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	default:
+		return connect.NewError(connect.CodeInternal, err)
+	}
+}
 
 // ─── Request / Response types ─────────────────────────────────────────────────
 // These mirror the proto messages. Replace with buf-generated types after buf generate.
 
 type CreateCattleRequest struct {
-	TenantID  string  `json:"tenant_id"`
-	TagNumber string  `json:"tag_number"`
-	Name      string  `json:"name"`
-	BreedID   string  `json:"breed_id"`
-	Gender    string  `json:"gender"`
-	Weight    float64 `json:"weight"`
-	CreatedBy string  `json:"created_by"`
+	TenantID  string `json:"tenant_id"`
+	TagNumber string `json:"tag_number"`
+	Name      string `json:"name"`
+	BreedID   string `json:"breed_id"`
+	Gender    string `json:"gender"`
+	// Weight is read from the digits that were sent, whether as a JSON string
+	// or a bare number, and goes back out as a decimal literal.
+	Weight    exact.Fixed `json:"weight"`
+	CreatedBy string      `json:"created_by"`
 }
 
 type CreateCattleResponse struct {
@@ -50,11 +75,11 @@ type ListCattleResponse struct {
 }
 
 type UpdateCattleRequest struct {
-	ID        string  `json:"id"`
-	TenantID  string  `json:"tenant_id"`
-	Status    string  `json:"status"`
-	Weight    float64 `json:"weight"`
-	UpdatedBy string  `json:"updated_by"`
+	ID        string      `json:"id"`
+	TenantID  string      `json:"tenant_id"`
+	Status    string      `json:"status"`
+	Weight    exact.Fixed `json:"weight"`
+	UpdatedBy string      `json:"updated_by"`
 }
 
 type UpdateCattleResponse struct {
@@ -92,14 +117,14 @@ type ListBreedsResponse struct {
 }
 
 type CattleProto struct {
-	ID        string  `json:"id"`
-	TenantID  string  `json:"tenant_id"`
-	TagNumber string  `json:"tag_number"`
-	Name      string  `json:"name"`
-	BreedID   string  `json:"breed_id"`
-	Gender    string  `json:"gender"`
-	Status    string  `json:"status"`
-	Weight    float64 `json:"weight"`
+	ID        string      `json:"id"`
+	TenantID  string      `json:"tenant_id"`
+	TagNumber string      `json:"tag_number"`
+	Name      string      `json:"name"`
+	BreedID   string      `json:"breed_id"`
+	Gender    string      `json:"gender"`
+	Status    string      `json:"status"`
+	Weight    exact.Fixed `json:"weight"`
 }
 
 type BreedProto struct {
@@ -159,7 +184,7 @@ func (h *Handler) CreateCattle(
 	}
 	created, err := h.svc.CreateCattle(ctx, c)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, classify(err)
 	}
 	return connect.NewResponse(&CreateCattleResponse{Cattle: cattleToProto(created)}), nil
 }
@@ -206,7 +231,7 @@ func (h *Handler) UpdateCattle(
 	}
 	updated, err := h.svc.UpdateCattle(ctx, c)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, classify(err)
 	}
 	return connect.NewResponse(&UpdateCattleResponse{Cattle: cattleToProto(updated)}), nil
 }
