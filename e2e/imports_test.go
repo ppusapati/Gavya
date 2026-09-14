@@ -14,25 +14,13 @@ import (
 // and its packages are addressed by that path.
 const sharedModule = "p9e.in/samavaya/packages"
 
-// knownAbsent are packages the shared module refers to that were never brought
-// across when it was imported. They are not a case problem and cannot be fixed
-// by renaming anything: the code has to be written or generated. Until then the
-// packages that import them do not build, and neither does the module as a
-// whole under a plain `go build ./...`.
-//
-// This is a register, not an exemption. The test fails if one of these turns up
-// on disk — so the entry has to be deleted when the package is supplied — and it
-// fails if anything not listed here goes missing.
-var knownAbsent = map[string]string{
-	sharedModule + "/classregistry/api/v1": "generated protobuf for the class registry; " +
-		"breaks pkg/classregistry",
-	sharedModule + "/classregistry/api/v1/classregistryv1connect": "generated Connect bindings for the " +
-		"same; breaks pkg/classregistry",
-	sharedModule + "/classregistry/pgstore": "the Postgres-backed class registry store; " +
-		"breaks pkg/onboarding",
-	sharedModule + "/convert/sql": "SQL scan and value helpers; breaks pkg/convert",
-	sharedModule + "/saga/models": "saga step and state types; breaks pkg/saga",
-}
+// There used to be a register here of packages the shared module referred to
+// that were never brought across when it was imported — generated protobuf, a
+// saga models package, SQL helpers — each of which broke the package importing
+// it, so the module as a whole never built. The module has since been cut down
+// to the two packages this platform imports, and nothing in it refers to
+// anything missing. Every import of the shared module now has to resolve; there
+// is no list of excuses.
 
 // TestSharedImportsResolveOnACaseSensitiveFilesystem guards a defect that is
 // invisible on the machine it is written on.
@@ -87,7 +75,6 @@ func TestSharedImportsResolveOnACaseSensitiveFilesystem(t *testing.T) {
 	}
 
 	var checked int
-	stillAbsent := map[string]bool{}
 	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -121,10 +108,6 @@ func TestSharedImportsResolveOnACaseSensitiveFilesystem(t *testing.T) {
 					"so this builds on macOS and fails on Linux", rel, p, actual)
 				continue
 			}
-			if _, ok := knownAbsent[p]; ok {
-				stillAbsent[p] = true
-				continue
-			}
 			t.Errorf("%s imports %q, which does not exist under pkg/", rel, p)
 		}
 		return nil
@@ -136,22 +119,7 @@ func TestSharedImportsResolveOnACaseSensitiveFilesystem(t *testing.T) {
 		t.Fatal("no imports of the shared module were found, so this test would pass vacuously")
 	}
 
-	// A register that is never pruned stops describing anything. If one of these
-	// packages has been supplied, say so here rather than letting the entry sit
-	// and excuse a future absence.
-	for p, why := range knownAbsent {
-		if real[p] {
-			t.Errorf("%q now exists, so delete its entry from knownAbsent (%s)", p, why)
-			continue
-		}
-		if !stillAbsent[p] {
-			t.Errorf("%q is listed as a missing package that breaks the build, but nothing imports it "+
-				"any more — delete its entry from knownAbsent (%s)", p, why)
-		}
-	}
-
-	t.Logf("checked %d imports of %s against %d packages on disk; %d known-absent packages still "+
-		"break the module build", checked, sharedModule, len(real), len(stillAbsent))
+	t.Logf("checked %d imports of %s against %d packages on disk", checked, sharedModule, len(real))
 }
 
 func workspaceRoot(t *testing.T) string {

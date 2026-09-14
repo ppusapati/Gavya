@@ -33,23 +33,15 @@ if [ -n "$unformatted" ]; then
   echo "    not gofmt'd:"; echo "$unformatted" | sed 's/^/      /'; fail=1
 fi
 
-for dir in $(go list -m -f '{{.Dir}}' 2>/dev/null | grep -v '/pkg$'); do
+# Every module in the workspace, pkg included. pkg used to be skipped here: it
+# was a library dump of over a hundred packages from another product, most of
+# which did not build. It now holds the two packages the platform imports and
+# nothing else, and is gated like everything else.
+for dir in $(go list -m -f '{{.Dir}}' 2>/dev/null); do
   name="${dir#$ROOT/}"
   step "vet $name"  bash -c "cd '$dir' && go vet ./..."
   step "test $name" bash -c "cd '$dir' && go test -count=1 ./..."
 done
-
-# pkg is a library dump carried over from another product: over a hundred
-# packages, of which the platform imports two. The rest does not build as a
-# whole — saga names a models package that is not there, and a dozen others fail
-# vet or their own tests — and nothing here depends on any of it. So the module
-# is skipped above and the packages actually imported are checked here instead,
-# found from the imports rather than listed, so a new dependency on pkg is
-# checked from the day it is written and not from the day somebody updates this.
-used="$(grep -rhoE '"p9e\.in/samavaya/packages/[^"]+"' --include='*.go' libs services e2e tools \
-  | tr -d '"' | sed 's#^p9e\.in/samavaya/packages#.#' | sort -u | tr '\n' ' ')"
-step "vet pkg (imported: $used)"  bash -c "cd '$ROOT/pkg' && go vet $used"
-step "test pkg (imported: $used)" bash -c "cd '$ROOT/pkg' && go test -count=1 $used"
 
 step "vet e2e (build-tagged)" bash -c "cd '$ROOT/e2e' && go vet -tags e2e ./..."
 
