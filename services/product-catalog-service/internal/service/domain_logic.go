@@ -139,9 +139,11 @@ func (s *Service) ListProducts(ctx context.Context, tenantID, productType, statu
 func (s *Service) CreateSKU(ctx context.Context, sku *domain.SKU, priceLiteral, currencyCode string) (*domain.SKU, error) {
 	// unit_size is stored as NUMERIC(10,3). A finer value would be rounded
 	// into the column without anyone being told, so it is refused instead.
-	if _, err := exact.NonNegativeDecimal(sku.UnitSize, 3, 10); err != nil {
+	unitSize, err := sku.UnitSize.NonNegativeColumn(domain.UnitSizeScale, domain.UnitSizePrecision)
+	if err != nil {
 		return nil, invalid(exact.Field("unit_size", err).Error())
 	}
+	sku.UnitSize = unitSize
 	if sku.TenantID == "" {
 		return nil, invalid("tenant_id is required")
 	}

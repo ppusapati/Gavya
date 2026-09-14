@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"time"
 
 	"github.com/ppusapati/gavya/services/inventory-service/internal/domain"
@@ -82,15 +83,15 @@ func (s *Service) AdjustStock(ctx context.Context, m *domain.StockMovement, upda
 		return nil, invalid("movement_type must be one of in, out, adjustment, transfer")
 	}
 
-	// The quantity is turned into the exact decimal the database will store, and
-	// a value the stock columns cannot hold is refused rather than rounded on
-	// the way in.
-	quantity, err := domain.FormatQuantity(m.Quantity)
+	// The quantity is held at the stock columns' own scale, and a value they
+	// cannot hold is refused rather than rounded on the way in.
+	quantity, err := domain.AtColumn(m.Quantity)
 	if err != nil {
-		return nil, invalid(err.Error())
+		return nil, invalid(exact.Field("quantity", err).Error())
 	}
+	m.Quantity = quantity
 	// A movement of nothing only means something as a stocktake that found none.
-	if m.Quantity == 0 && m.MovementType != domain.MovementAdjustment {
+	if m.Quantity.IsZero() && m.MovementType != domain.MovementAdjustment {
 		return nil, invalid("a " + m.MovementType + " movement must carry a quantity")
 	}
 
@@ -106,7 +107,7 @@ func (s *Service) AdjustStock(ctx context.Context, m *domain.StockMovement, upda
 	}
 	m.UpdatedBy = m.CreatedBy
 
-	return s.repo.ApplyStockMovement(ctx, m, quantity, ulidpkg.New().String())
+	return s.repo.ApplyStockMovement(ctx, m, ulidpkg.New().String())
 }
 
 func (s *Service) ListStockMovements(ctx context.Context, tenantID, warehouseID string, limit, offset int) ([]*domain.StockMovement, error) {
@@ -129,6 +130,13 @@ func (s *Service) CreateBatch(ctx context.Context, b *domain.Batch) (*domain.Bat
 	if b.BatchNumber == "" {
 		return nil, invalid("batch_number is required")
 	}
+	// The same door a movement's quantity goes through. A batch used to take
+	// whatever float arrived, negative included, and hand it to the column.
+	quantity, err := domain.AtColumn(b.Quantity)
+	if err != nil {
+		return nil, invalid(exact.Field("quantity", err).Error())
+	}
+	b.Quantity = quantity
 	b.ID = ulidpkg.New().String()
 	if b.Status == "" {
 		b.Status = "available"

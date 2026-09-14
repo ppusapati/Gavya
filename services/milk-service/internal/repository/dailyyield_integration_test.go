@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/libs/integrity/tenantctx"
 	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
 
@@ -90,15 +91,15 @@ func TestAReadingFallsOnTheTenantsDayNotTheDatabasesTimezone(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			mustRecordAt(t, r, tenant, session, cattle, 6.250, at)
-			mustRecordAt(t, r, tenant, session, cattle, 5.750, at)
+			mustRecordAt(t, r, tenant, session, cattle, "6.250", at)
+			mustRecordAt(t, r, tenant, session, cattle, "5.750", at)
 
 			// The Indian day holds both.
 			onDay, err := r.GetDailyYield(ctx, tenant, cattle, mustDay(t, indianDay), tenantZone)
 			if err != nil {
 				t.Fatalf("get daily yield: %v", err)
 			}
-			if onDay != 12.0 {
+			if onDay != litres("12.000") {
 				t.Errorf("from a database in %s, %s holds %v litres, want 12\n"+
 					"The readings were taken at one in the morning on %s in %s, which is "+
 					"where the tenant is. Reading them into the previous day would move a "+
@@ -112,7 +113,7 @@ func TestAReadingFallsOnTheTenantsDayNotTheDatabasesTimezone(t *testing.T) {
 			if err != nil {
 				t.Fatalf("get the previous day's yield: %v", err)
 			}
-			if dayBefore != 0 {
+			if !dayBefore.IsZero() {
 				t.Errorf("from a database in %s, %s holds %v litres — that is the day these "+
 					"readings fall on in UTC, not the day they fall on where they were taken",
 					zone, utcDay, dayBefore)
@@ -192,14 +193,14 @@ func TestADaysYieldCountsOneAnimal(t *testing.T) {
 	mine, theirs := newTestID("cow"), newTestID("cow")
 	session := newTestID("ses")
 	mustSession(t, r, tenant, mine, session)
-	mustRecord(t, r, tenant, session, mine, 6.250)
-	mustRecord(t, r, tenant, session, theirs, 40.000)
+	mustRecord(t, r, tenant, session, mine, "6.250")
+	mustRecord(t, r, tenant, session, theirs, "40.000")
 
 	total, err := r.GetDailyYield(ctx, tenant, mine, currentDate(t, pool), tenantZone)
 	if err != nil {
 		t.Fatalf("get daily yield: %v", err)
 	}
-	if total != 6.250 {
+	if total != litres("6.250") {
 		t.Errorf("one animal's yield is %v litres, want 6.250; the other gave 40 the "+
 			"same day", total)
 	}
@@ -218,14 +219,14 @@ func TestADaysYieldCountsOneTenant(t *testing.T) {
 		}
 		session := newTestID("ses")
 		mustSession(t, r, tenant, cattle, session)
-		mustRecord(t, r, tenant, session, cattle, 6.250)
+		mustRecord(t, r, tenant, session, cattle, "6.250")
 	}
 
 	total, err := r.GetDailyYield(ctx, mine, cattle, currentDate(t, pool), tenantZone)
 	if err != nil {
 		t.Fatalf("get daily yield: %v", err)
 	}
-	if total != 6.250 {
+	if total != litres("6.250") {
 		t.Errorf("one tenant's yield is %v litres, want 6.250; another tenant recorded "+
 			"the same animal id on the same day", total)
 	}
@@ -242,23 +243,26 @@ func mustSession(t *testing.T, r Repository, tenant, cattle, id string) {
 	}
 }
 
-func mustRecord(t *testing.T, r Repository, tenant, session, cattle string, litres float64) {
+func mustRecord(t *testing.T, r Repository, tenant, session, cattle string, litres string) {
 	t.Helper()
 	mustRecordAt(t, r, tenant, session, cattle, litres, time.Now())
 }
 
 // mustRecordAt writes a reading at a stated instant, which is what lets a test
 // put one either side of a day boundary on purpose.
-func mustRecordAt(t *testing.T, r Repository, tenant, session, cattle string, litres float64, at time.Time) {
+func mustRecordAt(t *testing.T, r Repository, tenant, session, cattle string, litres string, at time.Time) {
 	t.Helper()
 	if _, err := r.CreateRecord(acting(tenant), &domain.MilkRecord{
 		ID: newTestID("rec"), TenantID: tenant, SessionID: session, CattleID: cattle,
-		QuantityLiters: litres, RecordedAt: at,
+		QuantityLiters: exact.MustFixed(litres, domain.LitreScale), RecordedAt: at,
 		CreatedBy: "test", UpdatedBy: "test",
 	}); err != nil {
 		t.Fatalf("record %v litres: %v", litres, err)
 	}
 }
+
+// litres is a yield the way the repository answers it: at the column's scale.
+func litres(s string) exact.Fixed { return exact.MustFixed(s, domain.LitreScale) }
 
 // mustDay reads a calendar day written as YYYY-MM-DD.
 func mustDay(t *testing.T, s string) time.Time {

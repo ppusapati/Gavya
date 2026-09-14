@@ -17,6 +17,7 @@ package e2e
 import (
 	"context"
 	"errors"
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"testing"
 	"time"
 
@@ -57,8 +58,8 @@ type recordMilkReq struct {
 
 type milkRecordResp struct {
 	Record *struct {
-		ID             string  `json:"id"`
-		QuantityLiters float64 `json:"quantity_liters"`
+		ID             string      `json:"id"`
+		QuantityLiters exact.Fixed `json:"quantity_liters"`
 	} `json:"record"`
 }
 
@@ -69,7 +70,7 @@ type dailyYieldReq struct {
 }
 
 type dailyYieldResp struct {
-	TotalLiters float64 `json:"total_liters"`
+	TotalLiters exact.Fixed `json:"total_liters"`
 }
 
 // aMilking records one session's worth of readings for one animal and returns
@@ -120,7 +121,7 @@ func TestADaysYieldIsTheSumOfThatDaysReadings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get daily yield: %v", err)
 	}
-	if got.TotalLiters != 12.0 {
+	if got.TotalLiters != milkLitres("12.000") {
 		t.Errorf("the day's yield is %v litres, want 12 — two readings of 6.250 and "+
 			"5.750 were written today (%s) and the sum found none of them",
 			got.TotalLiters, today)
@@ -182,7 +183,7 @@ func TestAReadingFinerThanTheColumnIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("an ordinary reading was refused: %v", err)
 	}
-	if ok.Record.QuantityLiters != 6.250 {
+	if ok.Record.QuantityLiters != milkLitres("6.250") {
 		t.Errorf("6.250 litres came back as %v", ok.Record.QuantityLiters)
 	}
 }
@@ -204,7 +205,7 @@ func TestADaysYieldCountsOneAnimalAndOneDay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get daily yield: %v", err)
 	}
-	if got.TotalLiters != 6.250 {
+	if got.TotalLiters != milkLitres("6.250") {
 		t.Errorf("one animal's yield is %v litres, want 6.250; the other animal gave "+
 			"40 that day and %s", got.TotalLiters, other)
 	}
@@ -216,7 +217,7 @@ func TestADaysYieldCountsOneAnimalAndOneDay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get daily yield for an empty day: %v", err)
 	}
-	if empty.TotalLiters != 0 {
+	if !empty.TotalLiters.IsZero() {
 		t.Errorf("a day with no readings reports %v litres", empty.TotalLiters)
 	}
 }
@@ -233,7 +234,7 @@ func TestMilkKeepsTenantsApart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get daily yield as the owning tenant: %v", err)
 	}
-	if mine.TotalLiters == 0 {
+	if mine.TotalLiters.IsZero() {
 		t.Fatal("the tenant that recorded the milk sees none of it, so the check below " +
 			"would pass against a query that returns nothing to anybody")
 	}
@@ -243,7 +244,7 @@ func TestMilkKeepsTenantsApart(t *testing.T) {
 		context.Background(), p.milk(), milkSvc+"/GetDailyYield",
 		dailyYieldReq{TenantID: other, CattleID: cattle, Date: today},
 		actingAs(other, "e2e"))
-	if err == nil && theirs.TotalLiters != 0 {
+	if err == nil && !theirs.TotalLiters.IsZero() {
 		t.Errorf("a second tenant reads %v litres against an animal it has never "+
 			"recorded, through milk-service", theirs.TotalLiters)
 	}
@@ -429,9 +430,9 @@ type listRecordsReq struct {
 
 type listRecordsResp struct {
 	Records []*struct {
-		ID             string  `json:"id"`
-		SessionID      string  `json:"session_id"`
-		QuantityLiters float64 `json:"quantity_liters"`
+		ID             string      `json:"id"`
+		SessionID      string      `json:"session_id"`
+		QuantityLiters exact.Fixed `json:"quantity_liters"`
 	} `json:"records"`
 }
 
@@ -453,11 +454,11 @@ type recordQualityReq struct {
 
 type qualityResp struct {
 	Quality *struct {
-		ID         string  `json:"id"`
-		RecordID   string  `json:"record_id"`
-		FatPercent float64 `json:"fat_percent"`
-		SNFPercent float64 `json:"snf_percent"`
-		Lactose    float64 `json:"lactose"`
+		ID         string      `json:"id"`
+		RecordID   string      `json:"record_id"`
+		FatPercent exact.Fixed `json:"fat_percent"`
+		SNFPercent exact.Fixed `json:"snf_percent"`
+		Lactose    exact.Fixed `json:"lactose"`
 	} `json:"quality"`
 }
 
@@ -613,7 +614,7 @@ func TestAQualityReadingIsHeldToItsColumn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("record quality: %v", err)
 	}
-	if got.Quality.FatPercent != 4.10 || got.Quality.SNFPercent != 8.55 {
+	if got.Quality.FatPercent != exact.MustFixed("4.10", 2) || got.Quality.SNFPercent != exact.MustFixed("8.55", 2) {
 		t.Errorf("the reading came back as fat %v snf %v, want 4.10 and 8.55",
 			got.Quality.FatPercent, got.Quality.SNFPercent)
 	}
@@ -637,3 +638,6 @@ func TestAQualityReadingIsHeldToItsColumn(t *testing.T) {
 		}
 	}
 }
+
+// milkLitres is a yield the way milk-service answers it: at the column's scale.
+func milkLitres(s string) exact.Fixed { return exact.MustFixed(s, 3) }

@@ -9,6 +9,7 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/ppusapati/gavya/libs/integrity/connectjson"
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/services/product-catalog-service/internal/domain"
 	"github.com/ppusapati/gavya/services/product-catalog-service/internal/repository"
 	"github.com/ppusapati/gavya/services/product-catalog-service/internal/service"
@@ -158,12 +159,14 @@ type CreateSKURequest struct {
 	// the integrity services take one: a JSON number is a float64 by the time Go
 	// has read it, and a price that has been through a float is a price nobody
 	// can prove was not changed on the way.
-	Price     string  `json:"price"`
-	Currency  string  `json:"currency"`
-	Unit      string  `json:"unit"`
-	UnitSize  float64 `json:"unit_size"`
-	Status    string  `json:"status"`
-	CreatedBy string  `json:"created_by"`
+	Price    string `json:"price"`
+	Currency string `json:"currency"`
+	Unit     string `json:"unit"`
+	// UnitSize is read from the digits that were sent, whether as a JSON string
+	// or a bare number, and goes back out as a decimal literal.
+	UnitSize  exact.Fixed `json:"unit_size"`
+	Status    string      `json:"status"`
+	CreatedBy string      `json:"created_by"`
 }
 
 // SKUView is what a SKU looks like on the wire.
@@ -173,21 +176,21 @@ type CreateSKURequest struct {
 // literal at its currency's scale, and so a change to the stored shape is not
 // automatically a change to the published one.
 type SKUView struct {
-	ID        string     `json:"id"`
-	TenantID  string     `json:"tenant_id"`
-	ProductID string     `json:"product_id"`
-	Code      string     `json:"code"`
-	Name      string     `json:"name"`
-	Price     string     `json:"price"`
-	Currency  string     `json:"currency"`
-	Unit      string     `json:"unit"`
-	UnitSize  float64    `json:"unit_size"`
-	Status    string     `json:"status"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
-	CreatedBy string     `json:"created_by"`
-	UpdatedBy string     `json:"updated_by"`
-	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+	ID        string      `json:"id"`
+	TenantID  string      `json:"tenant_id"`
+	ProductID string      `json:"product_id"`
+	Code      string      `json:"code"`
+	Name      string      `json:"name"`
+	Price     string      `json:"price"`
+	Currency  string      `json:"currency"`
+	Unit      string      `json:"unit"`
+	UnitSize  exact.Fixed `json:"unit_size"`
+	Status    string      `json:"status"`
+	CreatedAt time.Time   `json:"created_at"`
+	UpdatedAt time.Time   `json:"updated_at"`
+	CreatedBy string      `json:"created_by"`
+	UpdatedBy string      `json:"updated_by"`
+	DeletedAt *time.Time  `json:"deleted_at,omitempty"`
 }
 
 func viewSKU(s *domain.SKU) *SKUView {

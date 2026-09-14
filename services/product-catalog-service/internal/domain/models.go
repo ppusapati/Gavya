@@ -3,7 +3,15 @@ package domain
 import (
 	"time"
 
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/libs/integrity/money"
+)
+
+// The unit_size column: NUMERIC(10,3). A size arriving from the wire is
+// checked against it and held at its scale.
+const (
+	UnitSizeScale     int32 = 3
+	UnitSizePrecision int32 = 10
 )
 
 type Category struct {
@@ -71,15 +79,13 @@ type SKU struct {
 	// refactor away from being added to an amount in another.
 	Price money.Money `json:"price"`
 	Unit  string      `json:"unit"`
-	// UnitSize is a quantity, not money: 2.5 kg, not 2.50 rupees. It is still a
-	// float64 and out of scope here; libs/integrity/quantity is where it would
-	// go, and NUMERIC(10,3) is nowhere near the range where float64 loses a
-	// digit.
-	UnitSize  float64    `json:"unit_size"`
-	Status    string     `json:"status"` // active/inactive
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
-	CreatedBy string     `json:"created_by"`
-	UpdatedBy string     `json:"updated_by"`
-	DeletedAt *time.Time `json:"deleted_at"`
+	// UnitSize is a quantity, not money: 2.5 kg, not 2.50 rupees. It is exact
+	// at its column's three decimals, the way the price is at its currency's.
+	UnitSize  exact.Fixed `json:"unit_size"`
+	Status    string      `json:"status"` // active/inactive
+	CreatedAt time.Time   `json:"created_at"`
+	UpdatedAt time.Time   `json:"updated_at"`
+	CreatedBy string      `json:"created_by"`
+	UpdatedBy string      `json:"updated_by"`
+	DeletedAt *time.Time  `json:"deleted_at"`
 }

@@ -9,6 +9,7 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/ppusapati/gavya/libs/integrity/connectjson"
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/services/order-service/internal/domain"
 	"github.com/ppusapati/gavya/services/order-service/internal/repository"
 	"github.com/ppusapati/gavya/services/order-service/internal/service"
@@ -100,17 +101,17 @@ type AddOrderItemRequest struct {
 	OrderID   string `json:"order_id"`
 	SKUID     string `json:"sku_id"`
 	ProductID string `json:"product_id"`
-	// Quantity counts litres or kilos and stays a JSON number: its column is
-	// NUMERIC(10,3) and the boundary is guarded by libs/integrity/exact.
-	Quantity float64 `json:"quantity"`
+	// Quantity and TaxRate are read from the digits that were sent, whether as
+	// a JSON string or a bare number, and go back out as decimal literals.
+	Quantity exact.Fixed `json:"quantity"`
 	// UnitPrice is a decimal literal — "42.50", not 42.5 — because a JSON number
 	// is a float64 by the time Go has read it, and a price that has been through
 	// a float is one nobody can prove was not changed on the way.
 	UnitPrice string `json:"unit_price"`
 	// TaxRate is a percentage for this line: 0 for an exempt good, 12 for one
 	// rated at twelve per cent.
-	TaxRate   float64 `json:"tax_rate"`
-	CreatedBy string  `json:"created_by"`
+	TaxRate   exact.Fixed `json:"tax_rate"`
+	CreatedBy string      `json:"created_by"`
 }
 
 type OrderActionRequest struct {
@@ -169,21 +170,21 @@ func viewOrder(o *domain.Order) *OrderView {
 }
 
 type OrderItemView struct {
-	ID         string    `json:"id"`
-	TenantID   string    `json:"tenant_id"`
-	OrderID    string    `json:"order_id"`
-	SKUID      string    `json:"sku_id"`
-	ProductID  string    `json:"product_id"`
-	Quantity   float64   `json:"quantity"`
-	UnitPrice  string    `json:"unit_price"`
-	TotalPrice string    `json:"total_price"`
-	Currency   string    `json:"currency"`
-	TaxRate    float64   `json:"tax_rate"`
-	Status     string    `json:"status"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
-	CreatedBy  string    `json:"created_by"`
-	UpdatedBy  string    `json:"updated_by"`
+	ID         string      `json:"id"`
+	TenantID   string      `json:"tenant_id"`
+	OrderID    string      `json:"order_id"`
+	SKUID      string      `json:"sku_id"`
+	ProductID  string      `json:"product_id"`
+	Quantity   exact.Fixed `json:"quantity"`
+	UnitPrice  string      `json:"unit_price"`
+	TotalPrice string      `json:"total_price"`
+	Currency   string      `json:"currency"`
+	TaxRate    exact.Fixed `json:"tax_rate"`
+	Status     string      `json:"status"`
+	CreatedAt  time.Time   `json:"created_at"`
+	UpdatedAt  time.Time   `json:"updated_at"`
+	CreatedBy  string      `json:"created_by"`
+	UpdatedBy  string      `json:"updated_by"`
 }
 
 func viewOrderItem(i *domain.OrderItem) *OrderItemView {

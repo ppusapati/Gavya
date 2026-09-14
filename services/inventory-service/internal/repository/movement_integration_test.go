@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/libs/integrity/tenantctx"
 	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
 	"github.com/ppusapati/gavya/services/inventory-service/internal/domain"
@@ -139,9 +141,12 @@ func newFixture(t *testing.T) *fixture {
 
 func (f *fixture) move(t *testing.T, kind domain.MovementType, q float64) (*MovementOutcome, error) {
 	t.Helper()
-	quantity, err := domain.FormatQuantity(q)
+	// The test values are typed as floats for brevity and rendered the way a
+	// caller would type them, then held at the column's scale as the service
+	// would hold them; a value the column cannot hold is a broken test.
+	quantity, err := domain.AtColumn(exact.MustFixed(strconv.FormatFloat(q, 'f', -1, 64), domain.QuantityScale))
 	if err != nil {
-		t.Fatalf("FormatQuantity(%v): %v", q, err)
+		t.Fatalf("quantity %v: %v", q, err)
 	}
 	actor := newTestID("usr")
 	return f.repo.ApplyStockMovement(f.acting(), &domain.StockMovement{
@@ -150,21 +155,26 @@ func (f *fixture) move(t *testing.T, kind domain.MovementType, q float64) (*Move
 		WarehouseID:  f.warehouse,
 		SKUID:        f.sku,
 		MovementType: kind,
-		Quantity:     q,
+		Quantity:     quantity,
 		MovedAt:      time.Now(),
 		MovedBy:      actor,
 		CreatedBy:    actor,
 		UpdatedBy:    actor,
-	}, quantity, newTestID("itm"))
+	}, newTestID("itm"))
 }
 
-func (f *fixture) onHand(t *testing.T) float64 {
+func (f *fixture) onHand(t *testing.T) exact.Fixed {
 	t.Helper()
 	item, err := f.repo.GetInventoryItem(context.Background(), f.warehouse, f.sku, f.tenant)
 	if err != nil {
 		t.Fatalf("GetInventoryItem: %v", err)
 	}
 	return item.QuantityOnHand
+}
+
+// stock is a count the way the repository answers it: at the column's scale.
+func stock(v float64) exact.Fixed {
+	return exact.MustFixed(strconv.FormatFloat(v, 'f', int(domain.QuantityScale), 64), domain.QuantityScale)
 }
 
 func (f *fixture) movementCount(t *testing.T) int {
@@ -183,10 +193,10 @@ func TestAMovementCreatesTheStockRowItNeeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("in: %v", err)
 	}
-	if out.Item.QuantityOnHand != 10 {
+	if out.Item.QuantityOnHand != stock(10) {
 		t.Errorf("on hand = %v, want 10", out.Item.QuantityOnHand)
 	}
-	if out.Movement.Quantity != 10 {
+	if out.Movement.Quantity != stock(10) {
 		t.Errorf("movement quantity = %v, want 10", out.Movement.Quantity)
 	}
 }
@@ -209,7 +219,7 @@ func TestMovementsAccumulate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s %v: %v", step.kind, step.q, err)
 		}
-		if out.Item.QuantityOnHand != step.want {
+		if out.Item.QuantityOnHand != stock(step.want) {
 			t.Fatalf("after %s %v: on hand = %v, want %v", step.kind, step.q, out.Item.QuantityOnHand, step.want)
 		}
 	}
@@ -227,7 +237,7 @@ func TestAnAdjustmentSetsTheCountRatherThanChangingIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("adjustment: %v", err)
 	}
-	if out.Item.QuantityOnHand != 3 {
+	if out.Item.QuantityOnHand != stock(3) {
 		t.Errorf("on hand = %v, want 3", out.Item.QuantityOnHand)
 	}
 }
@@ -242,7 +252,7 @@ func TestStockCannotGoBelowZero(t *testing.T) {
 	if !errors.Is(err, ErrInsufficientStock) {
 		t.Fatalf("err = %v, want ErrInsufficientStock", err)
 	}
-	if on := f.onHand(t); on != 5 {
+	if on := f.onHand(t); on != stock(5) {
 		t.Errorf("on hand = %v, want the refused movement to have changed nothing", on)
 	}
 }
@@ -312,8 +322,8 @@ func TestConcurrentMovementsDoNotLoseOneAnother(t *testing.T) {
 		t.Fatalf("concurrent out: %v", err)
 	}
 
-	if on := f.onHand(t); on != 1000-movements {
-		t.Errorf("on hand = %v, want %d — %v movements were lost", on, 1000-movements, 1000-movements-on)
+	if on := f.onHand(t); on != stock(float64(1000-movements)) {
+		t.Errorf("on hand = %v, want %d — some movements were lost", on, 1000-movements)
 	}
 }
 
@@ -342,7 +352,7 @@ func TestConcurrentMovementsCannotOversell(t *testing.T) {
 	}
 	wg.Wait()
 
-	if on := f.onHand(t); on != 0 {
+	if on := f.onHand(t); !on.IsZero() {
 		t.Errorf("on hand = %v, want 0", on)
 	}
 	if got := refused.Load(); got != takers-5 {
@@ -361,8 +371,8 @@ func TestARunningTotalStaysExact(t *testing.T) {
 		}
 	}
 
-	if on := f.onHand(t); on != 10 {
-		t.Errorf("on hand = %.17g, want exactly 10", on)
+	if on := f.onHand(t); on != stock(10) {
+		t.Errorf("on hand = %v, want exactly 10.000", on)
 	}
 }
 
@@ -427,8 +437,7 @@ func TestAMovementRecordsTheCountItOverwrote(t *testing.T) {
 		t.Errorf("the after-image does not carry the count after the movement: %s", newValue)
 	}
 	// As a quoted decimal literal, not a bare float: the column is NUMERIC and
-	// the domain type is still float64, and a trail of floats is a trail
-	// somebody can dispute on the third decimal.
+	// a trail of floats is a trail somebody can dispute on the third decimal.
 	if strings.Contains(oldValue, `"quantity_on_hand":12.5`) {
 		t.Errorf("the before-image renders the count as a float rather than the column's literal: %s", oldValue)
 	}

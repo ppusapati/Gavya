@@ -46,7 +46,7 @@ type Repository interface {
 	GetInventoryItem(ctx context.Context, warehouseID, skuID, tenantID string) (*domain.InventoryItem, error)
 	// ApplyStockMovement records a movement and moves the stock together, so a
 	// movement can never stand against stock that did not change.
-	ApplyStockMovement(ctx context.Context, m *domain.StockMovement, quantity, itemID string) (*MovementOutcome, error)
+	ApplyStockMovement(ctx context.Context, m *domain.StockMovement, itemID string) (*MovementOutcome, error)
 	ListStockMovements(ctx context.Context, tenantID, warehouseID string, limit, offset int) ([]*domain.StockMovement, error)
 	CreateBatch(ctx context.Context, b *domain.Batch) (*domain.Batch, error)
 	GetBatch(ctx context.Context, id, tenantID string) (*domain.Batch, error)

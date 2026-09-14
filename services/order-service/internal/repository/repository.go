@@ -90,7 +90,7 @@ type Repository interface {
 	TenantMoney(ctx context.Context, tenantID string) (Money, error)
 	// PinTenantMoney fixes that currency, or confirms the one already fixed.
 	PinTenantMoney(ctx context.Context, tenantID string, money Money) error
-	AddItemAndRetotal(ctx context.Context, item *domain.OrderItem, quantity, unitPrice, taxRate string, money Money) (*ItemOutcome, error)
+	AddItemAndRetotal(ctx context.Context, item *domain.OrderItem, unitPrice string, money Money) (*ItemOutcome, error)
 	ListOrderItems(ctx context.Context, orderID, tenantID string) ([]*domain.OrderItem, error)
 	CreateInvoice(ctx context.Context, inv *domain.Invoice) (*domain.Invoice, error)
 	GetInvoice(ctx context.Context, id, tenantID string) (*domain.Invoice, error)

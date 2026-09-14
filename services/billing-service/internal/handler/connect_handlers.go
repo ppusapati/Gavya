@@ -9,6 +9,7 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/ppusapati/gavya/libs/integrity/connectjson"
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/services/billing-service/internal/domain"
 	"github.com/ppusapati/gavya/services/billing-service/internal/repository"
 	"github.com/ppusapati/gavya/services/billing-service/internal/service"
@@ -82,15 +83,15 @@ type AddInvoiceItemRequest struct {
 	TenantID    string `json:"tenant_id"`
 	InvoiceID   string `json:"invoice_id"`
 	Description string `json:"description"`
-	// Quantity counts litres or kilos and stays a JSON number: its column is
-	// NUMERIC(10,3) and the boundary is guarded by libs/integrity/exact.
-	Quantity float64 `json:"quantity"`
+	// Quantity and TaxRate are read from the digits that were sent, whether as
+	// a JSON string or a bare number, and go back out as decimal literals.
+	Quantity exact.Fixed `json:"quantity"`
 	// UnitPrice is a decimal literal — "42.50", not 42.5 — because a JSON number
 	// is a float64 by the time Go has read it, and on an invoice this is part of
 	// what a customer is asked to pay.
-	UnitPrice string  `json:"unit_price"`
-	TaxRate   float64 `json:"tax_rate"`
-	CreatedBy string  `json:"created_by"`
+	UnitPrice string      `json:"unit_price"`
+	TaxRate   exact.Fixed `json:"tax_rate"`
+	CreatedBy string      `json:"created_by"`
 }
 
 type InvoiceActionRequest struct {
@@ -170,19 +171,19 @@ func viewInvoices(in []*domain.Invoice) []*InvoiceView {
 }
 
 type InvoiceItemView struct {
-	ID          string    `json:"id"`
-	TenantID    string    `json:"tenant_id"`
-	InvoiceID   string    `json:"invoice_id"`
-	Description string    `json:"description"`
-	Quantity    float64   `json:"quantity"`
-	UnitPrice   string    `json:"unit_price"`
-	TotalPrice  string    `json:"total_price"`
-	Currency    string    `json:"currency"`
-	TaxRate     float64   `json:"tax_rate"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
-	CreatedBy   string    `json:"created_by"`
-	UpdatedBy   string    `json:"updated_by"`
+	ID          string      `json:"id"`
+	TenantID    string      `json:"tenant_id"`
+	InvoiceID   string      `json:"invoice_id"`
+	Description string      `json:"description"`
+	Quantity    exact.Fixed `json:"quantity"`
+	UnitPrice   string      `json:"unit_price"`
+	TotalPrice  string      `json:"total_price"`
+	Currency    string      `json:"currency"`
+	TaxRate     exact.Fixed `json:"tax_rate"`
+	CreatedAt   time.Time   `json:"created_at"`
+	UpdatedAt   time.Time   `json:"updated_at"`
+	CreatedBy   string      `json:"created_by"`
+	UpdatedBy   string      `json:"updated_by"`
 }
 
 func viewInvoiceItem(i *domain.InvoiceItem) *InvoiceItemView {

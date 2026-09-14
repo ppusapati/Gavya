@@ -84,7 +84,7 @@ func invoiceTotals(i *domain.Invoice) map[string]any {
 	}
 }
 
-func (r *repo) AddItemAndRetotal(ctx context.Context, item *domain.InvoiceItem, quantity, unitPrice, taxRate string, money Money) (*ItemOutcome, error) {
+func (r *repo) AddItemAndRetotal(ctx context.Context, item *domain.InvoiceItem, unitPrice string, money Money) (*ItemOutcome, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin: %w", err)
@@ -120,7 +120,7 @@ func (r *repo) AddItemAndRetotal(ctx context.Context, item *domain.InvoiceItem, 
 		 VALUES ($1,$2,$3,$4,$5::numeric,$6::numeric,ROUND($5::numeric * $6::numeric, $10),$7::numeric,$8,$9)
 		 RETURNING `+invoiceItemCols,
 		item.ID, item.TenantID, item.InvoiceID, item.Description,
-		quantity, unitPrice, taxRate, item.CreatedBy, item.UpdatedBy, money.Scale))
+		item.Quantity, unitPrice, item.TaxRate, item.CreatedBy, item.UpdatedBy, money.Scale))
 	if err != nil {
 		return nil, fmt.Errorf("add item: %w", err)
 	}

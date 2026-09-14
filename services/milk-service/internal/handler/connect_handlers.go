@@ -10,6 +10,7 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/ppusapati/gavya/libs/integrity/connectjson"
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/services/milk-service/internal/domain"
 	"github.com/ppusapati/gavya/services/milk-service/internal/repository"
 	"github.com/ppusapati/gavya/services/milk-service/internal/service"
@@ -85,11 +86,13 @@ type UpdateSessionResponse struct {
 	Session *SessionProto `json:"session"`
 }
 type RecordMilkRequest struct {
-	TenantID       string  `json:"tenant_id"`
-	SessionID      string  `json:"session_id"`
-	CattleID       string  `json:"cattle_id"`
-	QuantityLiters float64 `json:"quantity_liters"`
-	CreatedBy      string  `json:"created_by"`
+	TenantID  string `json:"tenant_id"`
+	SessionID string `json:"session_id"`
+	CattleID  string `json:"cattle_id"`
+	// QuantityLiters is read from the digits that were sent, whether as a JSON
+	// string or a bare number, and goes back out as a decimal literal.
+	QuantityLiters exact.Fixed `json:"quantity_liters"`
+	CreatedBy      string      `json:"created_by"`
 }
 type RecordMilkResponse struct {
 	Record *RecordProto `json:"record"`
@@ -114,15 +117,15 @@ type DailyYieldRequest struct {
 	Date     string `json:"date"`
 }
 type DailyYieldResponse struct {
-	TotalLiters float64 `json:"total_liters"`
+	TotalLiters exact.Fixed `json:"total_liters"`
 }
 type RecordQualityRequest struct {
-	TenantID   string  `json:"tenant_id"`
-	RecordID   string  `json:"record_id"`
-	FatPercent float64 `json:"fat_percent"`
-	SNFPercent float64 `json:"snf_percent"`
-	Lactose    float64 `json:"lactose"`
-	CreatedBy  string  `json:"created_by"`
+	TenantID   string      `json:"tenant_id"`
+	RecordID   string      `json:"record_id"`
+	FatPercent exact.Fixed `json:"fat_percent"`
+	SNFPercent exact.Fixed `json:"snf_percent"`
+	Lactose    exact.Fixed `json:"lactose"`
+	CreatedBy  string      `json:"created_by"`
 }
 type RecordQualityResponse struct {
 	Quality *QualityProto `json:"quality"`
@@ -136,19 +139,19 @@ type SessionProto struct {
 	Status    string `json:"status"`
 }
 type RecordProto struct {
-	ID             string  `json:"id"`
-	TenantID       string  `json:"tenant_id"`
-	SessionID      string  `json:"session_id"`
-	CattleID       string  `json:"cattle_id"`
-	QuantityLiters float64 `json:"quantity_liters"`
+	ID             string      `json:"id"`
+	TenantID       string      `json:"tenant_id"`
+	SessionID      string      `json:"session_id"`
+	CattleID       string      `json:"cattle_id"`
+	QuantityLiters exact.Fixed `json:"quantity_liters"`
 }
 type QualityProto struct {
-	ID         string  `json:"id"`
-	TenantID   string  `json:"tenant_id"`
-	RecordID   string  `json:"record_id"`
-	FatPercent float64 `json:"fat_percent"`
-	SNFPercent float64 `json:"snf_percent"`
-	Lactose    float64 `json:"lactose"`
+	ID         string      `json:"id"`
+	TenantID   string      `json:"tenant_id"`
+	RecordID   string      `json:"record_id"`
+	FatPercent exact.Fixed `json:"fat_percent"`
+	SNFPercent exact.Fixed `json:"snf_percent"`
+	Lactose    exact.Fixed `json:"lactose"`
 }
 
 type Handler struct{ svc *service.Service }

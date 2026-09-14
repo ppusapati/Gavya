@@ -9,6 +9,7 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/ppusapati/gavya/libs/integrity/connectjson"
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/services/inventory-service/internal/domain"
 	"github.com/ppusapati/gavya/services/inventory-service/internal/repository"
 	"github.com/ppusapati/gavya/services/inventory-service/internal/service"
@@ -86,17 +87,17 @@ type TenantRequest struct {
 }
 
 type AdjustStockRequest struct {
-	TenantID      string    `json:"tenant_id"`
-	WarehouseID   string    `json:"warehouse_id"`
-	SKUID         string    `json:"sku_id"`
-	MovementType  string    `json:"movement_type"`
-	Quantity      float64   `json:"quantity"`
-	ReferenceID   string    `json:"reference_id"`
-	ReferenceType string    `json:"reference_type"`
-	Notes         string    `json:"notes"`
-	MovedAt       time.Time `json:"moved_at"`
-	MovedBy       string    `json:"moved_by"`
-	CreatedBy     string    `json:"created_by"`
+	TenantID      string      `json:"tenant_id"`
+	WarehouseID   string      `json:"warehouse_id"`
+	SKUID         string      `json:"sku_id"`
+	MovementType  string      `json:"movement_type"`
+	Quantity      exact.Fixed `json:"quantity"`
+	ReferenceID   string      `json:"reference_id"`
+	ReferenceType string      `json:"reference_type"`
+	Notes         string      `json:"notes"`
+	MovedAt       time.Time   `json:"moved_at"`
+	MovedBy       string      `json:"moved_by"`
+	CreatedBy     string      `json:"created_by"`
 }
 
 type ListStockMovementsRequest struct {
@@ -107,15 +108,15 @@ type ListStockMovementsRequest struct {
 }
 
 type CreateBatchRequest struct {
-	TenantID       string     `json:"tenant_id"`
-	WarehouseID    string     `json:"warehouse_id"`
-	SKUID          string     `json:"sku_id"`
-	BatchNumber    string     `json:"batch_number"`
-	Quantity       float64    `json:"quantity"`
-	ManufacturedAt *time.Time `json:"manufactured_at"`
-	ExpiresAt      *time.Time `json:"expires_at"`
-	Status         string     `json:"status"`
-	CreatedBy      string     `json:"created_by"`
+	TenantID       string      `json:"tenant_id"`
+	WarehouseID    string      `json:"warehouse_id"`
+	SKUID          string      `json:"sku_id"`
+	BatchNumber    string      `json:"batch_number"`
+	Quantity       exact.Fixed `json:"quantity"`
+	ManufacturedAt *time.Time  `json:"manufactured_at"`
+	ExpiresAt      *time.Time  `json:"expires_at"`
+	Status         string      `json:"status"`
+	CreatedBy      string      `json:"created_by"`
 }
 
 type WarehouseResponse struct {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -157,11 +158,13 @@ func (f *fixture) add(t *testing.T, quantity, unitPrice float64) (*ItemOutcome, 
 
 func (f *fixture) addAt(t *testing.T, quantity, unitPrice float64, rate string) (*ItemOutcome, error) {
 	t.Helper()
-	q, err := exact.NonNegativeDecimal(quantity, 3, 10)
+	// The test values are typed as floats for brevity and rendered the way a
+	// caller would type them; a value the column cannot hold is a broken test.
+	q, err := exact.ParseFixed(literal(quantity), domain.QuantityScale)
 	if err != nil {
 		t.Fatalf("quantity %v: %v", quantity, err)
 	}
-	p, err := exact.NonNegativeDecimal(unitPrice, f.money.Scale, 18)
+	p, err := money.Parse(literal(unitPrice), f.money.Scale, f.money.Code)
 	if err != nil {
 		t.Fatalf("unit price %v: %v", unitPrice, err)
 	}
@@ -172,11 +175,17 @@ func (f *fixture) addAt(t *testing.T, quantity, unitPrice float64, rate string) 
 		OrderID:   f.order,
 		SKUID:     newTestID("sku"),
 		ProductID: newTestID("prd"),
+		Quantity:  q,
+		TaxRate:   exact.MustFixed(rate, domain.TaxRateScale),
 		Status:    "pending",
 		CreatedBy: actor,
 		UpdatedBy: actor,
-	}, q, p, rate, f.money)
+	}, p.String(), f.money)
 }
+
+// literal renders a test value the way a caller would type it: 2.3, not
+// 2.29999999999999982236431605997495353221893310546875.
+func literal(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
 
 func (f *fixture) setStatus(t *testing.T, status string) {
 	t.Helper()
@@ -359,10 +368,12 @@ func TestAFailedLineLeavesTheOrderUntouched(t *testing.T) {
 		OrderID:   f.order,
 		SKUID:     newTestID("sku"),
 		ProductID: newTestID("prd"),
+		Quantity:  exact.MustFixed("1.000", domain.QuantityScale),
+		TaxRate:   exact.MustFixed(taxRate, domain.TaxRateScale),
 		Status:    "pending",
 		CreatedBy: actor,
 		UpdatedBy: actor,
-	}, "1.000", "99.00", taxRate, f.money)
+	}, "99.00", f.money)
 	if err == nil {
 		t.Fatal("a duplicate line was accepted")
 	}

@@ -70,7 +70,7 @@ func orderTotals(o *domain.Order) map[string]any {
 	}
 }
 
-func (r *repo) AddItemAndRetotal(ctx context.Context, item *domain.OrderItem, quantity, unitPrice, taxRate string, money Money) (*ItemOutcome, error) {
+func (r *repo) AddItemAndRetotal(ctx context.Context, item *domain.OrderItem, unitPrice string, money Money) (*ItemOutcome, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin: %w", err)
@@ -109,7 +109,7 @@ func (r *repo) AddItemAndRetotal(ctx context.Context, item *domain.OrderItem, qu
 		 VALUES ($1,$2,$3,$4,$5,$6::numeric,$7::numeric,ROUND($6::numeric * $7::numeric, $11),$8::numeric,$9,$10,$12)
 		 RETURNING `+orderItemCols,
 		item.ID, item.TenantID, item.OrderID, item.SKUID, item.ProductID,
-		quantity, unitPrice, taxRate, item.Status, item.CreatedBy, money.Scale, item.UpdatedBy))
+		item.Quantity, unitPrice, item.TaxRate, item.Status, item.CreatedBy, money.Scale, item.UpdatedBy))
 	if err != nil {
 		return nil, fmt.Errorf("add item: %w", err)
 	}

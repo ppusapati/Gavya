@@ -94,13 +94,15 @@ func (s *Service) UpdateSessionStatus(ctx context.Context, id, tenantID, status,
 func (s *Service) RecordMilk(ctx context.Context, r *domain.MilkRecord) (*domain.MilkRecord, error) {
 	// quantity_liters is stored as NUMERIC(8,3). A finer value would be rounded
 	// into the column without anyone being told, so it is refused instead.
-	if _, err := exact.NonNegativeDecimal(r.QuantityLiters, 3, 8); err != nil {
+	litres, err := r.QuantityLiters.NonNegativeColumn(domain.LitreScale, domain.LitrePrecision)
+	if err != nil {
 		return nil, invalid("%s", exact.Field("quantity_liters", err))
 	}
+	r.QuantityLiters = litres
 	if r.TenantID == "" || r.SessionID == "" || r.CattleID == "" {
 		return nil, invalid("tenant_id, session_id and cattle_id are required")
 	}
-	if r.QuantityLiters <= 0 {
+	if r.QuantityLiters.Sign() <= 0 {
 		return nil, invalid("quantity_liters must be positive")
 	}
 	r.ID = ulidpkg.New().String()
@@ -127,29 +129,27 @@ func (s *Service) ListSessionRecords(ctx context.Context, sessionID, tenantID st
 // A tenant that has recorded no milk here has not said which timezone its days
 // are reckoned in, and answering anyway would mean picking one. The refusal says
 // which fact is missing rather than returning a plausible zero.
-func (s *Service) GetDailyYield(ctx context.Context, tenantID, cattleID string, date time.Time) (float64, error) {
+func (s *Service) GetDailyYield(ctx context.Context, tenantID, cattleID string, date time.Time) (exact.Fixed, error) {
 	zone, err := s.repo.TenantTimezone(ctx, tenantID)
 	if err != nil {
-		return 0, err
+		return exact.Fixed{}, err
 	}
 	return s.repo.GetDailyYield(ctx, tenantID, cattleID, date, zone)
 }
 
 func (s *Service) RecordQuality(ctx context.Context, mq *domain.MilkQuality) (*domain.MilkQuality, error) {
-	// fat_percent is stored as NUMERIC(5,2). A finer value would be rounded
-	// into the column without anyone being told, so it is refused instead.
-	if _, err := exact.NonNegativeDecimal(mq.FatPercent, 2, 5); err != nil {
-		return nil, invalid("%s", exact.Field("fat_percent", err))
-	}
-	// snf_percent is stored as NUMERIC(5,2). A finer value would be rounded
-	// into the column without anyone being told, so it is refused instead.
-	if _, err := exact.NonNegativeDecimal(mq.SNFPercent, 2, 5); err != nil {
-		return nil, invalid("%s", exact.Field("snf_percent", err))
-	}
-	// lactose is stored as NUMERIC(5,2). A finer value would be rounded
-	// into the column without anyone being told, so it is refused instead.
-	if _, err := exact.NonNegativeDecimal(mq.Lactose, 2, 5); err != nil {
-		return nil, invalid("%s", exact.Field("lactose", err))
+	// The three analyses are stored as NUMERIC(5,2). A finer value would be
+	// rounded into the column without anyone being told, so it is refused
+	// instead, and what is held is what the column will hold.
+	for _, f := range []struct {
+		name string
+		v    *exact.Fixed
+	}{{"fat_percent", &mq.FatPercent}, {"snf_percent", &mq.SNFPercent}, {"lactose", &mq.Lactose}} {
+		at, err := f.v.NonNegativeColumn(domain.PercentScale, domain.PercentPrecision)
+		if err != nil {
+			return nil, invalid("%s", exact.Field(f.name, err))
+		}
+		*f.v = at
 	}
 	if mq.TenantID == "" || mq.RecordID == "" {
 		return nil, invalid("tenant_id and record_id are required")

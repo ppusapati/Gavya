@@ -23,6 +23,7 @@ package e2e
 
 import (
 	"context"
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"testing"
 	"time"
 
@@ -47,12 +48,12 @@ type createNutritionPlanReq struct {
 }
 
 type nutritionPlanProto struct {
-	ID              string  `json:"id"`
-	TenantID        string  `json:"tenant_id"`
-	CattleID        string  `json:"cattle_id"`
-	FeedTypeID      string  `json:"feed_type_id"`
-	DailyQuantityKg float64 `json:"daily_quantity_kg"`
-	Notes           string  `json:"notes"`
+	ID              string      `json:"id"`
+	TenantID        string      `json:"tenant_id"`
+	CattleID        string      `json:"cattle_id"`
+	FeedTypeID      string      `json:"feed_type_id"`
+	DailyQuantityKg exact.Fixed `json:"daily_quantity_kg"`
+	Notes           string      `json:"notes"`
 }
 
 type nutritionPlanResp struct {
@@ -88,9 +89,9 @@ type feedReportReq struct {
 }
 
 type feedReportEntry struct {
-	CattleID   string  `json:"cattle_id"`
-	FeedTypeID string  `json:"feed_type_id"`
-	TotalKg    float64 `json:"total_kg"`
+	CattleID   string      `json:"cattle_id"`
+	FeedTypeID string      `json:"feed_type_id"`
+	TotalKg    exact.Fixed `json:"total_kg"`
 }
 
 type feedReportResp struct {
@@ -227,7 +228,7 @@ func TestAFeedReportAddsUpOneAnimalsWindow(t *testing.T) {
 		t.Errorf("the plan reads back for cow %s on feed %s, want %s on %s",
 			got.NutritionPlan.CattleID, got.NutritionPlan.FeedTypeID, cow, cake)
 	}
-	if got.NutritionPlan.DailyQuantityKg != 4.5 {
+	if got.NutritionPlan.DailyQuantityKg != exact.MustFixed("4.500", 3) {
 		t.Errorf("the plan reads back as %v kg a day, want 4.5", got.NutritionPlan.DailyQuantityKg)
 	}
 	if got.NutritionPlan.Notes != "high yielder, second lactation" {
@@ -264,7 +265,7 @@ func TestAFeedReportAddsUpOneAnimalsWindow(t *testing.T) {
 		t.Fatalf("GetFeedConsumptionReport: %v", err)
 	}
 
-	byFeed := map[string]float64{}
+	byFeed := map[string]exact.Fixed{}
 	for _, e := range report.Entries {
 		byFeed[e.FeedTypeID] = e.TotalKg
 		if e.CattleID != cow {
@@ -272,12 +273,12 @@ func TestAFeedReportAddsUpOneAnimalsWindow(t *testing.T) {
 				e.CattleID, cow)
 		}
 	}
-	if byFeed[cake] != 8.5 {
+	if byFeed[cake] != exact.MustFixed("8.500", 3) {
 		t.Errorf("the cake total is %v kg, want 8.5 — 4.0 and 4.5 inside the "+
 			"window, and 99.0 the month before which is not this month's ration",
 			byFeed[cake])
 	}
-	if byFeed[silage] != 12.0 {
+	if byFeed[silage] != exact.MustFixed("12.000", 3) {
 		t.Errorf("the silage total is %v kg, want 12.0", byFeed[silage])
 	}
 	if len(report.Entries) != 2 {

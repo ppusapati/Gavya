@@ -82,7 +82,7 @@ type Repository interface {
 	PinTenantMoney(ctx context.Context, tenantID string, money Money) error
 	// AddItemAndRetotal writes a line and its invoice's totals together, so an
 	// invoice can never disagree with the sum of its own lines.
-	AddItemAndRetotal(ctx context.Context, item *domain.InvoiceItem, quantity, unitPrice, taxRate string, money Money) (*ItemOutcome, error)
+	AddItemAndRetotal(ctx context.Context, item *domain.InvoiceItem, unitPrice string, money Money) (*ItemOutcome, error)
 	ListOutstandingInvoices(ctx context.Context, tenantID string) ([]*domain.Invoice, error)
 	ListInvoiceItems(ctx context.Context, invoiceID, tenantID string) ([]*domain.InvoiceItem, error)
 	// RecordPaymentAndSettle writes a payment and settles the invoice together,

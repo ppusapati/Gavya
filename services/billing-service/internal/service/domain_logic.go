@@ -106,7 +106,7 @@ func (s *Service) AddInvoiceItem(ctx context.Context, item *domain.InvoiceItem, 
 	if item.InvoiceID == "" || item.TenantID == "" {
 		return nil, invalid("invoice_id and tenant_id are required")
 	}
-	if item.Quantity <= 0 {
+	if item.Quantity.Sign() <= 0 {
 		return nil, invalid("quantity must be more than zero")
 	}
 
@@ -115,14 +115,11 @@ func (s *Service) AddInvoiceItem(ctx context.Context, item *domain.InvoiceItem, 
 		return nil, err
 	}
 
-	// The quantity and the tax rate still cross the wire as JSON numbers, so
-	// they arrive as float64. That is survivable here and checked: both columns
-	// are NUMERIC(_,3) holding values far below where float64 loses a digit, and
-	// exact.NonNegativeDecimal refuses anything finer than the column rather
-	// than letting PostgreSQL round it in silence. The price is the one that
-	// could not be, and it is a literal now.
-	quantity, err := exact.NonNegativeDecimal(item.Quantity, 3, 10)
-	if err != nil {
+	// The quantity and the tax rate arrive at whatever scale they were written
+	// to and are held at their columns'. A value finer than the column is
+	// refused rather than rounded into it in silence; a value wider than the
+	// column is refused rather than reported as a constraint violation.
+	if item.Quantity, err = item.Quantity.NonNegativeColumn(domain.QuantityScale, domain.QuantityPrecision); err != nil {
 		return nil, invalid(exact.Field("quantity", err).Error())
 	}
 	// Prices are held to the currency's own precision: a yen price has no
@@ -137,11 +134,10 @@ func (s *Service) AddInvoiceItem(ctx context.Context, item *domain.InvoiceItem, 
 	}
 	item.UnitPrice = price
 	// A tax rate is a percentage, not money, so its precision is its own.
-	taxRate, err := exact.NonNegativeDecimal(item.TaxRate, 3, 6)
-	if err != nil {
+	if item.TaxRate, err = item.TaxRate.NonNegativeColumn(domain.TaxRateScale, domain.TaxRatePrecision); err != nil {
 		return nil, invalid(exact.Field("tax_rate", err).Error())
 	}
-	if item.TaxRate >= 1000 {
+	if c, _ := item.TaxRate.Cmp(domain.TaxRateCeiling); c >= 0 {
 		return nil, invalid("tax_rate must be a percentage, and 1000% is not one")
 	}
 
@@ -151,7 +147,7 @@ func (s *Service) AddInvoiceItem(ctx context.Context, item *domain.InvoiceItem, 
 	}
 	item.UpdatedBy = item.CreatedBy
 
-	return s.repo.AddItemAndRetotal(ctx, item, quantity, price.String(), taxRate, denom)
+	return s.repo.AddItemAndRetotal(ctx, item, price.String(), denom)
 }
 
 func (s *Service) SendInvoice(ctx context.Context, id, tenantID, updatedBy string) (*domain.Invoice, error) {

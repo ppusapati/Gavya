@@ -1,6 +1,20 @@
 package domain
 
-import "time"
+import (
+	"time"
+
+	"github.com/ppusapati/gavya/libs/integrity/exact"
+)
+
+// The columns a reading is held in: quantity_liters is NUMERIC(8,3), litres to
+// the millilitre; the three analyses are NUMERIC(5,2). A value arriving from
+// the wire is checked against these and held at their scale.
+const (
+	LitreScale       int32 = 3
+	LitrePrecision   int32 = 8
+	PercentScale     int32 = 2
+	PercentPrecision int32 = 5
+)
 
 type MilkSession struct {
 	ID          string
@@ -21,7 +35,7 @@ type MilkRecord struct {
 	TenantID       string
 	SessionID      string
 	CattleID       string
-	QuantityLiters float64
+	QuantityLiters exact.Fixed
 	RecordedAt     time.Time
 	RecordedBy     string
 	CreatedAt      time.Time
@@ -35,9 +49,9 @@ type MilkQuality struct {
 	ID         string
 	TenantID   string
 	RecordID   string
-	FatPercent float64
-	SNFPercent float64
-	Lactose    float64
+	FatPercent exact.Fixed
+	SNFPercent exact.Fixed
+	Lactose    exact.Fixed
 	TestedAt   time.Time
 	CreatedAt  time.Time
 	UpdatedAt  time.Time

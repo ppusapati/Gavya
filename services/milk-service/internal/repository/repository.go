@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ppusapati/gavya/libs/integrity/audit"
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 
 	"github.com/ppusapati/gavya/services/milk-service/internal/domain"
 
@@ -22,7 +23,7 @@ type Repository interface {
 	CreateRecord(ctx context.Context, r *domain.MilkRecord) (*domain.MilkRecord, error)
 	GetRecord(ctx context.Context, id, tenantID string) (*domain.MilkRecord, error)
 	ListSessionRecords(ctx context.Context, sessionID, tenantID string) ([]*domain.MilkRecord, error)
-	GetDailyYield(ctx context.Context, tenantID, cattleID string, date time.Time, zone string) (float64, error)
+	GetDailyYield(ctx context.Context, tenantID, cattleID string, date time.Time, zone string) (exact.Fixed, error)
 	// PinTenantTimezone fixes which timezone this tenant reckons its days in.
 	PinTenantTimezone(ctx context.Context, tenantID, zone string) error
 	// TenantTimezone reports it.
@@ -203,14 +204,20 @@ func (r *repo) ListSessionRecords(ctx context.Context, sessionID, tenantID strin
 // dailyyield_integration_test.go runs this from sessions in three zones, which
 // is what says both of those hold rather than that they happen to work where the
 // tests run.
-func (r *repo) GetDailyYield(ctx context.Context, tenantID, cattleID string, date time.Time, zone string) (float64, error) {
+func (r *repo) GetDailyYield(ctx context.Context, tenantID, cattleID string, date time.Time, zone string) (exact.Fixed, error) {
 	const q = `SELECT COALESCE(SUM(quantity_liters),0) FROM milk_records
 	           WHERE tenant_id=$1 AND cattle_id=$2
 	             AND (recorded_at AT TIME ZONE $4)::date = $3
 	             AND deleted_at IS NULL`
-	var total float64
-	err := r.db.QueryRow(ctx, q, tenantID, cattleID, date, zone).Scan(&total)
-	return total, err
+	// Summed by the database in the column's own type and read back as the
+	// literal it rendered. A day with no readings sums to a bare 0, which is
+	// widened to the column's scale so every answer is in litres to the
+	// millilitre.
+	var total exact.Fixed
+	if err := r.db.QueryRow(ctx, q, tenantID, cattleID, date, zone).Scan(&total); err != nil {
+		return exact.Fixed{}, err
+	}
+	return total.At(domain.LitreScale)
 }
 
 func (r *repo) CreateQuality(ctx context.Context, mq *domain.MilkQuality) (*domain.MilkQuality, error) {

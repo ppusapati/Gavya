@@ -9,6 +9,7 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/ppusapati/gavya/libs/integrity/connectjson"
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/services/feed-service/internal/domain"
 	"github.com/ppusapati/gavya/services/feed-service/internal/repository"
 	"github.com/ppusapati/gavya/services/feed-service/internal/service"
@@ -77,14 +78,14 @@ type ListFeedTypesResponse struct {
 }
 
 type CreateNutritionPlanRequest struct {
-	TenantID        string     `json:"tenant_id"`
-	CattleID        string     `json:"cattle_id"`
-	FeedTypeID      string     `json:"feed_type_id"`
-	DailyQuantityKg float64    `json:"daily_quantity_kg"`
-	StartDate       time.Time  `json:"start_date"`
-	EndDate         *time.Time `json:"end_date"`
-	Notes           string     `json:"notes"`
-	CreatedBy       string     `json:"created_by"`
+	TenantID        string      `json:"tenant_id"`
+	CattleID        string      `json:"cattle_id"`
+	FeedTypeID      string      `json:"feed_type_id"`
+	DailyQuantityKg exact.Fixed `json:"daily_quantity_kg"`
+	StartDate       time.Time   `json:"start_date"`
+	EndDate         *time.Time  `json:"end_date"`
+	Notes           string      `json:"notes"`
+	CreatedBy       string      `json:"created_by"`
 }
 
 type NutritionPlanResponse struct {
@@ -97,13 +98,13 @@ type GetNutritionPlanRequest struct {
 }
 
 type RecordFeedConsumptionRequest struct {
-	TenantID   string    `json:"tenant_id"`
-	CattleID   string    `json:"cattle_id"`
-	FeedTypeID string    `json:"feed_type_id"`
-	QuantityKg float64   `json:"quantity_kg"`
-	FedAt      time.Time `json:"fed_at"`
-	FedBy      string    `json:"fed_by"`
-	CreatedBy  string    `json:"created_by"`
+	TenantID   string      `json:"tenant_id"`
+	CattleID   string      `json:"cattle_id"`
+	FeedTypeID string      `json:"feed_type_id"`
+	QuantityKg exact.Fixed `json:"quantity_kg"`
+	FedAt      time.Time   `json:"fed_at"`
+	FedBy      string      `json:"fed_by"`
+	CreatedBy  string      `json:"created_by"`
 }
 
 type FeedConsumptionResponse struct {

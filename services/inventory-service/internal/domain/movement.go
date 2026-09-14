@@ -36,12 +36,13 @@ const (
 	QuantityPrecision int32 = 12
 )
 
-// FormatQuantity turns a requested quantity into the exact decimal literal the
-// database will store, refusing anything the columns cannot hold rather than
-// letting PostgreSQL round it on the way in.
-func FormatQuantity(q float64) (string, error) {
-	return exact.NonNegativeDecimal(q, QuantityScale, QuantityPrecision)
+// AtColumn checks a requested quantity against the stock columns and returns
+// it at their scale, refusing anything they cannot hold rather than letting
+// PostgreSQL round it on the way in.
+//
+// The direction of a movement is its type. A negative quantity would make an
+// "in" behave as an "out" and defeat every reading of the movement history, so
+// it is refused here too.
+func AtColumn(q exact.Fixed) (exact.Fixed, error) {
+	return q.NonNegativeColumn(QuantityScale, QuantityPrecision)
 }
-
-// FormatStock renders a stored quantity for a message.
-func FormatStock(q float64) string { return exact.Render(q, QuantityScale) }

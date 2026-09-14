@@ -21,6 +21,7 @@ package e2e
 
 import (
 	"context"
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"testing"
 	"time"
 
@@ -53,14 +54,14 @@ type listStockMovementsReq struct {
 }
 
 type stockMovementProto struct {
-	ID           string    `json:"id"`
-	TenantID     string    `json:"tenant_id"`
-	WarehouseID  string    `json:"warehouse_id"`
-	SKUID        string    `json:"sku_id"`
-	MovementType string    `json:"movement_type"`
-	Quantity     float64   `json:"quantity"`
-	Notes        string    `json:"notes"`
-	MovedAt      time.Time `json:"moved_at"`
+	ID           string      `json:"id"`
+	TenantID     string      `json:"tenant_id"`
+	WarehouseID  string      `json:"warehouse_id"`
+	SKUID        string      `json:"sku_id"`
+	MovementType string      `json:"movement_type"`
+	Quantity     exact.Fixed `json:"quantity"`
+	Notes        string      `json:"notes"`
+	MovedAt      time.Time   `json:"moved_at"`
 }
 
 type listStockMovementsResp struct {
@@ -80,14 +81,14 @@ type createInventoryBatchReq struct {
 }
 
 type inventoryBatchProto struct {
-	ID          string     `json:"id"`
-	TenantID    string     `json:"tenant_id"`
-	WarehouseID string     `json:"warehouse_id"`
-	SKUID       string     `json:"sku_id"`
-	BatchNumber string     `json:"batch_number"`
-	Quantity    float64    `json:"quantity"`
-	ExpiresAt   *time.Time `json:"expires_at"`
-	Status      string     `json:"status"`
+	ID          string      `json:"id"`
+	TenantID    string      `json:"tenant_id"`
+	WarehouseID string      `json:"warehouse_id"`
+	SKUID       string      `json:"sku_id"`
+	BatchNumber string      `json:"batch_number"`
+	Quantity    exact.Fixed `json:"quantity"`
+	ExpiresAt   *time.Time  `json:"expires_at"`
+	Status      string      `json:"status"`
 }
 
 type inventoryBatchResp struct {
@@ -203,7 +204,7 @@ func TestAWarehousesMovementsAreItsOwnAndNewestFirst(t *testing.T) {
 			t.Errorf("a movement at site %s came back from a listing asked for %s",
 				m.WarehouseID, mine)
 		}
-		if m.Quantity == 999 {
+		if m.Quantity == exact.MustFixed("999.000", 3) {
 			t.Error("the other site's movement of 999 is in this site's ledger")
 		}
 	}
@@ -276,7 +277,7 @@ func TestTheExpiringListHoldsWhatIsNearItsDateAndStillOnTheShelf(t *testing.T) {
 	if got.Batch == nil || got.Batch.BatchNumber != "SOON" {
 		t.Fatalf("GetBatch answered with %+v, want the SOON batch", got.Batch)
 	}
-	if got.Batch.Quantity != 100 {
+	if got.Batch.Quantity != exact.MustFixed("100.000", 3) {
 		t.Errorf("the batch holds %v, want 100", got.Batch.Quantity)
 	}
 	if got.Batch.ExpiresAt == nil {

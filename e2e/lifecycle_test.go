@@ -15,6 +15,7 @@ package e2e
 
 import (
 	"context"
+	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"testing"
 	"time"
 
@@ -187,11 +188,11 @@ type adjustStockReq struct {
 
 type stockMovementResp struct {
 	Movement *struct {
-		ID       string  `json:"id"`
-		Quantity float64 `json:"quantity"`
+		ID       string      `json:"id"`
+		Quantity exact.Fixed `json:"quantity"`
 	} `json:"movement"`
 	Item *struct {
-		Quantity float64 `json:"quantity"`
+		Quantity exact.Fixed `json:"quantity"`
 	} `json:"item"`
 }
 
