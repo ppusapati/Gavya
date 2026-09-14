@@ -10,23 +10,28 @@ import (
 	"github.com/ppusapati/gavya/libs/integrity/connectjson"
 	"github.com/ppusapati/gavya/libs/integrity/exact"
 	"github.com/ppusapati/gavya/services/cattle-service/internal/domain"
+	"github.com/ppusapati/gavya/services/cattle-service/internal/repository"
 	"github.com/ppusapati/gavya/services/cattle-service/internal/service"
 )
 
 // classify maps a failure onto the code that describes it.
 //
-// The two procedures that take a weight chose their code by which procedure
-// they were: CreateCattle reported everything as a bad request, so an
-// unreachable database looked like something the caller had typed wrong, and
-// UpdateCattle reported everything as internal, so a weight the column cannot
-// hold looked like something worth retrying. Neither is retried usefully on the
-// other's advice.
+// Every procedure here used to choose its code by which procedure it was rather
+// than by what had happened. CreateCattle and CreateBreed reported everything as
+// a bad request, so an unreachable database looked like a typo. GetCattle
+// reported everything as not-found, so during an outage a caller was told their
+// animal does not exist — the one answer they will act on by going to look for
+// it. ListCattle, ListBreeds and DeleteCattle reported everything as internal,
+// so a missing tenant_id looked worth retrying.
 //
-// The remaining procedures in this file still choose by position. They are left
-// alone here rather than swept up in a change about weights; that they do it is
-// recorded where somebody looking for it will find it.
+// The repository had nothing to match on either: every read wrapped
+// pgx.ErrNoRows in a formatted string. It has a named ErrNotFound now, and the
+// service marks its caller mistakes, so this can ask what went wrong instead of
+// where.
 func classify(err error) error {
 	switch {
+	case errors.Is(err, repository.ErrNotFound):
+		return connect.NewError(connect.CodeNotFound, err)
 	case errors.Is(err, service.ErrInvalidArgument):
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	default:
@@ -196,7 +201,7 @@ func (h *Handler) GetCattle(
 	msg := req.Msg
 	c, err := h.svc.GetCattle(ctx, msg.ID, msg.TenantID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, err)
+		return nil, classify(err)
 	}
 	return connect.NewResponse(&GetCattleResponse{Cattle: cattleToProto(c)}), nil
 }
@@ -208,7 +213,7 @@ func (h *Handler) ListCattle(
 	msg := req.Msg
 	list, err := h.svc.ListCattle(ctx, msg.TenantID, msg.Status, int(msg.Limit), int(msg.Offset))
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, classify(err)
 	}
 	protos := make([]*CattleProto, 0, len(list))
 	for _, c := range list {
@@ -242,7 +247,7 @@ func (h *Handler) DeleteCattle(
 ) (*connect.Response[DeleteCattleResponse], error) {
 	msg := req.Msg
 	if err := h.svc.DeleteCattle(ctx, msg.ID, msg.TenantID, msg.DeletedBy); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, classify(err)
 	}
 	return connect.NewResponse(&DeleteCattleResponse{Success: true}), nil
 }
@@ -261,7 +266,7 @@ func (h *Handler) CreateBreed(
 	}
 	created, err := h.svc.CreateBreed(ctx, b)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, classify(err)
 	}
 	return connect.NewResponse(&CreateBreedResponse{Breed: breedToProto(created)}), nil
 }
@@ -273,7 +278,7 @@ func (h *Handler) ListBreeds(
 	msg := req.Msg
 	list, err := h.svc.ListBreeds(ctx, msg.TenantID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, classify(err)
 	}
 	protos := make([]*BreedProto, 0, len(list))
 	for _, b := range list {

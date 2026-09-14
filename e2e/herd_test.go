@@ -670,3 +670,67 @@ func TestAWeightTheColumnCannotHoldIsRefusedAsTheCallersMistake(t *testing.T) {
 		t.Errorf("412.5 kg came back as %v", kept.Cattle.Weight)
 	}
 }
+
+// A failure says what went wrong, not which procedure it happened in.
+//
+// Every procedure in cattle-service used to pick its code by position, and all
+// three ways of being wrong were present at once: creating reported everything
+// as a bad request, so an outage read as a typo; getting reported everything as
+// not-found, so during an outage a caller was told the animal does not exist,
+// which is the one answer somebody acts on by going to look for it; and listing
+// and deleting reported everything as internal, so a missing tenant_id read as
+// worth retrying.
+//
+// These are the two that changed answer. A weight refusal is covered above.
+func TestCattleReportsAFailureByItsCause(t *testing.T) {
+	p := startPlatform(t)
+	ctx := context.Background()
+	tenant := newID("ten")
+	opts := actingAs(tenant, "e2e")
+
+	// Deleting an animal that is not there is not found, not an internal
+	// failure. It used to be internal, which told the caller to try again.
+	_, err := svcclient.Call[deleteCattleReq, deleteCattleResp](ctx, p.cattle(),
+		cattleSvc+"/DeleteCattle", deleteCattleReq{
+			ID: newID("cow"), TenantID: tenant, DeletedBy: "e2e",
+		}, opts)
+	if err == nil {
+		t.Error("deleting an animal that was never recorded succeeded")
+	} else if code := codeOf(t, err); code != connect.CodeNotFound {
+		t.Errorf("deleting a missing animal is %s, want not_found", code)
+	}
+
+	// Reading an animal that is not there is not found. This one used to be
+	// not-found unconditionally, so it looked right and was right by accident;
+	// it now depends on the repository naming a missing row, and a mutant that
+	// stopped it doing so went unnoticed until this assertion existed.
+	_, err = svcclient.Call[getCattleReq, getCattleResp](ctx, p.cattle(),
+		cattleSvc+"/GetCattle", getCattleReq{ID: newID("cow"), TenantID: tenant}, opts)
+	if err == nil {
+		t.Error("an animal that was never recorded came back")
+	} else if code := codeOf(t, err); code != connect.CodeNotFound {
+		t.Errorf("reading a missing animal is %s, want not_found", code)
+	}
+
+	// And a request with no tenant is the caller's mistake, not ours.
+	_, err = svcclient.Call[listCattleReq, listCattleResp](ctx, p.cattle(),
+		cattleSvc+"/ListCattle", listCattleReq{TenantID: "", Limit: 10}, opts)
+	if err == nil {
+		t.Error("a listing with no tenant was answered")
+	} else if code := codeOf(t, err); code != connect.CodeInvalidArgument {
+		t.Errorf("a listing with no tenant is %s, want invalid_argument — "+
+			"reporting it as internal tells the caller to retry a request that "+
+			"will never be accepted", code)
+	}
+}
+
+type getCattleReq struct {
+	ID       string `json:"id"`
+	TenantID string `json:"tenant_id"`
+}
+
+type getCattleResp struct {
+	Cattle *struct {
+		ID string `json:"id"`
+	} `json:"cattle"`
+}

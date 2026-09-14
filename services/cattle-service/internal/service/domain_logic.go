@@ -87,7 +87,7 @@ func (s *Service) CreateCattle(ctx context.Context, c *domain.Cattle) (*domain.C
 // GetCattle retrieves a single cattle record by ID and tenant.
 func (s *Service) GetCattle(ctx context.Context, id, tenantID string) (*domain.Cattle, error) {
 	if id == "" || tenantID == "" {
-		return nil, fmt.Errorf("id and tenant_id are required")
+		return nil, invalid("id and tenant_id are required")
 	}
 	c, err := s.repo.GetCattle(ctx, id, tenantID)
 	if err != nil {
@@ -99,7 +99,7 @@ func (s *Service) GetCattle(ctx context.Context, id, tenantID string) (*domain.C
 // ListCattle returns a paginated list of cattle for a tenant, optionally filtered by status.
 func (s *Service) ListCattle(ctx context.Context, tenantID, status string, limit, offset int) ([]*domain.Cattle, error) {
 	if tenantID == "" {
-		return nil, fmt.Errorf("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	if limit <= 0 {
 		limit = 20
@@ -141,10 +141,10 @@ func (s *Service) UpdateCattle(ctx context.Context, c *domain.Cattle) (*domain.C
 // nobody can act on.
 func (s *Service) DeleteCattle(ctx context.Context, id, tenantID, deletedBy string) error {
 	if id == "" || tenantID == "" {
-		return fmt.Errorf("id and tenant_id are required")
+		return invalid("id and tenant_id are required")
 	}
 	if deletedBy == "" {
-		return fmt.Errorf("deleted_by is required: an animal that vanished from every list " +
+		return invalid("deleted_by is required: an animal that vanished from every list " +
 			"with nobody's name against it is not something anybody can follow up")
 	}
 	if err := s.repo.SoftDeleteCattle(ctx, id, tenantID, deletedBy); err != nil {
@@ -159,13 +159,13 @@ func (s *Service) DeleteCattle(ctx context.Context, id, tenantID, deletedBy stri
 // CreateBreed validates input, assigns a ULID, and persists a new breed.
 func (s *Service) CreateBreed(ctx context.Context, b *domain.Breed) (*domain.Breed, error) {
 	if b.TenantID == "" {
-		return nil, fmt.Errorf("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	if b.Name == "" {
-		return nil, fmt.Errorf("name is required")
+		return nil, invalid("name is required")
 	}
 	if b.CreatedBy == "" {
-		return nil, fmt.Errorf("created_by is required")
+		return nil, invalid("created_by is required")
 	}
 
 	b.ID = ulidpkg.New().String()
@@ -184,7 +184,7 @@ func (s *Service) CreateBreed(ctx context.Context, b *domain.Breed) (*domain.Bre
 // ListBreeds returns all active breeds for a tenant.
 func (s *Service) ListBreeds(ctx context.Context, tenantID string) ([]*domain.Breed, error) {
 	if tenantID == "" {
-		return nil, fmt.Errorf("tenant_id is required")
+		return nil, invalid("tenant_id is required")
 	}
 	return s.repo.ListBreeds(ctx, tenantID)
 }
@@ -194,7 +194,7 @@ func (s *Service) ListBreeds(ctx context.Context, tenantID string) ([]*domain.Br
 // CreateCattleLineage records parent-child relationships for cattle.
 func (s *Service) CreateCattleLineage(ctx context.Context, l *domain.CattleLineage) (*domain.CattleLineage, error) {
 	if l.TenantID == "" || l.CattleID == "" {
-		return nil, fmt.Errorf("tenant_id and cattle_id are required")
+		return nil, invalid("tenant_id and cattle_id are required")
 	}
 	l.ID = ulidpkg.New().String()
 
@@ -209,7 +209,7 @@ func (s *Service) CreateCattleLineage(ctx context.Context, l *domain.CattleLinea
 // GetCattleLineage retrieves the lineage record for a specific cattle.
 func (s *Service) GetCattleLineage(ctx context.Context, cattleID, tenantID string) (*domain.CattleLineage, error) {
 	if cattleID == "" || tenantID == "" {
-		return nil, fmt.Errorf("cattle_id and tenant_id are required")
+		return nil, invalid("cattle_id and tenant_id are required")
 	}
 	return s.repo.GetCattleLineage(ctx, cattleID, tenantID)
 }

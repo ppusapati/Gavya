@@ -2,9 +2,11 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ppusapati/gavya/libs/integrity/audit"
@@ -27,6 +29,15 @@ type Repository interface {
 	CreateCattleLineage(ctx context.Context, l *domain.CattleLineage) (*domain.CattleLineage, error)
 	GetCattleLineage(ctx context.Context, cattleID, tenantID string) (*domain.CattleLineage, error)
 }
+
+// ErrNotFound is a row that is not there.
+//
+// This repository had no such value: every read wrapped pgx.ErrNoRows in a
+// formatted string, so the handler could not tell "no such animal" from "the
+// database is unreachable" and settled it by procedure — GetCattle reported
+// every failure as not-found, which told a caller their animal did not exist
+// during an outage, and ListCattle reported every failure as internal.
+var ErrNotFound = errors.New("not found")
 
 // IDs supplies the identifier each audit entry carries.
 type IDs interface{ New() string }
@@ -188,6 +199,9 @@ func (r *repo) SoftDeleteCattle(ctx context.Context, id, tenantID, deletedBy str
 		  WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
 		  RETURNING tag_number`,
 		id, tenantID, deletedBy).Scan(&tag); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
 		return fmt.Errorf("delete cattle %s: %w", id, err)
 	}
 
@@ -274,6 +288,9 @@ WHERE cattle_id = $1 AND tenant_id = $2`
 	row := r.db.QueryRow(ctx, q, cattleID, tenantID)
 	out := &domain.CattleLineage{}
 	if err := row.Scan(&out.ID, &out.TenantID, &out.CattleID, &out.SireID, &out.DamID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
 		return nil, fmt.Errorf("get lineage: %w", err)
 	}
 	return out, nil
@@ -293,6 +310,9 @@ func scanCattle(s scanner) (*domain.Cattle, error) {
 		&c.CreatedAt, &c.UpdatedAt, &c.CreatedBy, &c.UpdatedBy, &c.DeletedAt,
 	)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
 		return nil, fmt.Errorf("scan cattle: %w", err)
 	}
 	return c, nil
@@ -313,6 +333,9 @@ func scanBreed(s scanner) (*domain.Breed, error) {
 		&b.CreatedAt, &b.UpdatedAt, &b.CreatedBy, &b.UpdatedBy, &b.DeletedAt,
 	)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
 		return nil, fmt.Errorf("scan breed: %w", err)
 	}
 	return b, nil

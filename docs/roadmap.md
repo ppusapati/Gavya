@@ -186,23 +186,19 @@ and it has caught more real problems than reading the code did.
 
 ## Open work
 
-Almost none, which is worth saying plainly rather than leaving a reader to infer
-it from seven items that all end in "closed". What is genuinely outstanding, as
-of this writing:
-
-- **`cattle-service`'s other five procedures still choose by position.** Two of
-  them were fixed because a weight refusal had to be reported correctly; the rest
-  were left rather than swept up in a change about weights, and the handler says
-  so where somebody looking will find it. `GetCattle` still reports an unreachable
-  database as an animal that does not exist.
-- **`feed-service` writes nothing to the audit trail.** It is one of four, and the
-  only one where that is a judgement rather than an argument: a nutrition plan
-  being changed is arguably a decision somebody could be asked to defend.
+None, which is worth saying plainly rather than leaving a reader to infer it from
+items that all end in "closed". The two that stood here last — `cattle-service`
+classifying its failures by procedure, and `feed-service` writing nothing to the
+audit trail — are both resolved, and the second turned into a check rather than a
+change: see *Errors that told a caller to retry what could never work* and *What
+an edit overwrote*.
 
 Three things cannot be verified in a container and are not claimed here: that the
 images build, since no Docker daemon runs in the environment this was developed
 in, though the build lines were run directly; that the manifests behave on a real
 cluster; and that TLS works against real certificates.
+
+What is left is in *Blocked*, and none of it is code.
 
 Everything below is closed. It is kept because the reasoning is the expensive
 part and it is not visible in the diff — which is this document's whole job.
@@ -871,11 +867,23 @@ that already have the vocabulary to be inconsistent. A service with no marker at
 all defines nothing, matches nothing, and comes back clean. Both of the ones it
 missed were exactly that.
 
-`cattle-service` chose by procedure: `CreateCattle` reported every failure as a
-bad request, so an unreachable database looked like a typo, and `UpdateCattle`
-reported every failure as internal, so a weight the column cannot hold looked
-worth retrying. It surfaced only because a weight refusal was being added to both
-paths and would have been misreported on each.
+`cattle-service` chose by procedure, and had all three ways of being wrong at
+once. `CreateCattle` and `CreateBreed` reported every failure as a bad request,
+so an unreachable database looked like a typo. `GetCattle` reported every failure
+as not-found, so during an outage a caller was told their animal does not exist —
+the one answer somebody acts on by going to look for the animal. `ListCattle`,
+`ListBreeds` and `DeleteCattle` reported every failure as internal, so a missing
+tenant_id looked worth retrying. It surfaced only because a weight refusal was
+being added to two of those paths and would have been misreported on each.
+
+Its repository had nothing to match on either: every read wrapped `pgx.ErrNoRows`
+in a formatted string, so "no such animal" and "the database is unreachable" were
+the same value. It has a named `ErrNotFound` now. That change has a trap in it
+worth recording, because a mutant found it: `GetCattle` used to answer not-found
+unconditionally, so it was right by accident, and after the change it is right
+only if the repository names the missing row. Removing that naming broke nothing,
+because the end-to-end assertion covered the delete path and not the read. The
+assertion that covers it exists now.
 
 `observation-service` was the same shape and worse placed: two codes across
 sixteen call sites, invalid-argument and not-found, and never internal.
@@ -1272,6 +1280,45 @@ Writing the entries also found a defect in two services that had nothing to do
 with the trail: reading a row before updating it returned `pgx.ErrNoRows` where
 the rest of the service expected a named not-found error, so a status change
 against something that did not exist was reported as an internal failure.
+
+### And a service that writes nothing at all
+
+The register above covers updates, so it cannot see a service with no update
+functions — there is nothing for it to look at. Four services write no entry of
+any kind, and until there was a second register that was not a decision anybody
+had written down; it was four absences that happened to have the same shape.
+
+Three were plainly right. `audit-service` is the trail, and an entry recording
+that an entry was written is the same fact twice. `gateway-service` decides
+nothing and stores nothing. `notification-service` writes one recipient's own
+inbox, and nobody disputes who read a notification.
+
+`feed-service` was the one nobody had looked at, and this document said so. The
+answer on looking is that it should stay off the trail, for three reasons that
+hold together and would not separately:
+
+- **Nothing in its schema is money**, and no producer is paid on any of it.
+- **Nothing outside the service reads it.** No other service's answer depends on
+  a ration or a consumption row.
+- **It has no update or delete path at all.** Three creates and nothing else, so
+  no figure it holds can be overwritten or destroyed — which is the thing a
+  before-image exists to catch. Every row carries `created_by` already, and a
+  consumption row carries `fed_by` and `fed_at` besides.
+
+That last reason is the one that can quietly stop being true, so it is not left
+as prose. Giving feed-service an edit path makes the *update* register fail by
+name, which was checked rather than assumed: a temporary
+`UpdateNutritionPlanQuantity` produced "feed-service.UpdateNutritionPlanQuantity
+(nutrition_plans) writes no audit entry at all". The two registers interlock, and
+the second one only had to record the decision.
+
+The general rule, now that both exist: reference data is not audited anywhere in
+this platform — there is no `create_breed`, no `create_sku`, no `create_category`
+— and what is audited is what bears on money or on a physical fact the platform
+will be asked to defend. `record_milk` because a producer is paid on it,
+`record_result` because it prices milk, `draw_sample` and `record_custody`
+because the chain of custody is the claim, `record_input` because the recall
+genealogy runs through it, `register_instrument` because eligibility does.
 
 ---
 
