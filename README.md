@@ -17,16 +17,18 @@ docs/         Architecture documentation
 
 Dairy domain: `cattle`, `milk`, `breeding`, `health`, `feed`, `farm`.
 Commerce: `cattle-market`, `product-catalog`, `inventory`, `order`, `billing`.
-Platform: `tenant`, `notification`, `reporting`, `audit`, `file`, `gateway`.
+Platform: `tenant`, `identity`, `notification`, `reporting`, `audit`, `file`,
+`gateway`.
 
 Each follows Handler → Service → Repository → DB, with handwritten SQL, ULID
 identifiers, and `tenant_id` on every table and in every query.
 
 ## The integrity layer
 
-`ingestion` · `canonical` · `observation` · `pooling` · `shadow-settlement`, plus
-the Rust `ml/` tier for anomaly detection, measurement uncertainty, mass-balance
-reconciliation and divergence explanation.
+`ingestion` · `canonical` · `observation` · `pooling` · `shadow-settlement` ·
+`procurement` · `settlement` · `material` · `balance` · `laboratory` ·
+`production`, plus the Rust `ml/` tier for anomaly detection, measurement
+uncertainty, mass-balance reconciliation and divergence explanation.
 
 All ML and AI runs in Rust as separate processes, integrated with Go only through
 service-to-service calls — no cgo, no shared memory. Every ML call is advisory: the
@@ -34,7 +36,9 @@ platform produces a complete, authoritative answer whether or not the ML tier is
 reachable.
 
 See [docs/integrity-platform.md](docs/integrity-platform.md) for what it guarantees
-and where each guarantee is enforced.
+and where each guarantee is enforced, and
+[docs/requirements-crosscheck.md](docs/requirements-crosscheck.md) for those
+guarantees read back against the code, with what is still owed.
 
 ## Building
 

@@ -186,9 +186,19 @@ and it has caught more real problems than reading the code did.
 
 ## Open work
 
-In the code, none. What is open is that **this has never run anywhere**, and that
-is not a small remainder — it is most of the distance to production. Setting it
-out honestly, in the order it would hurt:
+This section said "in the code, none" until the cross-check in
+[`docs/requirements-crosscheck.md`](requirements-crosscheck.md) read the platform
+back against the three things in this repository that state what it should do.
+Seven items came out of that, and they are listed at the foot of that document
+rather than duplicated here. The one worth naming in this place is the first,
+because it is about finding out when something is wrong: **nothing watches the
+database.** No pool statistics, no query metrics, no spans around a query — and
+the reason `alerts.yml` gives for not alerting on it covers an exporter nobody
+runs, not numbers a service can read off a pool it is already holding.
+
+The rest of what is open is that **this has never run anywhere**, and that is not
+a small remainder — it is most of the distance to production. Setting it out
+honestly, in the order it would hurt:
 
 - **It has never been deployed.** Not to a cluster, not to a single host. No
   image has been built, because no Docker daemon runs in the environment this was
@@ -1638,6 +1648,56 @@ would have been a second copy, and the second copy is the one that goes stale.
 
 ---
 
+## The requirements, and the one I deleted without reading
+
+Everything above records what was decided. None of it compares those decisions
+against a requirement somebody wrote down beforehand, and the question "is
+anything still pending?" had nowhere to be answered from. That comparison is now
+[`docs/requirements-crosscheck.md`](requirements-crosscheck.md).
+
+It starts with a thing I have to say plainly. Commit 6b30f24 trimmed `pkg/` from
+a hundred-odd packages to the two the platform imports, and `pkg/requirements.md`
+went out with them, unread. The commit message said the deleted code was in the
+history if any of it turned out to be wanted, which was true of the code and was
+not a reason to delete a document called *requirements* without opening it.
+
+Opening it changes what it is rather than what it says: it is the requirements
+document for the inherited Go library — dependency injection, a dynamic query
+builder, a Kafka event bus — not for a dairy platform. It is restored at
+`docs/inherited/` and crossed off row by row anyway, because several of its lines
+are good requirements wherever they came from, and three of them turned out to be
+the same gap seen from three angles: **nothing in this platform watches the
+database.** No connection-pool statistics, no query metrics, no spans around a
+query. `alerts.yml` had already written that gap down and given a reason not to
+close it from there; that reason does not apply to numbers a service can read off
+a pool it already holds.
+
+Two other things came out of the cross-check.
+
+The README named twenty-two services and there are twenty-nine. The seven missing
+included settlement — the money path — and identity, which is how anything in
+the platform proves who it is. Fixed.
+
+And the two clients turned out to be the requirement in its most binding form.
+`web/` and `mobile/` between them call twenty-five procedures, every one of them
+something somebody was promised on a screen, and nothing compared that list
+against what the platform serves. All twenty-five are served; that was luck
+rather than a check. The failure waiting was the quiet kind, because the clients
+are in TypeScript and Dart while the route table, the permission table and the
+end-to-end suite all move together with the Go. The console would have shown
+`not_found` on a screen a supervisor opens once a fortnight. The bench would have
+shown `not_found` on `DeliverRecord` and — correctly, by its own design — kept
+every record in its outbox rather than counting it as delivered. Nothing lost,
+nothing counted, until somebody telephones.
+
+`services/gateway-service/handler/clients_test.go` compares them now: the
+procedures each client calls against the permission table, and each procedure's
+package against the prefixes the gateway routes. Two failures, not one — a
+procedure can exist, be permitted, and still be unreachable through the only door
+a client has.
+
+---
+
 ## Blocked, and has been since early on
 
 None of these can be worked around by writing more code, and each has been
@@ -1692,3 +1752,4 @@ diff.
 | A gauge reports -1 before its first reading, never 0 | Zero is the same number as "the queue is empty", which is the reassuring answer and the wrong one. A failed reading keeps the last value for the same reason. |
 | Every alert that can go blind has a second alert watching it | A check that has stopped looks exactly like a check that keeps finding nothing. |
 | No alerts on metrics from an exporter this repository does not run | The check beside the rules verifies that every name an alert uses is one the platform actually emits. Rules it cannot verify would be the one thing in that file nothing had checked. |
+| The clients are a requirement, and are compared like one | `web/` and `mobile/` are the only statement of what was promised that a person actually sees. They are in two other languages in two other modules, so every Go-side check moves with a rename and none of them notices. |
