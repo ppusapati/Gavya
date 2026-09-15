@@ -3,6 +3,7 @@ package serve
 import (
 	"crypto/tls"
 	"fmt"
+	"github.com/ppusapati/gavya/libs/integrity/tracing"
 	"net/http"
 	"os"
 	"strings"
@@ -49,6 +50,30 @@ const (
 // worse than no log line, and it is the sort of difference nobody notices until
 // somebody captures traffic.
 func Run(srv *http.Server, announce func(string)) error {
+	// The trace exporter, installed here rather than in thirty main functions.
+	//
+	// Same argument as the service name and the rate limit: a thing every
+	// service must do, done once, in the function they all call. The one that
+	// forgets is otherwise the service missing from every trace, and a trace
+	// missing one hop points at the wrong service.
+	//
+	// No endpoint configured is no exporter and no cost. The platform has to
+	// work with tracing off, the way it works with the ML tier off.
+	if exporter := tracing.FromEnv(); exporter != nil {
+		tracing.UseCollector(exporter)
+		defer func() {
+			// Flush before going: the spans from the request that was in flight
+			// when the process was asked to stop are the ones somebody will look
+			// for.
+			exporter.Close()
+			if sent, dropped, failed := exporter.Stats(); dropped > 0 || failed > 0 {
+				announce(fmt.Sprintf("tracing: %d spans sent, %d dropped, %d failed to export",
+					sent, dropped, failed))
+			}
+		}()
+		announce("tracing to " + os.Getenv(tracing.EndpointEnv))
+	}
+
 	cert := strings.TrimSpace(os.Getenv(CertEnv))
 	key := strings.TrimSpace(os.Getenv(KeyEnv))
 

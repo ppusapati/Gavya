@@ -37,6 +37,10 @@ services:
       - "8000:8080"
     environment:
       SERVICE_NAME: gateway-service
+      # The entry point, and therefore the span every trace starts with. A
+      # gateway that is not traced leaves every waterfall beginning at the
+      # second hop, with nothing saying what was asked for.
+      GAVYA_TRACE_ENDPOINT: "http://jaeger:4318"
       SERVER_ADDR: ":8080"
       IDENTITY_SERVICE_URL: "http://identity-service:8080"
       CATTLE_SERVICE_URL: "http://cattle-service:8080"
@@ -80,6 +84,7 @@ services:
       SERVICE_NAME: tenant-service
       SERVER_ADDR: ":8080"
       DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+      GAVYA_TRACE_ENDPOINT: "http://jaeger:4318"
       # Not encrypted, and this says so. The PostgreSQL is a container beside this one on a private compose network. Point DATABASE_URL at a database anywhere else and this line has to go: set sslmode=verify-full instead.
       GAVYA_INSECURE_DATABASE: "plaintext-to-the-database-is-acceptable-here"
     depends_on:
@@ -96,6 +101,7 @@ services:
       SERVICE_NAME: cattle-service
       SERVER_ADDR: ":8080"
       DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+      GAVYA_TRACE_ENDPOINT: "http://jaeger:4318"
       # Not encrypted, and this says so. The PostgreSQL is a container beside this one on a private compose network. Point DATABASE_URL at a database anywhere else and this line has to go: set sslmode=verify-full instead.
       GAVYA_INSECURE_DATABASE: "plaintext-to-the-database-is-acceptable-here"
     depends_on:
@@ -112,6 +118,7 @@ services:
       SERVICE_NAME: milk-service
       SERVER_ADDR: ":8080"
       DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+      GAVYA_TRACE_ENDPOINT: "http://jaeger:4318"
       # Not encrypted, and this says so. The PostgreSQL is a container beside this one on a private compose network. Point DATABASE_URL at a database anywhere else and this line has to go: set sslmode=verify-full instead.
       GAVYA_INSECURE_DATABASE: "plaintext-to-the-database-is-acceptable-here"
     depends_on:
@@ -128,6 +135,7 @@ services:
       SERVICE_NAME: breeding-service
       SERVER_ADDR: ":8080"
       DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+      GAVYA_TRACE_ENDPOINT: "http://jaeger:4318"
       # Not encrypted, and this says so. The PostgreSQL is a container beside this one on a private compose network. Point DATABASE_URL at a database anywhere else and this line has to go: set sslmode=verify-full instead.
       GAVYA_INSECURE_DATABASE: "plaintext-to-the-database-is-acceptable-here"
     depends_on:
@@ -144,6 +152,7 @@ services:
       SERVICE_NAME: health-service
       SERVER_ADDR: ":8080"
       DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+      GAVYA_TRACE_ENDPOINT: "http://jaeger:4318"
       # Not encrypted, and this says so. The PostgreSQL is a container beside this one on a private compose network. Point DATABASE_URL at a database anywhere else and this line has to go: set sslmode=verify-full instead.
       GAVYA_INSECURE_DATABASE: "plaintext-to-the-database-is-acceptable-here"
     depends_on:
@@ -160,6 +169,7 @@ services:
       SERVICE_NAME: feed-service
       SERVER_ADDR: ":8080"
       DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+      GAVYA_TRACE_ENDPOINT: "http://jaeger:4318"
       # Not encrypted, and this says so. The PostgreSQL is a container beside this one on a private compose network. Point DATABASE_URL at a database anywhere else and this line has to go: set sslmode=verify-full instead.
       GAVYA_INSECURE_DATABASE: "plaintext-to-the-database-is-acceptable-here"
     depends_on:
@@ -176,6 +186,7 @@ services:
       SERVICE_NAME: farm-service
       SERVER_ADDR: ":8080"
       DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+      GAVYA_TRACE_ENDPOINT: "http://jaeger:4318"
       # Not encrypted, and this says so. The PostgreSQL is a container beside this one on a private compose network. Point DATABASE_URL at a database anywhere else and this line has to go: set sslmode=verify-full instead.
       GAVYA_INSECURE_DATABASE: "plaintext-to-the-database-is-acceptable-here"
     depends_on:
@@ -192,6 +203,7 @@ services:
       SERVICE_NAME: cattle-market-service
       SERVER_ADDR: ":8080"
       DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+      GAVYA_TRACE_ENDPOINT: "http://jaeger:4318"
       # Not encrypted, and this says so. The PostgreSQL is a container beside this one on a private compose network. Point DATABASE_URL at a database anywhere else and this line has to go: set sslmode=verify-full instead.
       GAVYA_INSECURE_DATABASE: "plaintext-to-the-database-is-acceptable-here"
     depends_on:
@@ -208,6 +220,7 @@ services:
       SERVICE_NAME: product-catalog-service
       SERVER_ADDR: ":8080"
       DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+      GAVYA_TRACE_ENDPOINT: "http://jaeger:4318"
       # Not encrypted, and this says so. The PostgreSQL is a container beside this one on a private compose network. Point DATABASE_URL at a database anywhere else and this line has to go: set sslmode=verify-full instead.
       GAVYA_INSECURE_DATABASE: "plaintext-to-the-database-is-acceptable-here"
     depends_on:
@@ -224,6 +237,7 @@ services:
       SERVICE_NAME: inventory-service
       SERVER_ADDR: ":8080"
       DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+      GAVYA_TRACE_ENDPOINT: "http://jaeger:4318"
       # Not encrypted, and this says so. The PostgreSQL is a container beside this one on a private compose network. Point DATABASE_URL at a database anywhere else and this line has to go: set sslmode=verify-full instead.
       GAVYA_INSECURE_DATABASE: "plaintext-to-the-database-is-acceptable-here"
     depends_on:
@@ -240,6 +254,7 @@ services:
       SERVICE_NAME: order-service
       SERVER_ADDR: ":8080"
       DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+      GAVYA_TRACE_ENDPOINT: "http://jaeger:4318"
       # Not encrypted, and this says so. The PostgreSQL is a container beside this one on a private compose network. Point DATABASE_URL at a database anywhere else and this line has to go: set sslmode=verify-full instead.
       GAVYA_INSECURE_DATABASE: "plaintext-to-the-database-is-acceptable-here"
     depends_on:
@@ -256,6 +271,7 @@ services:
       SERVICE_NAME: billing-service
       SERVER_ADDR: ":8080"
       DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+      GAVYA_TRACE_ENDPOINT: "http://jaeger:4318"
       # Not encrypted, and this says so. The PostgreSQL is a container beside this one on a private compose network. Point DATABASE_URL at a database anywhere else and this line has to go: set sslmode=verify-full instead.
       GAVYA_INSECURE_DATABASE: "plaintext-to-the-database-is-acceptable-here"
     depends_on:
@@ -272,6 +288,7 @@ services:
       SERVICE_NAME: notification-service
       SERVER_ADDR: ":8080"
       DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+      GAVYA_TRACE_ENDPOINT: "http://jaeger:4318"
       # Not encrypted, and this says so. The PostgreSQL is a container beside this one on a private compose network. Point DATABASE_URL at a database anywhere else and this line has to go: set sslmode=verify-full instead.
       GAVYA_INSECURE_DATABASE: "plaintext-to-the-database-is-acceptable-here"
     depends_on:
@@ -288,6 +305,7 @@ services:
       SERVICE_NAME: reporting-service
       SERVER_ADDR: ":8080"
       DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+      GAVYA_TRACE_ENDPOINT: "http://jaeger:4318"
       # Not encrypted, and this says so. The PostgreSQL is a container beside this one on a private compose network. Point DATABASE_URL at a database anywhere else and this line has to go: set sslmode=verify-full instead.
       GAVYA_INSECURE_DATABASE: "plaintext-to-the-database-is-acceptable-here"
     depends_on:
@@ -304,6 +322,7 @@ services:
       SERVICE_NAME: audit-service
       SERVER_ADDR: ":8080"
       DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+      GAVYA_TRACE_ENDPOINT: "http://jaeger:4318"
       # Not encrypted, and this says so. The PostgreSQL is a container beside this one on a private compose network. Point DATABASE_URL at a database anywhere else and this line has to go: set sslmode=verify-full instead.
       GAVYA_INSECURE_DATABASE: "plaintext-to-the-database-is-acceptable-here"
     depends_on:
@@ -320,6 +339,7 @@ services:
       SERVICE_NAME: file-service
       SERVER_ADDR: ":8080"
       DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+      GAVYA_TRACE_ENDPOINT: "http://jaeger:4318"
       # Not encrypted, and this says so. The PostgreSQL is a container beside this one on a private compose network. Point DATABASE_URL at a database anywhere else and this line has to go: set sslmode=verify-full instead.
       GAVYA_INSECURE_DATABASE: "plaintext-to-the-database-is-acceptable-here"
       STORAGE_PROVIDER: local
@@ -342,6 +362,7 @@ services:
       SERVICE_NAME: ingestion-service
       SERVER_ADDR: ":8091"
       DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+      GAVYA_TRACE_ENDPOINT: "http://jaeger:4318"
       # Not encrypted, and this says so. The PostgreSQL is a container beside this one on a private compose network. Point DATABASE_URL at a database anywhere else and this line has to go: set sslmode=verify-full instead.
       GAVYA_INSECURE_DATABASE: "plaintext-to-the-database-is-acceptable-here"
     depends_on:
@@ -358,6 +379,7 @@ services:
       SERVICE_NAME: identity-service
       SERVER_ADDR: ":8080"
       DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+      GAVYA_TRACE_ENDPOINT: "http://jaeger:4318"
       # Not encrypted, and this says so. The PostgreSQL is a container beside this one on a private compose network. Point DATABASE_URL at a database anywhere else and this line has to go: set sslmode=verify-full instead.
       GAVYA_INSECURE_DATABASE: "plaintext-to-the-database-is-acceptable-here"
     depends_on:
@@ -374,6 +396,7 @@ services:
       SERVICE_NAME: observation-service
       SERVER_ADDR: ":8092"
       DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+      GAVYA_TRACE_ENDPOINT: "http://jaeger:4318"
       # Not encrypted, and this says so. The PostgreSQL is a container beside this one on a private compose network. Point DATABASE_URL at a database anywhere else and this line has to go: set sslmode=verify-full instead.
       GAVYA_INSECURE_DATABASE: "plaintext-to-the-database-is-acceptable-here"
       # Which measurement-control law this deployment operates under. Required:
@@ -397,6 +420,7 @@ services:
       SERVICE_NAME: canonical-service
       SERVER_ADDR: ":8093"
       DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+      GAVYA_TRACE_ENDPOINT: "http://jaeger:4318"
       # Not encrypted, and this says so. The PostgreSQL is a container beside this one on a private compose network. Point DATABASE_URL at a database anywhere else and this line has to go: set sslmode=verify-full instead.
       GAVYA_INSECURE_DATABASE: "plaintext-to-the-database-is-acceptable-here"
     depends_on:
@@ -413,6 +437,7 @@ services:
       SERVICE_NAME: procurement-service
       SERVER_ADDR: ":8103"
       DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+      GAVYA_TRACE_ENDPOINT: "http://jaeger:4318"
       # Not encrypted, and this says so. The PostgreSQL is a container beside this one on a private compose network. Point DATABASE_URL at a database anywhere else and this line has to go: set sslmode=verify-full instead.
       GAVYA_INSECURE_DATABASE: "plaintext-to-the-database-is-acceptable-here"
     depends_on:
@@ -429,6 +454,7 @@ services:
       SERVICE_NAME: settlement-service
       SERVER_ADDR: ":8104"
       DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+      GAVYA_TRACE_ENDPOINT: "http://jaeger:4318"
       # Not encrypted, and this says so. The PostgreSQL is a container beside this one on a private compose network. Point DATABASE_URL at a database anywhere else and this line has to go: set sslmode=verify-full instead.
       GAVYA_INSECURE_DATABASE: "plaintext-to-the-database-is-acceptable-here"
       PROCUREMENT_URL: "http://procurement-service:8103"
@@ -455,6 +481,7 @@ services:
       SERVICE_NAME: material-service
       SERVER_ADDR: ":8105"
       DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+      GAVYA_TRACE_ENDPOINT: "http://jaeger:4318"
       # Not encrypted, and this says so. The PostgreSQL is a container beside this one on a private compose network. Point DATABASE_URL at a database anywhere else and this line has to go: set sslmode=verify-full instead.
       GAVYA_INSECURE_DATABASE: "plaintext-to-the-database-is-acceptable-here"
     depends_on:
@@ -471,6 +498,7 @@ services:
       SERVICE_NAME: laboratory-service
       SERVER_ADDR: ":8106"
       DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+      GAVYA_TRACE_ENDPOINT: "http://jaeger:4318"
       # Not encrypted, and this says so. The PostgreSQL is a container beside this one on a private compose network. Point DATABASE_URL at a database anywhere else and this line has to go: set sslmode=verify-full instead.
       GAVYA_INSECURE_DATABASE: "plaintext-to-the-database-is-acceptable-here"
     depends_on:
@@ -487,6 +515,7 @@ services:
       SERVICE_NAME: production-service
       SERVER_ADDR: ":8107"
       DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+      GAVYA_TRACE_ENDPOINT: "http://jaeger:4318"
       # Not encrypted, and this says so. The PostgreSQL is a container beside this one on a private compose network. Point DATABASE_URL at a database anywhere else and this line has to go: set sslmode=verify-full instead.
       GAVYA_INSECURE_DATABASE: "plaintext-to-the-database-is-acceptable-here"
     depends_on:
@@ -503,6 +532,7 @@ services:
       SERVICE_NAME: pooling-service
       SERVER_ADDR: ":8094"
       DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+      GAVYA_TRACE_ENDPOINT: "http://jaeger:4318"
       # Not encrypted, and this says so. The PostgreSQL is a container beside this one on a private compose network. Point DATABASE_URL at a database anywhere else and this line has to go: set sslmode=verify-full instead.
       GAVYA_INSECURE_DATABASE: "plaintext-to-the-database-is-acceptable-here"
     depends_on:
@@ -519,6 +549,7 @@ services:
       SERVICE_NAME: balance-service
       SERVER_ADDR: ":8095"
       DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+      GAVYA_TRACE_ENDPOINT: "http://jaeger:4318"
       # Not encrypted, and this says so. The PostgreSQL is a container beside this one on a private compose network. Point DATABASE_URL at a database anywhere else and this line has to go: set sslmode=verify-full instead.
       GAVYA_INSECURE_DATABASE: "plaintext-to-the-database-is-acceptable-here"
       RECONCILIATION_ML_URL: "http://reconciliation-service:9103"
@@ -537,6 +568,7 @@ services:
       SERVICE_NAME: shadow-settlement-service
       SERVER_ADDR: ":8090"
       DATABASE_URL: "postgres://gavya_app:${GAVYA_APP_PASSWORD:?set GAVYA_APP_PASSWORD}@postgres:5432/dairy?sslmode=disable"
+      GAVYA_TRACE_ENDPOINT: "http://jaeger:4318"
       # Not encrypted, and this says so. The PostgreSQL is a container beside this one on a private compose network. Point DATABASE_URL at a database anywhere else and this line has to go: set sslmode=verify-full instead.
       GAVYA_INSECURE_DATABASE: "plaintext-to-the-database-is-acceptable-here"
       # Clearing this disables the advisory call; deterministic classification
@@ -598,6 +630,25 @@ services:
     environment:
       LISTEN_ADDR: "0.0.0.0:9104"
       LOG_LEVEL: info
+
+  # Where the traces go.
+  #
+  # Jaeger's all-in-one image, which accepts OTLP over HTTP on 4318 and serves
+  # its own interface on 16686. One container because this is the compose shape:
+  # a society running the platform on one server wants to be able to look at a
+  # slow settlement, not to operate a tracing cluster.
+  #
+  # Traces are held in memory here and are gone when the container restarts.
+  # That is the right trade for this shape and the wrong one for a real
+  # deployment; point GAVYA_TRACE_ENDPOINT at a collector with storage behind it
+  # and this container is not needed.
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    ports:
+      - "16686:16686"
+      - "4318:4318"
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
 
   # The reader. Every service has served /metrics since readiness was added and
   # nothing read them, which made the platform's observability a page that

@@ -208,8 +208,7 @@ Two narrower blind spots survive and are named where they belong, at the foot of
 `deploy/monitoring/alerts.yml`: nothing watches the settlement notification
 sweep, so money events could stop being told to anybody unnoticed, and nothing
 verifies the audit chain on a schedule. Both want a metric that does not exist
-yet. There is also no tracing, so a slow call chain has to be taken apart by
-hand, one service's metrics at a time.
+yet.
 
 One caution about everything below. It is thorough and it is self-validated:
 every check in this repository was written by the same process that wrote the
@@ -1512,6 +1511,77 @@ naming real metrics and are not known to parse as queries.
 
 ---
 
+## One identifier, all the way through
+
+There was no tracing, and two things made the absence harder to see than a plain
+gap would have been.
+
+`svcclient` set an `X-Request-Id` on every call and every caller generated a
+fresh one. The platform had an identifier that looked like a correlation id and
+correlated nothing: a settlement that gathers a fortnight touches procurement,
+canonical and notification, and each hop carried a different one. Asking what a
+request had done meant reading four services' logs and matching on timestamps.
+
+And `audit.Entry` had carried a `TraceID` field since the trail was written.
+Nothing ever set it. Every audit row in this platform had an empty `trace_id`, in
+a column that is in the schema, in audit-service's domain model, and on its wire
+format — a field that reports success while doing nothing, which is the shape of
+defect this repository keeps finding, sitting inside the mechanism built to find
+it.
+
+What there is now is W3C Trace Context, which is one header, hand-written for the
+reason `libs/integrity/observe` writes Prometheus text itself: the format is
+small and specified and the SDK that would write it is not. A service that
+receives a `traceparent` continues that trace and one that does not starts a new
+one, so a trace begins where a request enters the platform and reaches
+everything it touches. It is parsed strictly — a malformed header that is
+silently repaired produces a trace that looks whole and joins two unrelated
+requests, which is worse than one that visibly begins again.
+
+Three places it is installed, and none of them is a main function. The middleware
+is in `serve`, outermost, so a request refused by the rate limit or the
+authorisation check is still traced — the request somebody is asking about is
+usually the one that was turned away. The exporter is installed by `serve.Run`,
+so a service cannot forget it and become the hop missing from every trace. And
+`svcclient` injects a child span on every outgoing call. The service name comes
+from the environment rather than a new parameter, because adding one would mean
+editing thirty main functions and the one edited wrongly is the service that
+appears in every trace under somebody else's name.
+
+The end-to-end tests assert the thing unit tests cannot reach: that the header
+survives a real HTTP hop, that the middleware puts it on the context, and that
+the audit write two layers down finds it there. One of them exists only to stop
+the others passing against a constant — a platform that stamped one trace id on
+every row would satisfy "the trail carries a trace" and be useless.
+
+### What this found in the writing
+
+**A scrape configuration that would have watched nothing.** The monitoring added
+in the previous section pointed Prometheus at the ports in
+`libs/integrity/ports`. Those are what a service listens on when run directly on
+a developer's machine, where everything shares a host. Under compose each service
+is alone in its container and listens on 8080, and the registry number is what is
+published to the *host* — and for several services not even that: audit is 8100
+in the registry and published on 8094.
+
+Prometheus runs inside the compose network. Every target would have been a port
+nothing listens on, every service would have read as down, and the test written
+to prevent exactly that compared against the registry too, so it passed. It now
+compares against `docker-compose.yaml`, which is where the answer actually is.
+
+Worth stating plainly because it is the failure this document is mostly about,
+committed by the work that was closing it: a check is only as good as the thing
+it compares against, and choosing that is the whole of the design.
+
+**Fifteen services whose Kubernetes container port differs from the registry.**
+Found while chasing the above and *not* a defect: each service's ConfigMap,
+containerPort and Service target agree with one another, and services address
+each other by name on the Service port. The registry is not the cluster's port
+and was never meant to be. Recorded here because it looks alarming in a grep and
+the next person will find it the same way.
+
+---
+
 ## Blocked, and has been since early on
 
 None of these can be worked around by writing more code, and each has been
@@ -1560,3 +1630,6 @@ diff.
 | Histogram buckets chosen from a measurement, not in advance | The package refused a histogram for a long time on exactly this ground, and it was right to. The load test is the watching that made the choice honest. |
 | The load test is not in the gate | It takes minutes and wants a quiet machine. A figure taken on a runner that is building something else gets argued with rather than acted on. |
 | Alerts checked against a live metrics handler | An alert naming a metric nothing publishes never fires, and never firing is indistinguishable from nothing ever breaking. |
+| W3C trace context, hand-written, rather than the OpenTelemetry SDK | The wire format is small and specified; the dependency across thirty modules is not. What goes on the wire is the standard, so a collector cannot tell. |
+| A malformed traceparent starts a new trace rather than being repaired | A silently repaired header produces a trace that looks whole and joins two unrelated requests. A visible gap is the honest failure. |
+| Spans dropped rather than blocking the request | A tracing system that slows the collection path is breaking the thing it exists to measure. The drops are counted, because a silent one makes a trace with a hole in it look like a service that was never called. |

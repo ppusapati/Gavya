@@ -17,6 +17,9 @@ metadata:
   name: settlement-service-config
 data:
   SERVICE_NAME: settlement-service
+  # Where spans go. Empty turns tracing off and the platform is complete
+  # without it, the same way it is complete without the ML tier.
+  GAVYA_TRACE_ENDPOINT: "http://otel-collector:4318"
   SERVER_ADDR: ":8104"
   # Not optional. Pointed at nothing, settlement gathers nothing and reports a
   # fortnight in which every producer earned zero — a plausible-looking answer

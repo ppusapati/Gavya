@@ -16,6 +16,9 @@ metadata:
   name: balance-service-config
 data:
   SERVICE_NAME: balance-service
+  # Where spans go. Empty turns tracing off and the platform is complete
+  # without it, the same way it is complete without the ML tier.
+  GAVYA_TRACE_ENDPOINT: "http://otel-collector:4318"
   SERVER_ADDR: ":8095"
   # Left unset by default. Without a reconciler a window is still validated and
   # its imbalance still recorded; the run simply carries no adjustments.

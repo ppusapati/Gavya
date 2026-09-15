@@ -17,7 +17,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/ppusapati/gavya/libs/integrity/observe"
-	"github.com/ppusapati/gavya/libs/integrity/ports"
 )
 
 // The gateway can only reach an upstream it was given an address for, and under
@@ -1497,22 +1496,43 @@ func TestEveryServiceIsScrapedInBothShapes(t *testing.T) {
 		}
 	}
 
-	for name, port := range ports.All {
+	// Compared against compose rather than against libs/integrity/ports, and
+	// that is the whole substance of this check.
+	//
+	// The registry is what a service listens on when run directly on a
+	// developer's machine, where everything shares a host. Under compose each
+	// service is alone in its container and listens on 8080, and the registry
+	// number is what is published to the host — and for several services not even
+	// that: audit is 8100 in the registry and published on 8094. Prometheus runs
+	// inside the compose network and reaches a container by name and container
+	// port.
+	//
+	// The first version of this file compared against the registry, so it passed
+	// while the scrape configuration pointed at a port nothing listens on, for
+	// every service. Monitoring switched on and blind, with a green test over it.
+	listening := composeListeningPorts(t, root)
+	if len(listening) < 20 {
+		t.Fatalf("read only %d services out of docker-compose.yaml; the parsing has "+
+			"stopped matching and this comparison would pass against anything", len(listening))
+	}
+	for container, port := range listening {
+		name := strings.TrimSuffix(container, "-service")
 		target, ok := scraped[name]
 		if !ok {
-			t.Errorf("%s-service is not in deploy/monitoring/prometheus.yml, so nothing "+
-				"reads its metrics and an outage in it is invisible", name)
+			t.Errorf("%s is not in deploy/monitoring/prometheus.yml, so nothing reads its "+
+				"metrics and an outage in it is invisible", container)
 			continue
 		}
-		want := fmt.Sprintf("%s-service:%d", name, port)
+		want := fmt.Sprintf("%s:%d", container, port)
 		if target != want {
-			t.Errorf("%s-service is scraped at %s and listens on %s; a scrape of the wrong "+
-				"port fails quietly and the service reads as down", name, target, want)
+			t.Errorf("%s is scraped at %s and listens on %s inside the compose network; a "+
+				"scrape of the wrong port fails quietly and the service reads as down",
+				container, target, want)
 		}
 	}
 	for name := range scraped {
-		if _, ok := ports.All[name]; !ok {
-			t.Errorf("prometheus.yml scrapes %q, which is not a service in this platform", name)
+		if _, ok := listening[name+"-service"]; !ok {
+			t.Errorf("prometheus.yml scrapes %q, which is not a service in compose", name)
 		}
 	}
 
@@ -1690,5 +1710,36 @@ func sortedKeys(m map[string]bool) []string {
 		out = append(out, k)
 	}
 	sort.Strings(out)
+	return out
+}
+
+// composeListeningPorts is what each service listens on inside the compose
+// network, read from the SERVER_ADDR it is given.
+func composeListeningPorts(t *testing.T, root string) map[string]int {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(root, "docker-compose.yaml"))
+	if err != nil {
+		t.Fatalf("read docker-compose.yaml: %v", err)
+	}
+	var compose struct {
+		Services map[string]struct {
+			Environment map[string]string `yaml:"environment"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(b, &compose); err != nil {
+		t.Fatalf("docker-compose.yaml is not valid YAML: %v", err)
+	}
+	out := map[string]int{}
+	for name, svc := range compose.Services {
+		if !strings.HasSuffix(name, "-service") {
+			continue
+		}
+		addr := strings.TrimPrefix(svc.Environment["SERVER_ADDR"], ":")
+		port, err := strconv.Atoi(addr)
+		if err != nil {
+			continue
+		}
+		out[name] = port
+	}
 	return out
 }

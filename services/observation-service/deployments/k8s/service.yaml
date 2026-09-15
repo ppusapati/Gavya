@@ -16,6 +16,9 @@ metadata:
   name: observation-service-config
 data:
   SERVICE_NAME: observation-service
+  # Where spans go. Empty turns tracing off and the platform is complete
+  # without it, the same way it is complete without the ML tier.
+  GAVYA_TRACE_ENDPOINT: "http://otel-collector:4318"
   SERVER_ADDR: ":8092"
   # The measurement-control law this deployment operates under. There is no
   # default and the service will not start without it: an eligibility verdict

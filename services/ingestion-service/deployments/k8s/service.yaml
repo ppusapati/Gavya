@@ -16,6 +16,9 @@ metadata:
   name: ingestion-service-config
 data:
   SERVICE_NAME: ingestion-service
+  # Where spans go. Empty turns tracing off and the platform is complete
+  # without it, the same way it is complete without the ML tier.
+  GAVYA_TRACE_ENDPOINT: "http://otel-collector:4318"
   SERVER_ADDR: ":8091"
 ---
 apiVersion: autoscaling/v2

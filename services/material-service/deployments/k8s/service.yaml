@@ -17,6 +17,9 @@ metadata:
   name: material-service-config
 data:
   SERVICE_NAME: material-service
+  # Where spans go. Empty turns tracing off and the platform is complete
+  # without it, the same way it is complete without the ML tier.
+  GAVYA_TRACE_ENDPOINT: "http://otel-collector:4318"
   SERVER_ADDR: ":8105"
 ---
 apiVersion: autoscaling/v2

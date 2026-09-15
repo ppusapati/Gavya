@@ -35,7 +35,28 @@ import (
 	"github.com/ppusapati/gavya/libs/integrity/authz"
 	"github.com/ppusapati/gavya/libs/integrity/observe"
 	"github.com/ppusapati/gavya/libs/integrity/ratelimit"
+	"github.com/ppusapati/gavya/libs/integrity/tracing"
 )
+
+// ServiceNameEnv names this process in a trace.
+//
+// Read here rather than passed in, the way the rate limit is: adding a parameter
+// would mean editing thirty main functions, and the one that is edited wrongly
+// is the service that appears in every trace under somebody else's name. Every
+// deployment already sets it — it is in each service's ConfigMap and in compose.
+const ServiceNameEnv = "SERVICE_NAME"
+
+// serviceName is what this process calls itself in a span.
+//
+// "unknown-service" rather than empty, because a span with no service is one a
+// collector groups with every other nameless span in the platform, which looks
+// like one enormous service that does everything.
+func serviceName() string {
+	if v := os.Getenv(ServiceNameEnv); v != "" {
+		return v
+	}
+	return "unknown-service"
+}
 
 // The general rate, per caller.
 //
@@ -140,13 +161,16 @@ func New(addr string, mux *http.ServeMux, checks ...observe.Check) *http.Server 
 
 	limited := limit()
 
-	// Order matters. Counting is outermost so a refused request is counted —
-	// a service rejecting everything must not look like one serving everything.
-	// The limit comes before the authorisation check, so an exhausted caller is
-	// turned away without the work of deciding what they may do.
+	// Order matters. Tracing is outermost, then counting, so a request that is
+	// refused by the rate limit or the authorisation check is still traced and
+	// still counted — a service rejecting everything must not look like one
+	// serving everything, and the request somebody is asking about is usually
+	// the one that was turned away. The limit comes before the authorisation
+	// check, so an exhausted caller is turned away without the work of deciding
+	// what they may do.
 	return withProtocols(&http.Server{
 		Addr:              addr,
-		Handler:           metrics.Middleware(limited(authz.Guard(mux))),
+		Handler:           tracing.Middleware(serviceName())(metrics.Middleware(limited(authz.Guard(mux)))),
 		ReadHeaderTimeout: ReadHeaderTimeout,
 		ReadTimeout:       ReadTimeout,
 		WriteTimeout:      WriteTimeout,
@@ -189,7 +213,7 @@ func Unguarded(addr string, mux http.Handler, metrics *observe.Metrics) *http.Se
 	// not a weaker bound, it is none.
 	return withProtocols(&http.Server{
 		Addr:              addr,
-		Handler:           metrics.Middleware(limit()(mux)),
+		Handler:           tracing.Middleware(serviceName())(metrics.Middleware(limit()(mux))),
 		ReadHeaderTimeout: ReadHeaderTimeout,
 		ReadTimeout:       ReadTimeout,
 		WriteTimeout:      WriteTimeout,

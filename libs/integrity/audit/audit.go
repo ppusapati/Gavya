@@ -39,6 +39,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/ppusapati/gavya/libs/integrity/tracing"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -77,7 +78,14 @@ type Entry struct {
 	// boundary and a service that forgets to set it should be visible.
 	ServiceName string
 
-	// TraceID ties this to the request that caused it, when there is one.
+	// TraceID ties this to the request that caused it.
+	//
+	// Leave it empty and the trace on the context is used, which is what almost
+	// every caller wants and none of them had: this field existed from the
+	// beginning and nothing ever set it, so every row in the trail carried an
+	// empty trace_id. Set it only to say the entry belongs to a different
+	// request from the one running — a sweep writing off yesterday's queue
+	// belongs to the trace that queued the work, not to its own.
 	TraceID string
 }
 
@@ -125,11 +133,29 @@ func Write(ctx context.Context, tx Execer, ids IDs, e Entry) error {
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,nullif($10,''),nullif($11,''),$3)`,
 		ids.New(), tenant, actor.Identifier(), actor.Kind(),
 		e.Action, e.ResourceType, e.ResourceID,
-		before, after, e.ServiceName, e.TraceID)
+		before, after, e.ServiceName, traceFor(ctx, e))
 	if err != nil {
 		return fmt.Errorf("audit: %w", err)
 	}
 	return nil
+}
+
+// traceFor is the trace this entry belongs to.
+//
+// The field has been on Entry for as long as the trail has existed and nothing
+// ever set it, so every audit row in this platform carried an empty trace_id —
+// a column in the schema, a field in the domain model and on the wire format,
+// describing nothing. It is taken from the context now, which is where the
+// server middleware put it.
+//
+// An explicit TraceID on the entry still wins, for a caller that knows better
+// than the context: a sweep processing yesterday's queue belongs to the trace of
+// the work that queued it, not to its own.
+func traceFor(ctx context.Context, e Entry) string {
+	if e.TraceID != "" {
+		return e.TraceID
+	}
+	return tracing.TraceIDFrom(ctx)
 }
 
 // encode renders a state for storage, or nothing when there is none.

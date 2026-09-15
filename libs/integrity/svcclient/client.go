@@ -25,6 +25,7 @@ import (
 
 	"github.com/ppusapati/gavya/libs/integrity/authz"
 	"github.com/ppusapati/gavya/libs/integrity/connectjson"
+	"github.com/ppusapati/gavya/libs/integrity/tracing"
 )
 
 const (
@@ -209,6 +210,14 @@ func (c *Client) attempt(ctx context.Context, url, procedure string, body []byte
 	if opts.RequestID != "" {
 		req.Header.Set(HeaderRequestID, opts.RequestID)
 	}
+	// The trace, continued rather than restarted.
+	//
+	// X-Request-Id above is not this and never was: every caller generates its
+	// own, so a settlement that reaches procurement, canonical and notification
+	// had four unrelated ids and nothing tied them together. This sends a child
+	// of the span this service is currently serving, which is what makes the
+	// chain reconstructable from either end.
+	tracing.Inject(ctx, req.Header)
 
 	resp, err := c.http.Do(req)
 	if err != nil {

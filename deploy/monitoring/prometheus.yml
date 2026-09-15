@@ -4,18 +4,28 @@
 # made the whole of the platform's observability a page that existed. This is the
 # reader.
 #
-# The targets are written out rather than discovered, for the same reason the
-# authorization route table is: this deployment shape has a fixed, known set of
-# services on fixed, known ports, and a list checked against the code is better
-# than a rule that silently stops matching. The test in
-# services/gateway-service/handler compares this file against
-# libs/integrity/ports and fails the build when a service is added and not
-# scraped — which is this file's own failure mode, one level up.
+# THE PORTS HERE ARE THE CONTAINER PORTS, NOT THE ONES IN libs/integrity/ports.
 #
-# Kubernetes does not use this file: the pods carry prometheus.io annotations and
-# a cluster Prometheus discovers them. The same test checks both, because a
-# service scraped under compose and not under Kubernetes is one that is watched
-# in testing and unwatched in production.
+# That distinction cost this file a rewrite and is worth stating plainly, because
+# getting it wrong produces monitoring that is switched on and blind. The ports
+# registry is what a service listens on when run directly on a developer's
+# machine, where everything shares one host and needs distinct numbers. Under
+# compose each service is alone in its container and listens on 8080, and the
+# registry number is what is published to the *host* — and for several services
+# not even that: audit-service is 8100 in the registry and published on 8094.
+#
+# Prometheus runs inside the compose network and reaches a service by its
+# container name on its container port. The first version of this file used the
+# registry and would have scraped a port nothing listens on, for every service,
+# and every target would have read as down — which is the failure this file
+# exists to prevent, committed into the file itself.
+#
+# So the test in services/gateway-service/handler compares these targets against
+# docker-compose.yaml rather than against the registry, and a service whose
+# listening port changes fails the build.
+#
+# Kubernetes does not use this file: the pods carry prometheus.io annotations
+# naming their own containerPort, and a cluster Prometheus discovers them.
 
 global:
   scrape_interval: 15s
@@ -29,49 +39,49 @@ rule_files:
 scrape_configs:
   - job_name: gavya-audit
     static_configs:
-      - targets: ['audit-service:8100']
+      - targets: ['audit-service:8080']
   - job_name: gavya-balance
     static_configs:
       - targets: ['balance-service:8095']
   - job_name: gavya-billing
     static_configs:
-      - targets: ['billing-service:8097']
+      - targets: ['billing-service:8080']
   - job_name: gavya-breeding
     static_configs:
-      - targets: ['breeding-service:8083']
+      - targets: ['breeding-service:8080']
   - job_name: gavya-canonical
     static_configs:
       - targets: ['canonical-service:8093']
-  - job_name: gavya-cattle
-    static_configs:
-      - targets: ['cattle-service:8081']
   - job_name: gavya-cattle-market
     static_configs:
-      - targets: ['cattle-market-service:8087']
+      - targets: ['cattle-market-service:8080']
+  - job_name: gavya-cattle
+    static_configs:
+      - targets: ['cattle-service:8080']
   - job_name: gavya-farm
     static_configs:
-      - targets: ['farm-service:8086']
+      - targets: ['farm-service:8080']
   - job_name: gavya-feed
     static_configs:
-      - targets: ['feed-service:8085']
+      - targets: ['feed-service:8080']
   - job_name: gavya-file
     static_configs:
-      - targets: ['file-service:8101']
+      - targets: ['file-service:8080']
   - job_name: gavya-gateway
     static_configs:
-      - targets: ['gateway-service:8000']
+      - targets: ['gateway-service:8080']
   - job_name: gavya-health
     static_configs:
-      - targets: ['health-service:8084']
+      - targets: ['health-service:8080']
   - job_name: gavya-identity
     static_configs:
-      - targets: ['identity-service:8102']
+      - targets: ['identity-service:8080']
   - job_name: gavya-ingestion
     static_configs:
       - targets: ['ingestion-service:8091']
   - job_name: gavya-inventory
     static_configs:
-      - targets: ['inventory-service:8089']
+      - targets: ['inventory-service:8080']
   - job_name: gavya-laboratory
     static_configs:
       - targets: ['laboratory-service:8106']
@@ -80,16 +90,16 @@ scrape_configs:
       - targets: ['material-service:8105']
   - job_name: gavya-milk
     static_configs:
-      - targets: ['milk-service:8082']
+      - targets: ['milk-service:8080']
   - job_name: gavya-notification
     static_configs:
-      - targets: ['notification-service:8098']
+      - targets: ['notification-service:8080']
   - job_name: gavya-observation
     static_configs:
       - targets: ['observation-service:8092']
   - job_name: gavya-order
     static_configs:
-      - targets: ['order-service:8096']
+      - targets: ['order-service:8080']
   - job_name: gavya-pooling
     static_configs:
       - targets: ['pooling-service:8094']
@@ -98,13 +108,13 @@ scrape_configs:
       - targets: ['procurement-service:8103']
   - job_name: gavya-product-catalog
     static_configs:
-      - targets: ['product-catalog-service:8088']
+      - targets: ['product-catalog-service:8080']
   - job_name: gavya-production
     static_configs:
       - targets: ['production-service:8107']
   - job_name: gavya-reporting
     static_configs:
-      - targets: ['reporting-service:8099']
+      - targets: ['reporting-service:8080']
   - job_name: gavya-settlement
     static_configs:
       - targets: ['settlement-service:8104']

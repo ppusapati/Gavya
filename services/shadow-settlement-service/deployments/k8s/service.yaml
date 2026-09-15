@@ -16,6 +16,9 @@ metadata:
   name: shadow-settlement-service-config
 data:
   SERVICE_NAME: shadow-settlement-service
+  # Where spans go. Empty turns tracing off and the platform is complete
+  # without it, the same way it is complete without the ML tier.
+  GAVYA_TRACE_ENDPOINT: "http://otel-collector:4318"
   SERVER_ADDR: ":8090"
   # Points at the Rust divergence service. Clearing this disables the advisory
   # call; deterministic classification is unaffected.

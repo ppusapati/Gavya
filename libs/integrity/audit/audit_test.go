@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/ppusapati/gavya/libs/integrity/tenantctx"
+	"github.com/ppusapati/gavya/libs/integrity/tracing"
 )
 
 type recorder struct {
@@ -221,5 +222,62 @@ func TestTheRecordSaysWhichServiceMadeTheChange(t *testing.T) {
 	}
 	if !found {
 		t.Error("the record does not say which service made the change")
+	}
+}
+
+// The trail records which request caused the change.
+//
+// Entry has carried a TraceID since the trail was written and nothing ever set
+// it: every row in this platform had an empty trace_id, in a column that is in
+// the schema, in audit-service's domain model, and on its wire format. A field
+// that describes nothing is the shape of defect this repository keeps finding,
+// and this is what stops it coming back.
+func TestARecordCarriesTheTraceThatCausedIt(t *testing.T) {
+	trace := tracing.New()
+	rec := &recorder{}
+	if err := Write(tracing.With(signedIn("US_1"), trace), rec, fixedIDs{}, entry()); err != nil {
+		t.Fatal(err)
+	}
+	// trace_id is the eleventh placeholder.
+	if got := rec.args[10]; got != trace.Trace() {
+		t.Errorf("the record carries trace %v and the request was %s; without it the trail "+
+			"cannot be joined to the request that produced it", got, trace.Trace())
+	}
+}
+
+// A change made outside any request records no trace, rather than inventing one.
+//
+// An entry pointing at a trace that never existed is worse than one pointing
+// nowhere, because somebody follows it.
+func TestARecordWithNoTraceSaysSoRatherThanInventingOne(t *testing.T) {
+	rec := &recorder{}
+	if err := Write(signedIn("US_1"), rec, fixedIDs{}, entry()); err != nil {
+		t.Fatal(err)
+	}
+	if got := rec.args[10]; got != "" {
+		t.Errorf("a change made outside any request carries trace %v", got)
+	}
+}
+
+// An entry that names its own trace keeps it.
+//
+// For the sweep that finishes somebody else's work: settlement queues a
+// notification inside the transaction that approves a payable, and the delivery
+// happens later in a background sweep. The delivery belongs to the trace of the
+// approval, which is the request a person would be asking about, not to the
+// sweep's own.
+func TestAnExplicitTraceWinsOverTheOneOnTheContext(t *testing.T) {
+	sweep := tracing.New()
+	theApproval := tracing.New()
+
+	e := entry()
+	e.TraceID = theApproval.Trace()
+
+	rec := &recorder{}
+	if err := Write(tracing.With(signedIn("US_1"), sweep), rec, fixedIDs{}, e); err != nil {
+		t.Fatal(err)
+	}
+	if got := rec.args[10]; got != theApproval.Trace() {
+		t.Errorf("the sweep's own trace won: got %v, want %s", got, theApproval.Trace())
 	}
 }
