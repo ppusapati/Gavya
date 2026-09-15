@@ -1,0 +1,157 @@
+# What is worth waking somebody for.
+#
+# Every service served /metrics and nothing scraped them, so the platform's
+# observability was a page that existed and nobody read. An outage was noticed by
+# a society telephoning, which is a monitoring system with a very long scrape
+# interval and a very unhappy customer in the loop.
+#
+# Two rules about what is here.
+#
+# Every expression names a metric this platform actually emits. That sounds like
+# it goes without saying and it is the single easiest thing to get wrong: an
+# alert on a metric with a plausible name that nothing publishes never fires, and
+# an alert that never fires is indistinguishable from a system that never breaks.
+# A test scrapes a live metrics handler and fails the build if any name here is
+# not in what came back.
+#
+# Every alert says what a person should do about it. An alert nobody knows how to
+# act on gets silenced, and the silence outlives the reason for it.
+groups:
+  - name: gavya-availability
+    rules:
+      - alert: ServiceDown
+        expr: up{job=~"gavya-.*"} == 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: '{{ $labels.job }} has not answered a scrape for two minutes'
+          description: >-
+            The process is gone or unreachable. If this is one instance of
+            several the platform is degraded; if it is the only one, that
+            service's procedures are all failing. Check the pod's restarts and
+            its logs before restarting it, because a crash loop that is restarted
+            without being read loses the reason it was crashing.
+
+      - alert: ServiceRestartLoop
+        # Uptime resets to zero when a process restarts; several resets inside a
+        # quarter of an hour is a service that cannot stay up.
+        expr: resets(gavya_uptime_seconds[15m]) > 2
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: '{{ $labels.job }} has restarted more than twice in fifteen minutes'
+          description: >-
+            Readiness is deliberately the only probe tied to dependencies here;
+            liveness is unconditional so that a database outage cannot turn into
+            a crash loop across the platform. A loop therefore means the process
+            is failing at startup or panicking, and the logs from before the last
+            restart are the ones that say why.
+
+  - name: gavya-correctness
+    rules:
+      - alert: ProceduresFailing
+        # Five per cent of a procedure's calls failing with a server error. Per
+        # procedure and not per service, because "the platform is erroring" is
+        # never the useful form of that sentence: one broken procedure among
+        # forty is invisible in a service-wide rate.
+        expr: |
+          sum by (job, procedure) (rate(gavya_requests_total{code=~"5.."}[5m]))
+            /
+          sum by (job, procedure) (rate(gavya_requests_total[5m]))
+            > 0.05
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: '{{ $labels.procedure }} is failing for more than one call in twenty'
+          description: >-
+            A server error is the platform's fault by definition: the codes are
+            chosen by cause, so anything a caller could fix arrives as
+            invalid_argument or failed_precondition and is not counted here. If
+            this is a collection procedure, producers are being turned away and
+            their milk is being written on paper.
+
+      - alert: EverythingRefused
+        # A service answering nothing but errors. Separate from the rate above
+        # because it wants a much shorter fuse: a service that has never served a
+        # successful request since it started is usually misconfigured rather
+        # than failing, and the deployment that did it is still fresh in
+        # somebody's mind.
+        expr: |
+          sum by (job) (rate(gavya_requests_total{code=~"5.."}[5m]))
+            /
+          sum by (job) (rate(gavya_requests_total[5m]))
+            > 0.95
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: '{{ $labels.job }} is failing almost every request'
+          description: >-
+            Nearly always a dependency it cannot reach or a setting it was given
+            wrongly. /readyz asks its dependencies and will say which; check that
+            before assuming the service itself is broken.
+
+  - name: gavya-latency
+    rules:
+      - alert: ProcedureSlow
+        # The ninety-ninth percentile above a second.
+        #
+        # The threshold is a long way above anything measured: e2e/load_test.go
+        # put the ninety-ninth percentile between 7ms and 28ms at ten to fifty
+        # booths recording at once. A second is not "slower than usual", it is
+        # somebody at a booth waiting and wondering whether to press it again.
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (job, procedure, le) (rate(gavya_request_duration_seconds_bucket[5m]))
+          ) > 1
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: '{{ $labels.procedure }} is taking more than a second at the ninety-ninth percentile'
+          description: >-
+            A mean would not show this. A stall that hits one call in a hundred
+            moves the mean by a few milliseconds and is the whole of what the
+            person it happened to experienced. Look at whether the database is
+            the constraint before adding instances: the collection path is bound
+            by its database, so more service instances make the queue longer
+            rather than shorter.
+
+      - alert: RequestsPilingUp
+        # In-flight requests climbing and staying there.
+        #
+        # The load measurement is what makes this number mean something: at fifty
+        # booths recording at once the platform sustained about 2,800 collections
+        # a second with roughly fifty in flight. Two hundred sustained is four
+        # times the concurrency that was measured as comfortable.
+        expr: gavya_requests_in_flight > 200
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: '{{ $labels.job }} has more than two hundred requests in flight'
+          description: >-
+            Work is arriving faster than it is finishing. Either the morning is
+            bigger than the deployment was sized for, or something downstream has
+            slowed and every caller is waiting on it. The per-caller rate limit
+            bounds one client, not the total.
+
+# WHAT THIS DOES NOT WATCH, AND SHOULD
+#
+# Recorded because a gap nobody wrote down is one nobody closes.
+#
+#   - The settlement notification sweep. Money events queue a message and a sweep
+#     delivers it; if the sweep stops, holds and payments stop being told to
+#     anybody and nothing here would notice. It needs a metric for the depth and
+#     age of the outbox, which does not exist yet.
+#   - The audit chain. gavya_verify_audit_chain answers whether the trail is
+#     intact and nothing runs it on a schedule, so a broken chain is found when
+#     somebody asks rather than when it breaks.
+#   - Anything about the database itself: connections, replication lag, disk. The
+#     usual exporter covers it and no deployment here runs one.
+#   - Tracing. There is none, so a slow call chain has to be taken apart by hand,
+#     one service's metrics at a time.

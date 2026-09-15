@@ -96,11 +96,28 @@ type Metrics struct {
 	// requests and failures are per procedure. Per procedure and not per service:
 	// "the platform is slow" is never the useful form of that sentence.
 	requests map[key]uint64
-	// seconds is the total time spent, which with the count gives a mean. Not a
-	// histogram: a histogram needs buckets chosen in advance, and choosing them
-	// before anybody has watched this run would be inventing a latency profile
-	// rather than measuring one.
-	seconds  map[key]float64
+	// seconds is the total time spent, which with the count gives a mean, and is
+	// the _sum of the histogram below.
+	seconds map[key]float64
+	// buckets counts how many requests fell within each upper bound, per
+	// procedure and code.
+	//
+	// There was no histogram here for a long time and the reason was good: a
+	// histogram needs buckets chosen in advance, and choosing them before anybody
+	// had watched this platform run would have been inventing a latency profile
+	// rather than measuring one. e2e/load_test.go is the watching. Recording a
+	// thousand collections at ten, twenty-five and fifty booths at once put the
+	// median between 3.4ms and 17.2ms and the ninety-ninth percentile between
+	// 7.3ms and 27.7ms, so the resolution that matters is from a millisecond to a
+	// tenth of a second — which is where these are dense. The bounds above that
+	// are headroom for a deployment with a real network between the services and
+	// a disk somebody else is also using.
+	//
+	// A mean would not have caught what this is for. A stall that hits five per
+	// cent of a morning's collections moves a mean by a few milliseconds and moves
+	// the ninety-ninth percentile by seconds, and it is the second number that
+	// describes what a person at a booth experienced.
+	buckets  map[key][]uint64
 	inflight int64
 	started  time.Time
 }
@@ -110,11 +127,23 @@ type key struct {
 	code      int
 }
 
+// Bounds are the histogram's upper bounds, in seconds, and they are the ones
+// e2e/load_test.go reports against so that a future measurement can be compared
+// with the buckets rather than only with the percentiles.
+//
+// Cumulative, as Prometheus histograms are: a request counted in 5ms is also
+// counted in every bound above it. The +Inf bucket is implied and written last.
+var Bounds = []float64{
+	0.001, 0.0025, 0.005, 0.010, 0.025, 0.050,
+	0.100, 0.250, 0.500, 1.0, 2.5, 5.0,
+}
+
 // NewMetrics returns a fresh set.
 func NewMetrics() *Metrics {
 	return &Metrics{
 		requests: map[key]uint64{},
 		seconds:  map[key]float64{},
+		buckets:  map[key][]uint64{},
 		started:  time.Now(),
 	}
 }
@@ -141,8 +170,19 @@ func (m *Metrics) Middleware(next http.Handler) http.Handler {
 		m.mu.Lock()
 		m.inflight--
 		k := key{procedure: procedureOf(r.URL.Path), code: rec.code}
+		took := time.Since(start).Seconds()
 		m.requests[k]++
-		m.seconds[k] += time.Since(start).Seconds()
+		m.seconds[k] += took
+		if m.buckets[k] == nil {
+			m.buckets[k] = make([]uint64, len(Bounds))
+		}
+		// Cumulative: a request counted in one bound is counted in every bound
+		// above it, which is what makes histogram_quantile able to interpolate.
+		for i, bound := range Bounds {
+			if took <= bound {
+				m.buckets[k][i]++
+			}
+		}
 		m.mu.Unlock()
 	})
 }
@@ -155,10 +195,13 @@ func (m *Metrics) Handler() http.HandlerFunc {
 			k key
 			n uint64
 			s float64
+			b []uint64
 		}
 		rows := make([]row, 0, len(m.requests))
 		for k, n := range m.requests {
-			rows = append(rows, row{k: k, n: n, s: m.seconds[k]})
+			b := make([]uint64, len(m.buckets[k]))
+			copy(b, m.buckets[k])
+			rows = append(rows, row{k: k, n: n, s: m.seconds[k], b: b})
 		}
 		inflight := m.inflight
 		up := time.Since(m.started).Seconds()
@@ -185,6 +228,32 @@ func (m *Metrics) Handler() http.HandlerFunc {
 		for _, r := range rows {
 			fmt.Fprintf(&b, "gavya_request_seconds_total{procedure=%q,code=\"%d\"} %s\n",
 				r.k.procedure, r.k.code, strconv.FormatFloat(r.s, 'f', 6, 64))
+		}
+
+		// The histogram. Its _count repeats gavya_requests_total and its _sum
+		// repeats gavya_request_seconds_total, which is how a Prometheus
+		// histogram is shaped rather than an oversight: the two counters are the
+		// names an error-rate query is written against, and the histogram is what
+		// a latency one needs. Dropping either would make one of the two
+		// questions awkward to ask.
+		b.WriteString("# HELP gavya_request_duration_seconds Time spent serving, as a histogram.\n")
+		b.WriteString("# TYPE gavya_request_duration_seconds histogram\n")
+		for _, r := range rows {
+			for i, bound := range Bounds {
+				var n uint64
+				if i < len(r.b) {
+					n = r.b[i]
+				}
+				fmt.Fprintf(&b, "gavya_request_duration_seconds_bucket{procedure=%q,code=\"%d\",le=%q} %d\n",
+					r.k.procedure, r.k.code, strconv.FormatFloat(bound, 'f', -1, 64), n)
+			}
+			// +Inf is every request, by definition, and Prometheus requires it.
+			fmt.Fprintf(&b, "gavya_request_duration_seconds_bucket{procedure=%q,code=\"%d\",le=\"+Inf\"} %d\n",
+				r.k.procedure, r.k.code, r.n)
+			fmt.Fprintf(&b, "gavya_request_duration_seconds_sum{procedure=%q,code=\"%d\"} %s\n",
+				r.k.procedure, r.k.code, strconv.FormatFloat(r.s, 'f', 6, 64))
+			fmt.Fprintf(&b, "gavya_request_duration_seconds_count{procedure=%q,code=\"%d\"} %d\n",
+				r.k.procedure, r.k.code, r.n)
 		}
 
 		b.WriteString("# HELP gavya_requests_in_flight Requests being served right now.\n")

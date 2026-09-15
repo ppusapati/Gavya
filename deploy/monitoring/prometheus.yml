@@ -1,0 +1,116 @@
+# What scrapes the platform.
+#
+# Every service has served /metrics for a long time and nothing read it, which
+# made the whole of the platform's observability a page that existed. This is the
+# reader.
+#
+# The targets are written out rather than discovered, for the same reason the
+# authorization route table is: this deployment shape has a fixed, known set of
+# services on fixed, known ports, and a list checked against the code is better
+# than a rule that silently stops matching. The test in
+# services/gateway-service/handler compares this file against
+# libs/integrity/ports and fails the build when a service is added and not
+# scraped — which is this file's own failure mode, one level up.
+#
+# Kubernetes does not use this file: the pods carry prometheus.io annotations and
+# a cluster Prometheus discovers them. The same test checks both, because a
+# service scraped under compose and not under Kubernetes is one that is watched
+# in testing and unwatched in production.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    platform: gavya
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: gavya-audit
+    static_configs:
+      - targets: ['audit-service:8100']
+  - job_name: gavya-balance
+    static_configs:
+      - targets: ['balance-service:8095']
+  - job_name: gavya-billing
+    static_configs:
+      - targets: ['billing-service:8097']
+  - job_name: gavya-breeding
+    static_configs:
+      - targets: ['breeding-service:8083']
+  - job_name: gavya-canonical
+    static_configs:
+      - targets: ['canonical-service:8093']
+  - job_name: gavya-cattle
+    static_configs:
+      - targets: ['cattle-service:8081']
+  - job_name: gavya-cattle-market
+    static_configs:
+      - targets: ['cattle-market-service:8087']
+  - job_name: gavya-farm
+    static_configs:
+      - targets: ['farm-service:8086']
+  - job_name: gavya-feed
+    static_configs:
+      - targets: ['feed-service:8085']
+  - job_name: gavya-file
+    static_configs:
+      - targets: ['file-service:8101']
+  - job_name: gavya-gateway
+    static_configs:
+      - targets: ['gateway-service:8000']
+  - job_name: gavya-health
+    static_configs:
+      - targets: ['health-service:8084']
+  - job_name: gavya-identity
+    static_configs:
+      - targets: ['identity-service:8102']
+  - job_name: gavya-ingestion
+    static_configs:
+      - targets: ['ingestion-service:8091']
+  - job_name: gavya-inventory
+    static_configs:
+      - targets: ['inventory-service:8089']
+  - job_name: gavya-laboratory
+    static_configs:
+      - targets: ['laboratory-service:8106']
+  - job_name: gavya-material
+    static_configs:
+      - targets: ['material-service:8105']
+  - job_name: gavya-milk
+    static_configs:
+      - targets: ['milk-service:8082']
+  - job_name: gavya-notification
+    static_configs:
+      - targets: ['notification-service:8098']
+  - job_name: gavya-observation
+    static_configs:
+      - targets: ['observation-service:8092']
+  - job_name: gavya-order
+    static_configs:
+      - targets: ['order-service:8096']
+  - job_name: gavya-pooling
+    static_configs:
+      - targets: ['pooling-service:8094']
+  - job_name: gavya-procurement
+    static_configs:
+      - targets: ['procurement-service:8103']
+  - job_name: gavya-product-catalog
+    static_configs:
+      - targets: ['product-catalog-service:8088']
+  - job_name: gavya-production
+    static_configs:
+      - targets: ['production-service:8107']
+  - job_name: gavya-reporting
+    static_configs:
+      - targets: ['reporting-service:8099']
+  - job_name: gavya-settlement
+    static_configs:
+      - targets: ['settlement-service:8104']
+  - job_name: gavya-shadow-settlement
+    static_configs:
+      - targets: ['shadow-settlement-service:8090']
+  - job_name: gavya-tenant
+    static_configs:
+      - targets: ['tenant-service:8080']

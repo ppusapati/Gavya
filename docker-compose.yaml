@@ -599,6 +599,27 @@ services:
       LISTEN_ADDR: "0.0.0.0:9104"
       LOG_LEVEL: info
 
+  # The reader. Every service has served /metrics since readiness was added and
+  # nothing read them, which made the platform's observability a page that
+  # existed. Its scrape list is checked against libs/integrity/ports by a test,
+  # so a service added and not scraped fails the build rather than going quietly
+  # unwatched.
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # Fifteen days. Long enough to look at last fortnight's settlement run,
+      # short enough that nobody has to think about the disk.
+      - --storage.tsdb.retention.time=15d
+
 volumes:
   postgres_data:
   file_uploads:
+  prometheus_data:

@@ -2,6 +2,9 @@ package handler
 
 import (
 	"bytes"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +15,9 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/ppusapati/gavya/libs/integrity/observe"
+	"github.com/ppusapati/gavya/libs/integrity/ports"
 )
 
 // The gateway can only reach an upstream it was given an address for, and under
@@ -1447,4 +1453,242 @@ func TestContinuousIntegrationRunsTheGate(t *testing.T) {
 		t.Errorf("the gate runs with TEST_DATABASE_DSN=%q, which has no %%s in it. "+
 			"Every service would share one database and the suite would pass anyway.", dsn)
 	}
+}
+
+// Every service is scraped, in both deployment shapes.
+//
+// Every service has served /metrics since readiness was added and nothing read
+// them, so the platform's observability was a page that existed. Adding a reader
+// creates the next failure, which is quieter: a service added later and not
+// added to the scrape list. It runs, it serves its metrics, and nothing asks —
+// and the first anybody knows is that the dashboard has a gap where the outage
+// was.
+//
+// Both shapes, because a service scraped under compose and not under Kubernetes
+// is watched in testing and unwatched in production, which is the worse half of
+// the two.
+func TestEveryServiceIsScrapedInBothShapes(t *testing.T) {
+	root := repoRoot(t)
+
+	// compose: the static scrape list.
+	var prom struct {
+		ScrapeConfigs []struct {
+			JobName       string `yaml:"job_name"`
+			StaticConfigs []struct {
+				Targets []string `yaml:"targets"`
+			} `yaml:"static_configs"`
+		} `yaml:"scrape_configs"`
+	}
+	b, err := os.ReadFile(filepath.Join(root, "deploy", "monitoring", "prometheus.yml"))
+	if err != nil {
+		t.Fatalf("read the scrape configuration: %v", err)
+	}
+	if err := yaml.Unmarshal(b, &prom); err != nil {
+		t.Fatalf("the scrape configuration is not valid YAML, so Prometheus would not "+
+			"start and nothing would be watched at all: %v", err)
+	}
+	scraped := map[string]string{} // service -> target
+	for _, job := range prom.ScrapeConfigs {
+		name := strings.TrimPrefix(job.JobName, "gavya-")
+		for _, sc := range job.StaticConfigs {
+			for _, target := range sc.Targets {
+				scraped[name] = target
+			}
+		}
+	}
+
+	for name, port := range ports.All {
+		target, ok := scraped[name]
+		if !ok {
+			t.Errorf("%s-service is not in deploy/monitoring/prometheus.yml, so nothing "+
+				"reads its metrics and an outage in it is invisible", name)
+			continue
+		}
+		want := fmt.Sprintf("%s-service:%d", name, port)
+		if target != want {
+			t.Errorf("%s-service is scraped at %s and listens on %s; a scrape of the wrong "+
+				"port fails quietly and the service reads as down", name, target, want)
+		}
+	}
+	for name := range scraped {
+		if _, ok := ports.All[name]; !ok {
+			t.Errorf("prometheus.yml scrapes %q, which is not a service in this platform", name)
+		}
+	}
+
+	// Kubernetes: the pod annotations a cluster Prometheus discovers.
+	deployments, err := filepath.Glob(filepath.Join(root, "services", "*", "deployments", "k8s", "deployment.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deployments) < 20 {
+		t.Fatalf("found only %d deployments; the glob has stopped matching", len(deployments))
+	}
+	for _, path := range deployments {
+		svc := filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(path))))
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var found bool
+		dec := yaml.NewDecoder(bytes.NewReader(raw))
+		for {
+			var doc struct {
+				Kind string `yaml:"kind"`
+				Spec struct {
+					Template struct {
+						Metadata struct {
+							Annotations map[string]string `yaml:"annotations"`
+						} `yaml:"metadata"`
+					} `yaml:"template"`
+				} `yaml:"spec"`
+			}
+			if err := dec.Decode(&doc); err != nil {
+				break
+			}
+			if doc.Kind != "Deployment" {
+				continue
+			}
+			found = true
+			a := doc.Spec.Template.Metadata.Annotations
+			if a["prometheus.io/scrape"] != "true" {
+				t.Errorf("%s's pods are not annotated for scraping, so a cluster Prometheus "+
+					"never finds them", svc)
+			}
+			if a["prometheus.io/path"] != "/metrics" {
+				t.Errorf("%s's pods point the scraper at %q rather than /metrics",
+					svc, a["prometheus.io/path"])
+			}
+			if a["prometheus.io/port"] == "" {
+				t.Errorf("%s's pods say to scrape and not on which port", svc)
+			}
+		}
+		if !found {
+			t.Errorf("%s has no Deployment in its manifests", svc)
+		}
+	}
+
+	t.Logf("%d services scraped under compose, %d deployments annotated for Kubernetes",
+		len(scraped), len(deployments))
+}
+
+// Every alert names a metric this platform actually emits.
+//
+// The easiest way to have monitoring that does nothing is an alert on a metric
+// with a plausible name that nothing publishes. It scrapes clean, it evaluates
+// to no data, it never fires, and a rule that never fires is indistinguishable
+// from a system that never breaks. Nobody notices for months, and what they
+// notice then is the outage it did not catch.
+//
+// So the metric names are not read out of a list somebody maintains: a live
+// metrics handler is exercised and scraped, and the names in the alerts are
+// checked against what actually came back.
+func TestEveryAlertNamesAMetricThatExists(t *testing.T) {
+	root := repoRoot(t)
+
+	// What the platform really publishes, from a handler that has served a
+	// request and a failure so that every family appears.
+	m := observe.NewMetrics()
+	h := m.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "Boom") {
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	for _, path := range []string{"/milk.v1.MilkService/RecordMilk", "/milk.v1.MilkService/Boom"} {
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", path, nil))
+	}
+	rec := httptest.NewRecorder()
+	m.Handler()(rec, httptest.NewRequest("GET", "/metrics", nil))
+
+	emitted := map[string]bool{}
+	for _, line := range strings.Split(rec.Body.String(), "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		name, _, _ := strings.Cut(line, "{")
+		name, _, _ = strings.Cut(name, " ")
+		emitted[strings.TrimSpace(name)] = true
+	}
+	if len(emitted) < 4 {
+		t.Fatalf("only %d metric names came out of a live handler, which cannot be right; "+
+			"the parsing has stopped matching and this check would pass against anything",
+			len(emitted))
+	}
+
+	// Names Prometheus itself supplies rather than the platform.
+	fromPrometheus := map[string]bool{"up": true}
+
+	b, err := os.ReadFile(filepath.Join(root, "deploy", "monitoring", "alerts.yml"))
+	if err != nil {
+		t.Fatalf("read the alert rules: %v", err)
+	}
+	var rules struct {
+		Groups []struct {
+			Name  string `yaml:"name"`
+			Rules []struct {
+				Alert       string            `yaml:"alert"`
+				Expr        string            `yaml:"expr"`
+				Annotations map[string]string `yaml:"annotations"`
+			} `yaml:"rules"`
+		} `yaml:"groups"`
+	}
+	if err := yaml.Unmarshal(b, &rules); err != nil {
+		t.Fatalf("the alert rules are not valid YAML, so Prometheus would refuse to load "+
+			"them and nothing would alert: %v", err)
+	}
+
+	// A metric name in a PromQL expression: an identifier not immediately
+	// followed by an opening bracket, which is how a function reads.
+	ident := regexp.MustCompile(`\b([a-zA-Z_][a-zA-Z0-9_]*)\b`)
+	promFunctions := map[string]bool{
+		"rate": true, "sum": true, "by": true, "histogram_quantile": true,
+		"resets": true, "increase": true, "avg": true, "max": true, "min": true,
+		"count": true, "le": true, "job": true, "procedure": true, "code": true,
+		"and": true, "or": true, "unless": true, "without": true, "on": true,
+		"group_left": true, "group_right": true, "irate": true, "delta": true,
+	}
+
+	alerts := 0
+	for _, group := range rules.Groups {
+		for _, rule := range group.Rules {
+			alerts++
+			if rule.Annotations["summary"] == "" || rule.Annotations["description"] == "" {
+				t.Errorf("%s has no summary or no description. An alert nobody knows how to "+
+					"act on gets silenced, and the silence outlives the reason for it",
+					rule.Alert)
+			}
+			for _, m := range ident.FindAllStringSubmatch(rule.Expr, -1) {
+				name := m[1]
+				if promFunctions[name] || fromPrometheus[name] {
+					continue
+				}
+				// A bare word that is not a metric: a label value, a number's
+				// suffix, a matcher. Only names shaped like this platform's
+				// metrics are checked, and every one of ours starts with gavya_.
+				if !strings.HasPrefix(name, "gavya_") {
+					continue
+				}
+				if !emitted[name] {
+					t.Errorf("%s alerts on %q and no service emits that metric. "+
+						"It will evaluate to no data forever, which reads exactly like a "+
+						"platform that never breaks.\nemitted: %v",
+						rule.Alert, name, sortedKeys(emitted))
+				}
+			}
+		}
+	}
+	if alerts < 4 {
+		t.Fatalf("only %d alerts were read out of the rules file, and it has more; the "+
+			"parsing has stopped matching", alerts)
+	}
+	t.Logf("%d alerts, every metric they name is emitted", alerts)
+}
+
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

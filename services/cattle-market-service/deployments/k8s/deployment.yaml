@@ -11,6 +11,14 @@ spec:
       app: cattle-market-service
   template:
     metadata:
+      annotations:
+        # Discovered by a cluster Prometheus. The compose shape uses
+        # deploy/monitoring/prometheus.yml instead; a test checks that a
+        # service scraped in one shape is scraped in the other, because one
+        # watched in testing and unwatched in production is the worse half.
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "8080"
       labels:
         app: cattle-market-service
     spec:

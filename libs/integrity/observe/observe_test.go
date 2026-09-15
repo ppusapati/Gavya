@@ -5,8 +5,10 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A readiness probe goes red when a dependency does.
@@ -207,4 +209,80 @@ func TestTwoScrapesOfAnUnchangedProcessAgree(t *testing.T) {
 	if first, second := scrape(), scrape(); first != second {
 		t.Errorf("two scrapes of an unchanged process differ:\n%s\n---\n%s", first, second)
 	}
+}
+
+// The histogram is a histogram: cumulative, +Inf equal to the count, sum equal
+// to the time spent.
+//
+// Those three are what histogram_quantile relies on, and getting any of them
+// wrong produces a metric that scrapes cleanly and answers latency questions
+// with nonsense — which is worse than having none, because somebody will build
+// an alert on it.
+func TestTheHistogramIsCumulativeAndAddsUp(t *testing.T) {
+	m := NewMetrics()
+	h := m.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Millisecond)
+	}))
+
+	const calls = 5
+	for range calls {
+		req := httptest.NewRequest("POST", "/milk.v1.MilkService/RecordMilk", nil)
+		h.ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	body := scrape(t, m)
+
+	// Cumulative: every bound holds at least as many as the one below it.
+	var last uint64
+	for _, bound := range Bounds {
+		le := strconv.FormatFloat(bound, 'f', -1, 64)
+		n := bucketValue(t, body, le)
+		if n < last {
+			t.Errorf("bucket le=%s holds %d and the bound below holds %d; a histogram's "+
+				"buckets are cumulative and histogram_quantile reads nonsense out of one "+
+				"that is not", le, n, last)
+		}
+		last = n
+	}
+
+	// +Inf is every request there was.
+	if n := bucketValue(t, body, "+Inf"); n != calls {
+		t.Errorf("the +Inf bucket holds %d and %d requests were served", n, calls)
+	}
+	// And the count agrees with the counter beside it.
+	if !strings.Contains(body, `gavya_request_duration_seconds_count{procedure="milk.v1.MilkService/RecordMilk",code="200"} 5`) {
+		t.Errorf("the histogram's count is not 5:\n%s", body)
+	}
+
+	// Each call slept two milliseconds, so nothing can have landed in the
+	// millisecond bucket and everything must be in the five.
+	if n := bucketValue(t, body, "0.001"); n != 0 {
+		t.Errorf("%d requests were counted under a millisecond and each one slept two", n)
+	}
+	if n := bucketValue(t, body, "0.005"); n != calls {
+		t.Errorf("the 5ms bucket holds %d of %d requests that each slept 2ms", n, calls)
+	}
+}
+
+func scrape(t *testing.T, m *Metrics) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	m.Handler()(rec, httptest.NewRequest("GET", "/metrics", nil))
+	return rec.Body.String()
+}
+
+func bucketValue(t *testing.T, body, le string) uint64 {
+	t.Helper()
+	want := `gavya_request_duration_seconds_bucket{procedure="milk.v1.MilkService/RecordMilk",code="200",le="` + le + `"} `
+	for _, line := range strings.Split(body, "\n") {
+		if rest, ok := strings.CutPrefix(line, want); ok {
+			n, err := strconv.ParseUint(strings.TrimSpace(rest), 10, 64)
+			if err != nil {
+				t.Fatalf("bucket %s is not a number: %q", le, rest)
+			}
+			return n
+		}
+	}
+	t.Fatalf("no bucket le=%q in:\n%s", le, body)
+	return 0
 }

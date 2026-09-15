@@ -190,13 +190,6 @@ In the code, none. What is open is that **this has never run anywhere**, and tha
 is not a small remainder — it is most of the distance to production. Setting it
 out honestly, in the order it would hurt:
 
-- **No load test of any kind.** There are no benchmarks. The one predictable
-  spike this platform has is the morning collection, when every booth in a
-  society records at once, and nobody knows what happens at it. That is also the
-  moment it must not fail.
-- **Nothing watches it.** Every service serves `/metrics` and nothing scrapes
-  them. There is no alerting, no tracing across a call chain, and no log
-  aggregation. An outage is noticed by somebody telephoning.
 - **It has never been deployed.** Not to a cluster, not to a single host. No
   image has been built, because no Docker daemon runs in the environment this was
   developed in; the build lines were run directly instead, which is weaker.
@@ -206,8 +199,17 @@ out honestly, in the order it would hurt:
 The operational gaps that were open alongside these are closed, and how is in
 *What it takes to run this*: backups with a restore that is tested rather than
 believed, a migration path for a database that already exists, the secrets the
-deployments always referenced and nothing produced, and a pipeline that runs the
-gate so it no longer depends on being remembered.
+deployments always referenced and nothing produced, a pipeline that runs the gate
+so it no longer depends on being remembered, and — in *The morning, measured* —
+the first figures anybody has for what this platform does under load, and
+something that reads the metrics it has always published.
+
+Two narrower blind spots survive and are named where they belong, at the foot of
+`deploy/monitoring/alerts.yml`: nothing watches the settlement notification
+sweep, so money events could stop being told to anybody unnoticed, and nothing
+verifies the audit chain on a schedule. Both want a metric that does not exist
+yet. There is also no tracing, so a slow call chain has to be taken apart by
+hand, one service's metrics at a time.
 
 One caution about everything below. It is thorough and it is self-validated:
 every check in this repository was written by the same process that wrote the
@@ -1434,6 +1436,82 @@ pass anyway.
 
 ---
 
+## The morning, measured
+
+This platform has one predictable spike and it is the moment it must not fail:
+every booth in a society records inside the same half hour, twice a day, and a
+producer who cannot be recorded is written on paper and typed in later — which is
+the failure the platform exists to remove. Nothing had ever measured it. There
+were no benchmarks of any kind, so "fast enough" was a belief about code nobody
+had run under load.
+
+`e2e/load_test.go` drives the real binaries through the real collection path. It
+is behind its own build tag rather than in the gate, because a load figure taken
+on a runner that is building something else is a number that gets argued with
+rather than acted on.
+
+On a four-core machine running all twenty-nine services and their PostgreSQL side
+by side, one thousand collections:
+
+| booths at once | p50 | p99 | max | throughput |
+|---|---|---|---|---|
+| 10 | 3.4ms | 7.3ms | 11.4ms | 2787/s |
+| 25 | 8.6ms | 16.4ms | 20.3ms | 2796/s |
+| 50 | 17.2ms | 27.7ms | 83.9ms | 2334–2822/s |
+
+Throughput is flat from ten booths upward and latency rises in proportion to
+concurrency, which is the signature of a server at its service rate rather than
+one falling over. Nothing was refused and nothing accepted was lost at any of
+them — which is the assertion that matters more than any latency figure, because
+concurrency that drops a write produces a platform that is fast and wrong, and
+the producer whose collection vanished is the one who finds out.
+
+Two things that cost time and are worth passing on. The first run showed a
+bimodal distribution, ninety-five per cent under 25ms and five per cent at 2.5
+seconds, which looked like a fixed timer somewhere; it was cold start and did not
+reproduce. And the attempt to check that it did not reproduce ran the test twice
+and got figures identical to the tenth of a millisecond, because the second run
+was Go's test cache handing back the first one's output. `-count=1` is in the
+instructions for that reason.
+
+### The histogram those numbers bought
+
+`libs/integrity/observe` kept no latency histogram, and the comment saying why
+was right: buckets chosen before anybody had watched this run would have been an
+invented latency profile rather than a measured one. The measurement above is the
+watching, so the buckets exist now and are dense from a millisecond to a tenth of
+a second, where the medians and ninety-ninth percentiles actually fall, with
+headroom above for a deployment that has a real network between its services.
+
+The alert that needs it is the one a mean cannot express. A stall that hits one
+call in a hundred moves a mean by a few milliseconds and is the whole of what the
+person it happened to experienced.
+
+### Something that reads the metrics
+
+Every service has served `/metrics` since readiness was added and nothing read
+them, which made the platform's observability a page that existed.
+
+Prometheus now scrapes all twenty-nine in both deployment shapes — a static list
+for compose, pod annotations for Kubernetes — and six alerts cover what is worth
+waking somebody for: a service gone, a service restarting in a loop, a procedure
+failing more than one call in twenty, a service failing nearly everything, a
+ninety-ninth percentile past a second, and requests piling up.
+
+The check worth having is not that the alerts exist. It is that **every metric
+they name is one the platform emits**, verified by exercising a live metrics
+handler, scraping it, and comparing. An alert on a plausible name that nothing
+publishes evaluates to no data forever, and a rule that never fires is
+indistinguishable from a system that never breaks. The same test refuses an alert
+with no description, because one nobody knows how to act on gets silenced and the
+silence outlives the reason for it.
+
+What is not checked here: the PromQL itself. `promtool` was not available in the
+environment this was written in, so the expressions are known to be valid YAML
+naming real metrics and are not known to parse as queries.
+
+---
+
 ## Blocked, and has been since early on
 
 None of these can be worked around by writing more code, and each has been
@@ -1479,3 +1557,6 @@ diff.
 | The migration runner applies the same files the init script applies | Not a parallel set of migrations. The schemas are re-runnable by design and the upgrade test already proves a fresh database matches an upgraded one; a second set of files would be a second thing to keep true. |
 | Secrets generated, never committed | The alternative is a credential in git. The script refuses to invent a password, because a generated default is a credential that looks deliberate and is not. |
 | CI runs the script, not a list of steps in YAML | A pipeline with its own list drifts from the script, and then "it passes in CI" and "it passes locally" are two claims about two different things — and CI's is the weaker one. |
+| Histogram buckets chosen from a measurement, not in advance | The package refused a histogram for a long time on exactly this ground, and it was right to. The load test is the watching that made the choice honest. |
+| The load test is not in the gate | It takes minutes and wants a quiet machine. A figure taken on a runner that is building something else gets argued with rather than acted on. |
+| Alerts checked against a live metrics handler | An alert naming a metric nothing publishes never fires, and never firing is indistinguishable from nothing ever breaking. |
