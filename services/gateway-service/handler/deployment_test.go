@@ -1635,6 +1635,18 @@ func TestEveryAlertNamesAMetricThatExists(t *testing.T) {
 			len(emitted))
 	}
 
+	// And the gauges a service publishes about itself, which a live handler in
+	// this test cannot show: they are registered by settlement and audit at boot,
+	// against their own databases.
+	//
+	// Found in the code that publishes them rather than listed here, so a gauge
+	// that is renamed or deleted takes its alert with it. A list would be a
+	// second copy, and the second copy is the one that goes stale — which is the
+	// whole failure this test exists to catch, one level up.
+	for name := range gaugesServicesPublish(t, root) {
+		emitted[name] = true
+	}
+
 	// Names Prometheus itself supplies rather than the platform.
 	fromPrometheus := map[string]bool{"up": true}
 
@@ -1740,6 +1752,40 @@ func composeListeningPorts(t *testing.T, root string) map[string]int {
 			continue
 		}
 		out[name] = port
+	}
+	return out
+}
+
+// gaugesServicesPublish is every metric name a service registers with
+// observe.Publish, read out of the source.
+func gaugesServicesPublish(t *testing.T, root string) map[string]bool {
+	t.Helper()
+	// observe.Publish(observe.Gauge{ Name: "..." — the name is the first field
+	// and the call is always written this way, which the check below enforces by
+	// failing when it finds none.
+	published := regexp.MustCompile(`observe\.Publish\(observe\.Gauge\{\s*\n?\s*Name:\s*"([a-zA-Z_][a-zA-Z0-9_]*)"`)
+
+	out := map[string]bool{}
+	err := filepath.WalkDir(filepath.Join(root, "services"), func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") ||
+			strings.HasSuffix(path, "_test.go") {
+			return err
+		}
+		b, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		for _, m := range published.FindAllStringSubmatch(string(b), -1) {
+			out[m[1]] = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) == 0 {
+		t.Fatal("no service publishes a gauge, and two do. The pattern has stopped " +
+			"matching, and an alert on a gauge that no longer exists would pass here")
 	}
 	return out
 }

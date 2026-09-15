@@ -9,6 +9,8 @@ import (
 // ChainRepository is the part of the trail that is about the trail itself
 // rather than about what happened.
 type ChainRepository interface {
+	// TenantsWithEntries is every tenant that has a trail to verify.
+	TenantsWithEntries(ctx context.Context) ([]string, error)
 	Seal(ctx context.Context, tenantID string, limit int) (Seal, error)
 	Verify(ctx context.Context, tenantID string) (Verification, error)
 	Checkpoint(ctx context.Context, tenantID string) (Checkpoint, error)
@@ -112,4 +114,26 @@ func (r *repo) Status(ctx context.Context, tenantID string) (Status, error) {
 		return Status{}, nil
 	}
 	return s, nil
+}
+
+// TenantsWithEntries is every tenant that has a trail to verify.
+//
+// Read from the rows rather than from a tenant list the service does not have:
+// audit-service holds no tenants table, and a chain exists exactly where entries
+// do.
+func (r *repo) TenantsWithEntries(ctx context.Context) ([]string, error) {
+	rows, err := r.pool.Query(ctx, `SELECT DISTINCT tenant_id FROM audit_logs`)
+	if err != nil {
+		return nil, fmt.Errorf("list tenants with a trail: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var tenant string
+		if err := rows.Scan(&tenant); err != nil {
+			return nil, err
+		}
+		out = append(out, tenant)
+	}
+	return out, rows.Err()
 }

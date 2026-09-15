@@ -204,11 +204,13 @@ so it no longer depends on being remembered, and — in *The morning, measured* 
 the first figures anybody has for what this platform does under load, and
 something that reads the metrics it has always published.
 
-Two narrower blind spots survive and are named where they belong, at the foot of
-`deploy/monitoring/alerts.yml`: nothing watches the settlement notification
-sweep, so money events could stop being told to anybody unnoticed, and nothing
-verifies the audit chain on a schedule. Both want a metric that does not exist
-yet.
+The two blind spots that were named here are closed, in *The two quiet
+failures*. What is left unwatched is written at the foot of
+`deploy/monitoring/alerts.yml` and is one thing: the database itself —
+connections, replication lag, disk. The usual exporter covers it, no deployment
+here runs one, and alerting on its metric names is deliberately not done from
+this repository, because the check beside those rules cannot verify a name
+belonging to an exporter that is not running.
 
 One caution about everything below. It is thorough and it is self-validated:
 every check in this repository was written by the same process that wrote the
@@ -1582,6 +1584,60 @@ the next person will find it the same way.
 
 ---
 
+## The two quiet failures
+
+Both were named at the foot of the alert rules as things nothing watched, and
+both sat there for the same reason: a service could count requests and could say
+nothing whatever about its own work. `libs/integrity/observe` had no way to
+publish a number. So the gaps were recorded, correctly, and could not be closed
+by writing an alert — there was nothing to write one against.
+
+It has a gauge registry now. Pull rather than push: a service registers a
+function and it is called at scrape time, because the questions these ask have
+answers at the moment they are asked, and a counter maintained alongside the rows
+is a second copy that drifts from them.
+
+**The outbox.** A payable is held, the message is queued in the same transaction,
+and the sweep that delivers it stops — a bad URL, a notification service down
+since Friday, a panic in the dispatcher. Every money event goes on being recorded
+correctly and nobody is told about any of them, and nothing in the platform looks
+wrong.
+
+Two numbers, because depth alone does not say enough: it is normal for an outbox
+to be non-empty between sweeps. The one that means something is the age of the
+oldest message. A deep outbox that is draining is a busy fortnight; one whose
+oldest message has waited a quarter of an hour is a sweep that has stopped,
+whatever its depth.
+
+**The chain.** The trail is hash-chained so that a row altered after the fact can
+be shown to have been altered, and nothing ever checked. A break was found when
+somebody thought to ask, which in practice means during the audit the chain
+exists to survive — and evidence nobody has looked at since it was written is a
+claim rather than evidence. It is walked hourly now and the verdict published.
+
+Three details in those two are the same decision made three times, and it is the
+one this document keeps coming back to. The outbox gauges report **-1** before
+their first reading rather than 0, because 0 is the same number as "the outbox is
+empty" — the reassuring answer, and the wrong one. A reading that fails keeps the
+last value rather than overwriting it with a zero. And each pair of alerts has a
+second alert that fires when the first one has gone blind: an outbox depth that
+has not been read for ten minutes, a chain not walked for three hours. A check
+that has stopped looks exactly like a check that keeps finding nothing.
+
+The walk is on its own clock rather than in the scrape, and that is not
+symmetrical with the outbox on purpose. Counting undelivered rows is an indexed
+count; walking a hash chain reads every row, and doing it per scrape would put a
+full table scan on a fifteen-second timer.
+
+The test beside the rules had to learn something too. It verifies that every
+metric an alert names is one the platform emits, by scraping a live handler — and
+a gauge registered by settlement at boot does not appear in a handler this test
+builds. It now also reads the names out of the code that publishes them, so a
+gauge renamed or deleted takes its alert with it. A list of names in the test
+would have been a second copy, and the second copy is the one that goes stale.
+
+---
+
 ## Blocked, and has been since early on
 
 None of these can be worked around by writing more code, and each has been
@@ -1633,3 +1689,6 @@ diff.
 | W3C trace context, hand-written, rather than the OpenTelemetry SDK | The wire format is small and specified; the dependency across thirty modules is not. What goes on the wire is the standard, so a collector cannot tell. |
 | A malformed traceparent starts a new trace rather than being repaired | A silently repaired header produces a trace that looks whole and joins two unrelated requests. A visible gap is the honest failure. |
 | Spans dropped rather than blocking the request | A tracing system that slows the collection path is breaking the thing it exists to measure. The drops are counted, because a silent one makes a trace with a hole in it look like a service that was never called. |
+| A gauge reports -1 before its first reading, never 0 | Zero is the same number as "the queue is empty", which is the reassuring answer and the wrong one. A failed reading keeps the last value for the same reason. |
+| Every alert that can go blind has a second alert watching it | A check that has stopped looks exactly like a check that keeps finding nothing. |
+| No alerts on metrics from an exporter this repository does not run | The check beside the rules verifies that every name an alert uses is one the platform actually emits. Rules it cannot verify would be the one thing in that file nothing had checked. |

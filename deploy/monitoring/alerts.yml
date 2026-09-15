@@ -140,18 +140,88 @@ groups:
             slowed and every caller is waiting on it. The per-caller rate limit
             bounds one client, not the total.
 
+  - name: gavya-the-quiet-failures
+    rules:
+      - alert: NotificationOutboxStalled
+        # Not depth — age. A deep outbox that is draining is a busy fortnight; an
+        # outbox whose oldest message has been waiting a quarter of an hour is a
+        # sweep that has stopped, whatever its depth.
+        expr: gavya_notification_outbox_oldest_seconds > 900
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: 'The oldest undelivered notification has been waiting more than fifteen minutes'
+          description: >-
+            Money events queue a message in the same transaction as the change
+            and a sweep delivers it. If the sweep has stopped, every payable
+            held, approved and paid is still recorded correctly and nobody is
+            being told about any of them — which looks like a working platform
+            from every other angle. Check NOTIFICATION_URL and whether
+            notification-service is answering.
+
+      - alert: OutboxDepthUnknown
+        # -1 is what the gauge reports before its first reading and after a
+        # reading that failed. Distinguished from zero deliberately: zero is the
+        # same number as "the outbox is empty", which is the reassuring answer
+        # and the wrong one.
+        expr: gavya_notification_outbox_depth == -1
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: 'The outbox depth has not been read for ten minutes'
+          description: >-
+            The reader could not reach the database, or has stopped. The alert
+            above cannot fire while this is true, so this is the one that says
+            the other one is blind.
+
+      - alert: AuditChainBroken
+        expr: gavya_audit_chain_intact == 0
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: 'A tenant''s audit trail no longer verifies'
+          description: >-
+            The trail is hash-chained so that a row altered after the fact can be
+            shown to have been altered. This says one has been. The trail is
+            append-only and enforced by a trigger, so the ways this happens are a
+            database somebody reached around the application to edit, or
+            corruption. Do not restart anything; the logs name the row and the
+            tenant, and the trail is the evidence.
+
+      - alert: AuditChainUnchecked
+        # The chain is walked hourly. Three hours without one is the walk having
+        # stopped, and a chain nobody has verified since Friday is a claim rather
+        # than evidence — which is the state this was in before it was watched.
+        expr: gavya_audit_chain_checked_seconds_ago > 10800 or gavya_audit_chain_checked_seconds_ago == -1
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: 'The audit chain has not been verified for three hours'
+          description: >-
+            The walk runs hourly inside audit-service. If it has stopped, the
+            AuditChainBroken alert above cannot fire, so this is the one that
+            says that one is blind.
+
 # WHAT THIS DOES NOT WATCH, AND SHOULD
 #
 # Recorded because a gap nobody wrote down is one nobody closes.
 #
-#   - The settlement notification sweep. Money events queue a message and a sweep
-#     delivers it; if the sweep stops, holds and payments stop being told to
-#     anybody and nothing here would notice. It needs a metric for the depth and
-#     age of the outbox, which does not exist yet.
-#   - The audit chain. gavya_verify_audit_chain answers whether the trail is
-#     intact and nothing runs it on a schedule, so a broken chain is found when
-#     somebody asks rather than when it breaks.
 #   - Anything about the database itself: connections, replication lag, disk. The
-#     usual exporter covers it and no deployment here runs one.
-#   - Tracing. There is none, so a slow call chain has to be taken apart by hand,
-#     one service's metrics at a time.
+#     usual exporter covers it and no deployment here runs one. Deliberately not
+#     alerted on from here: the test beside these rules verifies that every
+#     gavya_ metric an alert names is one a live handler actually emits, and it
+#     cannot do that for an exporter that is not running. Rules naming pg_ metrics
+#     would be the one thing in this file nothing had checked.
+#   - Anything the platform does that is not a request and not one of the two
+#     above. The gauge registry in libs/integrity/observe is how a service
+#     publishes such a thing, and it is worth reaching for before writing an
+#     alert on a number nobody is emitting.
+#
+# The settlement outbox and the audit chain were on this list and are not any
+# more; they are the group above. Both needed a metric that did not exist, which
+# is why they sat here: a service could count requests and could say nothing
+# about its own work. Tracing was here too and is in libs/integrity/tracing now.

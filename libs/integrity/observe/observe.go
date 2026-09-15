@@ -138,6 +138,75 @@ var Bounds = []float64{
 	0.100, 0.250, 0.500, 1.0, 2.5, 5.0,
 }
 
+// A Gauge is a number a service publishes about itself.
+//
+// Until now this package counted requests and nothing else, so anything a
+// service knows about its own work — how deep a queue is, whether a chain still
+// verifies — could not be watched. The alert rules named two such blind spots
+// and could do nothing about either, because there was no way to publish the
+// number.
+//
+// Pull rather than push: the service registers a function and it is called when
+// somebody scrapes. That suits what these actually are. An outbox's depth is a
+// question with an answer at the moment it is asked, and a counter maintained
+// alongside the rows is a second copy that drifts from them — which is the
+// failure this platform keeps finding, in the form that looks most like
+// diligence.
+//
+// The function must be cheap and must not block. It runs inside the scrape, so
+// one that takes a second makes every scrape take a second, and one that hangs
+// takes the metrics endpoint with it. Something expensive — verifying a hash
+// chain, say — belongs on its own schedule, publishing its last result through a
+// gauge that only reads a variable.
+type Gauge struct {
+	Name string
+	Help string
+	Read func() float64
+}
+
+var (
+	gaugesMu sync.RWMutex
+	gauges   []Gauge
+)
+
+// Publish registers a gauge. Meant to be called at boot, once per name.
+//
+// A second registration of the same name replaces the first rather than
+// producing two lines with one name, which is a document Prometheus rejects —
+// and rejecting it loses every other metric in the same scrape, so one careless
+// caller would blind the whole service.
+func Publish(g Gauge) {
+	if g.Name == "" || g.Read == nil {
+		return
+	}
+	gaugesMu.Lock()
+	defer gaugesMu.Unlock()
+	for i := range gauges {
+		if gauges[i].Name == g.Name {
+			gauges[i] = g
+			return
+		}
+	}
+	gauges = append(gauges, g)
+}
+
+// publishedGauges is a copy, so the handler is not holding the lock while it
+// calls somebody else's function.
+func publishedGauges() []Gauge {
+	gaugesMu.RLock()
+	defer gaugesMu.RUnlock()
+	out := make([]Gauge, len(gauges))
+	copy(out, gauges)
+	return out
+}
+
+// forgetGauges exists for tests, which would otherwise see each other's.
+func forgetGauges() {
+	gaugesMu.Lock()
+	defer gaugesMu.Unlock()
+	gauges = nil
+}
+
 // NewMetrics returns a fresh set.
 func NewMetrics() *Metrics {
 	return &Metrics{
@@ -263,6 +332,17 @@ func (m *Metrics) Handler() http.HandlerFunc {
 		b.WriteString("# HELP gavya_uptime_seconds Seconds since this process started.\n")
 		b.WriteString("# TYPE gavya_uptime_seconds gauge\n")
 		fmt.Fprintf(&b, "gavya_uptime_seconds %s\n", strconv.FormatFloat(up, 'f', 3, 64))
+
+		// What the service says about itself. Sorted by name for the same reason
+		// the rows above are: two scrapes of an unchanged process should produce
+		// identical bytes.
+		published := publishedGauges()
+		sort.Slice(published, func(i, j int) bool { return published[i].Name < published[j].Name })
+		for _, g := range published {
+			fmt.Fprintf(&b, "# HELP %s %s\n", g.Name, g.Help)
+			fmt.Fprintf(&b, "# TYPE %s gauge\n", g.Name)
+			fmt.Fprintf(&b, "%s %s\n", g.Name, strconv.FormatFloat(g.Read(), 'f', -1, 64))
+		}
 
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 		_, _ = w.Write([]byte(b.String()))

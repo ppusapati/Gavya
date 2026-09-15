@@ -124,6 +124,12 @@ func Build(ctx context.Context, log *p9log.Helper) (serve.Registrar, *pgxpool.Po
 	svc.WithKicker(dispatcher)
 	go dispatcher.Run(ctx)
 
+	// And make the outbox watchable. The sweep above logs what it finds, which
+	// is a line somebody reads if they are already looking; this is the number
+	// that pages them when they are not. A sweep that stops leaves every money
+	// event recorded correctly and nobody told about any of them.
+	notify.PublishOutboxDepth(ctx, pool, 15*time.Second)
+
 	return handler.New(svc), pool, nil
 }
 

@@ -286,3 +286,111 @@ func bucketValue(t *testing.T, body, le string) uint64 {
 	t.Fatalf("no bucket le=%q in:\n%s", le, body)
 	return 0
 }
+
+// A service can publish what it knows about itself.
+//
+// This package counted requests and nothing else, so anything a service knew
+// about its own work — how deep a queue is, whether a chain verifies — could not
+// be watched at all. The alert rules named two such blind spots and could do
+// nothing about either, because there was no way to publish the number.
+func TestAServicePublishesWhatItKnowsAboutItself(t *testing.T) {
+	forgetGauges()
+	t.Cleanup(forgetGauges)
+
+	depth := 7.0
+	Publish(Gauge{
+		Name: "gavya_notification_outbox_depth",
+		Help: "Messages owed to somebody and not yet delivered.",
+		Read: func() float64 { return depth },
+	})
+	Publish(Gauge{
+		Name: "gavya_audit_chain_intact",
+		Help: "1 when the hash chain verified at the last check.",
+		Read: func() float64 { return 1 },
+	})
+
+	body := scrape(t, NewMetrics())
+	for _, want := range []string{
+		"# TYPE gavya_notification_outbox_depth gauge",
+		"gavya_notification_outbox_depth 7",
+		"# TYPE gavya_audit_chain_intact gauge",
+		"gavya_audit_chain_intact 1",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the scrape does not contain %q:\n%s", want, body)
+		}
+	}
+
+	// Read when asked, not when registered. An outbox's depth is a question with
+	// an answer at the moment it is asked; a value captured at boot describes a
+	// queue that has since drained or overflowed.
+	depth = 41
+	if body := scrape(t, NewMetrics()); !strings.Contains(body, "gavya_notification_outbox_depth 41") {
+		t.Errorf("the gauge reported a stale value:\n%s", body)
+	}
+}
+
+// One name, one line.
+//
+// Two lines with the same metric name is a document Prometheus rejects, and a
+// rejected scrape loses every other metric in it — so one careless registration
+// would blind the whole service rather than just itself.
+func TestPublishingTheSameNameTwiceReplacesItRatherThanDuplicating(t *testing.T) {
+	forgetGauges()
+	t.Cleanup(forgetGauges)
+
+	Publish(Gauge{Name: "gavya_queue_depth", Help: "first", Read: func() float64 { return 1 }})
+	Publish(Gauge{Name: "gavya_queue_depth", Help: "second", Read: func() float64 { return 2 }})
+
+	body := scrape(t, NewMetrics())
+	if n := strings.Count(body, "\ngavya_queue_depth "); n != 1 {
+		t.Errorf("the name appears on %d lines; Prometheus rejects the whole document and "+
+			"every other metric in it goes with this one:\n%s", n, body)
+	}
+	if !strings.Contains(body, "gavya_queue_depth 2") {
+		t.Errorf("the second registration did not replace the first:\n%s", body)
+	}
+}
+
+// A gauge with nothing to read is ignored rather than crashing the scrape.
+func TestAnIncompleteGaugeIsIgnored(t *testing.T) {
+	forgetGauges()
+	t.Cleanup(forgetGauges)
+
+	Publish(Gauge{Name: "gavya_no_reader"})
+	Publish(Gauge{Read: func() float64 { return 1 }})
+
+	body := scrape(t, NewMetrics())
+	if strings.Contains(body, "gavya_no_reader") {
+		t.Errorf("a gauge with no reader was published:\n%s", body)
+	}
+}
+
+// Two scrapes of an unchanged process produce identical bytes, gauges included.
+func TestScrapesAreStable(t *testing.T) {
+	forgetGauges()
+	t.Cleanup(forgetGauges)
+
+	Publish(Gauge{Name: "gavya_b", Help: "b", Read: func() float64 { return 2 }})
+	Publish(Gauge{Name: "gavya_a", Help: "a", Read: func() float64 { return 1 }})
+
+	m := NewMetrics()
+	first, second := scrape(t, m), scrape(t, m)
+	// Uptime moves, so compare only the gauge lines.
+	pick := func(body string) []string {
+		var out []string
+		for _, line := range strings.Split(body, "\n") {
+			if strings.HasPrefix(line, "gavya_a") || strings.HasPrefix(line, "gavya_b") {
+				out = append(out, line)
+			}
+		}
+		return out
+	}
+	a, b := pick(first), pick(second)
+	if len(a) != 2 || strings.Join(a, "|") != strings.Join(b, "|") {
+		t.Errorf("two scrapes differ:\n%v\n%v", a, b)
+	}
+	if a[0] != "gavya_a 1" {
+		t.Errorf("gauges are not sorted by name: %v", a)
+	}
+}

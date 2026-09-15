@@ -35,5 +35,13 @@ func Build(ctx context.Context, log *p9log.Helper) (serve.Registrar, *pgxpool.Po
 	}
 	repo := repository.New(pool)
 	svc := service.New(repo, log)
+
+	// Walk the chain on a schedule and publish what it found.
+	//
+	// The trail is hash-chained so a row altered after the fact can be shown to
+	// have been. Nothing ever checked: a break was found when somebody thought
+	// to ask, which in practice is during the audit the chain exists to survive.
+	// Evidence nobody has looked at since it was written is a claim.
+	svc.WatchChain(ctx, repo.TenantsWithEntries)
 	return handler.New(svc), pool, nil
 }
