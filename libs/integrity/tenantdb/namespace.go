@@ -43,10 +43,24 @@ import (
 // and the isolation machinery. A service's search path is its own schema then
 // public, so those resolve and nothing else does.
 //
-// There are no foreign keys between services' tables. That was checked before
-// this was written rather than assumed, and it is what makes the split possible
-// at all: a key across two namespaces is a coupling nobody declared, and
-// gavya_enforce_references now refuses to create one.
+// # WHAT THE SPLIT DOES NOT MEAN
+//
+// It does not mean the services stop referring to each other. Twenty-two
+// enforced references cross services — fourteen at cattle-service's `cattle`,
+// which a breeding cycle, a vaccination, a milk session, a vet visit and a
+// treatment all name, and four at product-catalog's `skus`.
+//
+// This paragraph said the opposite when it was written. I had checked the
+// schema files' REFERENCES clauses, found none across services, and said so.
+// The keys are not there: they are in gavya_reference_decisions, each with a
+// written reason, and gavya_enforce_references creates them during deployment.
+// Reading the declarations rather than what the platform builds is the same
+// mistake as trusting a test that runs in the one arrangement where the bug
+// cannot happen — which is how the invoices collision survived this long.
+//
+// So enforcement finds both ends of a reference wherever they are. What the
+// split buys is that a table *name* cannot collide; the couplings between
+// services are declared, and stay.
 
 // namespaceShape is what a schema name may contain. Narrow on purpose: this
 // ends up in a startup parameter, and a name that needed quoting would be a

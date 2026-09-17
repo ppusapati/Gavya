@@ -178,16 +178,56 @@ func sessionFrom(r *http.Request) string {
 	return ""
 }
 
-// unauthenticated is the set of path prefixes that must work without a session,
-// because they are how a session is obtained or how the gateway is monitored.
+// unauthenticated is the set of paths that must work without a session, because
+// they are how a session is obtained or how the platform is watched.
 //
-// A prefix list rather than a catch-all on the identity service: everything
-// under the identity package would include the administrative procedures, and
-// those need a session like anything else.
+// A list rather than a catch-all on the identity service: everything under the
+// identity package would include the administrative procedures, and those need a
+// session like anything else.
+//
+// # WHY /readyz AND /metrics ARE HERE
+//
+// They were not, and in the separate-process deployment it did not show. Each
+// service serves its own probes and there is no gateway in front of them; this
+// middleware only ever saw proxied procedure calls.
+//
+// The modulith puts this middleware in front of the whole mux, probes included —
+// which is the point of that shape, one door — and so it answered /readyz with
+// 401. A Kubernetes readiness probe never succeeds, the pod never joins the
+// Service, and the rollout hangs while the process sits there perfectly healthy;
+// Prometheus scrapes 401 and the platform is unwatched in the one shape that
+// ships. Nothing caught it because nothing had ever started the modulith: the
+// five tests it had all asked whether this middleware was wired in the right
+// order, and a wiring test cannot tell a middleware that refuses the probes from
+// one that lets them through.
+//
+// Adding them is not a new exposure. Every service in the other shape already
+// serves both without a session — that is how the cluster probes them and how
+// the scrape configuration reads them — so this makes the two shapes agree
+// rather than widening either. Neither reveals a tenant's data: /readyz names
+// the modules that cannot reach their database, and /metrics is procedure names
+// and counts.
 var unauthenticated = []string{
 	"/healthz",
+	"/readyz",
+	"/metrics",
 	"/gavya.identity.v1.IdentityService/SignIn",
 	"/gavya.identity.v1.IdentityService/SignInService",
+	// The step that checks a session cannot itself require one.
+	//
+	// In the separate-process deployment the gateway calls identity-service at
+	// its own address and never passes through itself, so this did not arise. In
+	// the modulith IDENTITY_SERVICE_URL is this process — deliberately, so that
+	// session verification has one implementation rather than a second path only
+	// one shape uses — and the verifier's own call arrived back at this
+	// middleware, which refused it. The verifier reads that 401 as "not signed
+	// in" and answers the caller the same way, so every authenticated request in
+	// the shape that ships was refused with the one message that sends somebody
+	// to check their password.
+	//
+	// No new exposure: whoever can present a session id can already use it for
+	// everything it grants, and this answers with nothing more than that.
+	"/gavya.identity.v1.IdentityService/VerifySession",
 }
 
 func isUnauthenticated(path string) bool {
@@ -298,6 +338,24 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) bool {
 // layers are reading the same one. A second copy of that fact is a second thing
 // that can be wrong.
 func (h *Handler) authorise(w http.ResponseWriter, r *http.Request) bool {
+	// The paths that work without a session are not procedures and have no
+	// permission to decide about.
+	//
+	// authenticate already lets them past and this did not, which was harmless
+	// in the separate-process deployment — this middleware only ever saw proxied
+	// procedure calls there — and broke the modulith outright. /healthz answered
+	// 501, so a Kubernetes liveness probe fails, and a failing liveness probe
+	// kills the pod: the one process holding the whole platform in a restart
+	// loop, with the readiness probe answering 501 beside it so nothing said
+	// why.
+	//
+	// authz.Guard, one layer further in, already gets this right — it decides
+	// only about paths shaped like a procedure and leaves everything else alone.
+	// This is the same rule, in the one place that did not have it.
+	if isUnauthenticated(r.URL.Path) {
+		return true
+	}
+
 	err := authz.Decide(r.URL.Path, authz.ParseSet(r.Header.Get(authz.PermissionsHeader)))
 	if err == nil {
 		return true

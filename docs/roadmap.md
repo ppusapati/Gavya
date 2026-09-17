@@ -186,10 +186,12 @@ and it has caught more real problems than reading the code did.
 
 ## Open work
 
-In the code, none. The one open item — order-service's invoicing, which had
-never worked in either deployed shape — is closed: each service has a schema of
-its own now. *Twenty-eight schemas, one database* below is how it was found and
-*A schema each* is how it was closed.
+In the code, none. Two items closed since this was last written, and both came
+out of the same piece of work — planning the modulith as a single deployable.
+order-service's invoicing, which had never worked in either deployed shape, is in
+*Twenty-eight schemas, one database* and *A schema each*. The modulith itself,
+which had never been started and did not work when it was, is in *Starting the
+shape that ships*.
 
 The cross-check in
 [`docs/requirements-crosscheck.md`](requirements-crosscheck.md) read the platform
@@ -2098,6 +2100,79 @@ in exactly the words it first found it in.
 
 ---
 
+## Starting the shape that ships
+
+The modulith had five tests and every one was structural — every service mounted,
+no two modules claiming a route, every service-level defence wrapped here too.
+Nothing had ever started it. The deployment shape with the least coverage was the
+one meant to be deployed.
+
+It does not start. Or rather it starts, mounts twenty-eight modules, listens —
+and is unusable, in three separate ways that a wiring test cannot see, because a
+wiring test asks whether a middleware is present and not what it does.
+
+**The probes are behind the front door.** `/healthz`, `/readyz` and `/metrics`
+are not in the gateway's unauthenticated list. In the separate-process shape that
+never showed: each service serves its own probes and there is no gateway in front
+of them. The modulith puts that middleware in front of the whole mux, probes
+included — which is the point of the shape — so `/readyz` answered 401 and
+`/healthz` answered 501.
+
+The second of those is the worse one. A failing liveness probe gets the pod
+killed, so the whole platform in one process would have gone into a restart loop,
+with readiness answering 501 beside it so nothing said why. And Prometheus would
+have scraped 401: the platform unwatched in the shape that ships.
+
+**Authorisation refused them too, one layer further in.** `authenticate` let the
+unauthenticated paths past and `authorise` did not, so `/healthz` reached
+`authz.Decide`, which correctly reported that nobody had declared a permission
+for it. `authz.Guard` — the same decision, one layer deeper — has always got this
+right: it decides only about paths shaped like a procedure. This was the one
+place that did not have that rule.
+
+**And verifying a session required a session.** The modulith points
+`IDENTITY_SERVICE_URL` at itself, deliberately, so that session verification has
+one implementation rather than a second path only one shape uses. So the
+gateway's verifier called `VerifySession` — back through its own front door,
+which refused it, and a 401 from the verifier reads as "not signed in". Every
+authenticated request in the shape that ships was refused with the one message
+that sends somebody to check their password.
+
+None of the three is subtle once seen. All three needed the thing to be started.
+
+### What the suite does
+
+It signs in, which nothing else in this repository does. The other harness calls
+services directly and sets the tenant and the permissions in headers, because
+between two services there is no gateway to do it for them. Through the modulith
+there is one, in front, in-process, and it strips exactly those headers and
+replaces them from a verified session — so this is the only suite that goes
+through the front door the way the console and the collection bench do, and the
+only one that can show the front door is there.
+
+Three things are asserted. That an unauthenticated call to a module is refused,
+which is the whole argument for this shape over publishing twenty-nine ports and
+had never been tried. That a caller presenting a valid session and a forged
+`X-Gavya-Tenant` naming somebody else's society gets their own — the row comes
+back under the session's tenant, not the asserted one. And that two modules
+answer from the one port, ending with **order-service's invoicing**, which is the
+procedure that had never worked in either deployed shape: raising it here is the
+proof that splitting the schemas fixed the thing it was meant to fix, in the
+deployment rather than in a test that gives each service a database of its own.
+
+One correction worth recording: the first version of the suite invented a role
+name and its session carried no permissions, so every procedure was refused. That
+is not a defect — a session's permissions come from `authz.Roles()` keyed on the
+role's name, not from the permissions column, and identity-service logs exactly
+that when it meets a name it does not know. The test was wrong and the platform
+said so clearly.
+
+Two mutants, both killed: putting the probes back behind authentication makes the
+modulith never become ready, and requiring a session to verify a session makes
+every signed-in call fail at the first hurdle.
+
+---
+
 ## Blocked, and has been since early on
 
 None of these can be worked around by writing more code, and each has been
@@ -2170,3 +2245,5 @@ diff.
 | A service's own name, passed in, rather than SERVICE_NAME | The modulith runs twenty-eight modules in one process and SERVICE_NAME is `gavya` for all of them. A pool that read it would have rebuilt the collision inside the shape meant to be the way out. |
 | A reference may cross schemas; a table may not exist in two | Twenty-two enforced references cross services, each with a recorded reason, and every one was a key before the split. The split buys that a table name cannot collide — not that the services stop referring to each other. |
 | The test fixture looks at every schema; no service does | An inspecting connection seeds and reads across whatever service the test is about. Widening it does not widen the services: their pools name their own schema and public, so a query reaching somewhere else still fails there. |
+| The probes are unauthenticated at the gateway, not only at each service | The modulith puts the gateway's middleware in front of the whole mux. A liveness probe answering 501 kills the pod, so the shape that ships would have restart-looped while nothing said why. |
+| A suite that signs in, because the shape that ships makes everything else | The other harness calls services directly and asserts the tenant in a header, which is right between two services and is the one thing the modulith exists to make impossible from outside. |

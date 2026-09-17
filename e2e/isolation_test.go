@@ -37,6 +37,17 @@ const (
 // unprivileged application role.
 func isolated(t *testing.T) (owner, app *pgx.Conn) {
 	t.Helper()
+	return builtFrom(t, "e2e_isolation")
+}
+
+// builtFrom makes one database the way a deployment makes it: every schema in
+// its own, the isolation sweeps, the foreign keys and the declared references.
+//
+// Named so it can be asked for twice. The modulith needs a database of exactly
+// this shape and cannot share this one, because it holds a whole platform's
+// tables and the isolation tests drop and rebuild theirs.
+func builtFrom(t *testing.T, db string) (owner, app *pgx.Conn) {
+	t.Helper()
 	ctx := context.Background()
 
 	admin, err := pgx.Connect(ctx, dsn(t, "postgres"))
@@ -45,7 +56,6 @@ func isolated(t *testing.T) (owner, app *pgx.Conn) {
 	}
 	defer admin.Close(ctx)
 
-	const db = "e2e_isolation"
 	if _, err := admin.Exec(ctx, "DROP DATABASE IF EXISTS "+db+" WITH (FORCE)"); err != nil {
 		t.Fatalf("drop %s: %v", db, err)
 	}
