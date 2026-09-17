@@ -404,16 +404,19 @@ BEGIN
         -- views written against the coming masters and metasearch services have
         -- something to resolve against, and says so.
         --
-        -- Two things stop these being enforced, and the first is the one that
-        -- matters. gavya_enforce_references takes one schema and the deployment
-        -- runs it for public, so a decision marked enforce here would record a
-        -- guarantee that nothing goes on to make — which
-        -- TestEveryEnforcedDecisionBecameAKey would then correctly fail on.
-        -- Recording them as enforced would be a lie the test would catch.
+        -- One thing stops these being enforced, and it used to be two.
         --
-        -- The second is that they are stubs. The references on
+        -- The reason that has gone: gavya_enforce_references took one schema and
+        -- the deployment ran it for public, so a decision marked enforce here
+        -- would have recorded a guarantee nothing went on to make. It now finds
+        -- each table wherever it lives, so that is no longer an obstacle — and
+        -- these five are the reason it was noticed before twenty-seven services
+        -- moved out of public and hit the same thing at scale.
+        --
+        -- The reason that remains: they are stubs. The references on
         -- columns_metadata.table_id and tables_metadata.schema_id are real and
-        -- belong on the tables that replace these, not on the placeholders.
+        -- belong on the tables that replace these, not on the placeholders. A
+        -- key added to a placeholder is a key somebody has to remember to move.
         --
         -- Worth noting separately: a file named gen_ulid_polyfill.sql, whose
         -- stated purpose is to provide one function, also creates six business
@@ -485,22 +488,76 @@ COMMENT ON FUNCTION gavya_reference_decisions() IS
 -- Applying them
 -- ---------------------------------------------------------------------------
 
+-- It finds each table rather than being told where to look.
+--
+-- It used to take a schema and default to 'public', and the deployment called it
+-- with no argument. Everything else in this layer sweeps every non-system schema
+-- — the policies, the grants, the reference report — and this was the one piece
+-- that did not, which had two consequences.
+--
+-- The one that was already true: five reference-shaped columns on the stub
+-- tables in `masters` could not be enforced, and the decisions above say so.
+-- Recording them as enforced would have been a guarantee nothing went on to
+-- make.
+--
+-- The one that was about to be: giving each service a schema of its own moves
+-- twenty-seven services' tables out of `public`, and this would then have
+-- enforced nothing for any of them. It would not have failed — it returns
+-- 'skipped: ... does not exist here' and the deployment only reads REFUSED — so
+-- every declared reference in the platform would have quietly stopped being a
+-- key, and the check beside it would have gone on passing.
+--
+-- A table in two schemas is refused rather than guessed at. That is the
+-- collision case tools/dbadmin's coexist check exists for, and enforcing a
+-- reference on whichever copy was found first is how one of the two silently
+-- gets a constraint the other does not.
 DROP FUNCTION IF EXISTS gavya_enforce_references(text);
-CREATE FUNCTION gavya_enforce_references(p_schema text DEFAULT 'public')
+DROP FUNCTION IF EXISTS gavya_enforce_references();
+CREATE FUNCTION gavya_enforce_references()
 RETURNS TABLE(constraint_name text, outcome text) AS $fn$
 DECLARE
     d         record;
     v_name    text;
     v_orphans bigint;
+    p_schema  text;
+    v_homes   text[];
 BEGIN
     FOR d IN SELECT * FROM gavya_reference_decisions() WHERE enforce ORDER BY table_name, column_name
     LOOP
         v_name := left(d.table_name || '_' || d.column_name || '_fkey', 63);
 
-        IF NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-                       WHERE n.nspname = p_schema AND c.relname = d.table_name) THEN
+        SELECT array_agg(n.nspname ORDER BY n.nspname) INTO v_homes
+          FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE c.relkind = 'r' AND c.relname = d.table_name
+           AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+           AND n.nspname NOT LIKE 'pg_%';
+
+        IF v_homes IS NULL THEN
             constraint_name := v_name;
-            outcome := format('skipped: %I.%I does not exist here', p_schema, d.table_name);
+            outcome := format('skipped: no table called %I in any schema', d.table_name);
+            RETURN NEXT;
+            CONTINUE;
+        END IF;
+        IF array_length(v_homes, 1) > 1 THEN
+            constraint_name := v_name;
+            outcome := format('REFUSED: %I exists in %s schemas (%s), so there is no one table '
+                              'this reference belongs on. Two services defining a table of the '
+                              'same name is what tools/dbadmin''s coexist check reports.',
+                              d.table_name, array_length(v_homes, 1), array_to_string(v_homes, ', '));
+            RETURN NEXT;
+            CONTINUE;
+        END IF;
+        p_schema := v_homes[1];
+
+        -- The target has to be in the same schema. A reference across two
+        -- services' namespaces is a coupling nobody declared, and adding it here
+        -- would make it permanent before anyone had noticed.
+        IF NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                       WHERE c.relkind = 'r' AND n.nspname = p_schema
+                         AND c.relname = d.references_table) THEN
+            constraint_name := v_name;
+            outcome := format('skipped: %I.%I names %I, which is not in that schema',
+                              p_schema, d.table_name, d.references_table);
             RETURN NEXT;
             CONTINUE;
         END IF;
@@ -556,7 +613,7 @@ BEGIN
 END
 $fn$ LANGUAGE plpgsql;
 
-COMMENT ON FUNCTION gavya_enforce_references(text) IS
+COMMENT ON FUNCTION gavya_enforce_references() IS
     'Adds the tenant-safe foreign keys the decisions call for, refusing where the data already violates them.';
 
 -- ---------------------------------------------------------------------------
