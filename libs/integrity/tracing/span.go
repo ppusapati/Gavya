@@ -158,7 +158,7 @@ func Middleware(service string) func(http.Handler) http.Handler {
 			}
 
 			var parent [8]byte
-			here := Context{}
+			var here Context
 			if caller, ok := Parse(r.Header.Get(Header)); ok {
 				parent = caller.SpanID
 				here = caller.Child()

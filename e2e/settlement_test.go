@@ -327,19 +327,6 @@ func payableFor(t *testing.T, p *platform, cycleID, producer string) *payablePro
 	return found
 }
 
-// adjustmentsFor returns a producer's corrections in a cycle, in the order they
-// were raised.
-func adjustmentsFor(t *testing.T, p *platform, cycleID, producer string) []*payableProto {
-	t.Helper()
-	var out []*payableProto
-	for _, pp := range payables(t, p, cycleID).Payables {
-		if pp.ProducerRef == producer && pp.Kind == "ADJUSTMENT" {
-			out = append(out, pp)
-		}
-	}
-	return out
-}
-
 func statement(t *testing.T, p *platform, cycleID, producer string) *statementProto {
 	t.Helper()
 	resp, err := svcclient.Call[statementReq, statementResp](

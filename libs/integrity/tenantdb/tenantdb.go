@@ -133,17 +133,46 @@ func NewPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 
 // Configure installs the tenant handling on a pool configuration the caller has
 // built for itself, so pool sizing and TLS stay the caller's business.
+//
+// # WHY THIS IS PrepareConn AND NOT BeforeAcquire
+//
+// BeforeAcquire is pgx's older hook and is deprecated, which is how this came to
+// be looked at; but the reason it is worth changing is what the two do when the
+// setting cannot be made.
+//
+// BeforeAcquire answers with a bool and nothing else. A `false` destroys the
+// connection and retries the acquire on a new one — so a database that has
+// started refusing SET turns into a pool that opens connections, fails to
+// configure them, throws them away and opens more, with the caller waiting and
+// no error anywhere saying why.
+//
+// PrepareConn answers with a bool and an error, and the pairing below is the one
+// that tells somebody what happened: the connection goes back to the pool and
+// the query that wanted it fails with the reason. No churn, and no silence.
+//
+// Returning the connection is safe even though its app.tenant_id may now be
+// stale, and that is the invariant this package is built on: the parameter is
+// set on every acquire rather than cleared on release. The next caller's Apply
+// overwrites whatever is there before a statement runs, and if that one fails
+// too then that query fails too. A connection is never handed to a query under
+// somebody else's tenant.
 func Configure(cfg *pgxpool.Config) {
-	cfg.BeforeAcquire = func(ctx context.Context, conn *pgx.Conn) bool {
+	cfg.PrepareConn = func(ctx context.Context, conn *pgx.Conn) (bool, error) {
 		tenant, err := TenantFrom(ctx)
 		if err != nil {
 			// No tenant on this context. Clear whatever the last request left,
 			// so the query that follows is refused by the policy rather than
-			// answered as somebody else. Returning false here instead would
-			// destroy the connection and retry, which turns a caller's mistake
-			// into a pool that churns.
-			return Clear(ctx, conn) == nil
+			// answered as somebody else. Not an error: a background sweep or a
+			// readiness ping legitimately has no tenant, and the policies are
+			// what refuse it if it asks for rows.
+			if clearErr := Clear(ctx, conn); clearErr != nil {
+				return true, clearErr
+			}
+			return true, nil
 		}
-		return Apply(ctx, conn, tenant) == nil
+		if applyErr := Apply(ctx, conn, tenant); applyErr != nil {
+			return true, applyErr
+		}
+		return true, nil
 	}
 }

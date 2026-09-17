@@ -1,0 +1,118 @@
+# What the linter checks, and what it deliberately does not.
+#
+# The gate ran `go vet` across every module and nothing else. vet is good at the
+# things it knows about — printf verbs, lost struct tags, copied locks — and says
+# nothing about an error dropped on the floor or a function nobody calls, which
+# are two of the classes this repository has actually been bitten by.
+#
+# # WHY SO FEW LINTERS
+#
+# Five. golangci-lint ships around a hundred, and switching on a hundred across
+# thirty-five modules produces some thousands of findings, most of them style,
+# and the end of that is either a wall of //nolint or a gate somebody turned off.
+# These five each answer a question that has had a real answer here:
+#
+#   errcheck     — an error not looked at. Found a profile written to a file that
+#                  was never checked for a successful close.
+#   govet        — what the gate already ran, kept so there is one command.
+#   ineffassign  — a value assigned and then overwritten before it was read.
+#                  Found one in the tracing middleware.
+#   staticcheck  — deprecated APIs and provable mistakes. Found that the hook
+#                  every tenant's isolation depends on was on a deprecated call
+#                  whose failure mode was a pool that churns silently.
+#   unused       — code nobody calls. Found a second way of reporting an invalid
+#                  argument that its service already reported another way, and
+#                  six pieces of dead scaffolding in the end-to-end suite. It
+#                  also reported a helper that was called, from behind a build
+#                  tag, which is why the tags below are configured.
+#
+# Adding a sixth is a decision somebody should make on the same terms: what has
+# it found here.
+version: "2"
+
+run:
+  # Every build tag this repository uses.
+  #
+  # Not a nicety. Without them the linter compiles only the default build, and
+  # `unused` reports a function whose single caller sits behind a tag as called
+  # by nothing. That happened on the first run of this config: a helper in
+  # mlclient was reported unused and deleted, and the Go↔Rust contract suite
+  # stopped compiling — the caller was there all along, behind mlintegration.
+  #
+  # A linter is only as good as what it compiles, which is the same sentence as
+  # every other check in this repository.
+  build-tags:
+    - e2e
+    - dbintegration
+    - mlintegration
+    - loadtest
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+  settings:
+    errcheck:
+      # The conventional discards, named rather than blanket-disabled.
+      #
+      # Each of these is a call whose error is genuinely not actionable at the
+      # site, and writing `_ =` at every one of fifty-six of them would be noise
+      # that hides the two places where the error did matter. Both of those are
+      # now handled; this list is what is left.
+      exclude-functions:
+        # `defer tx.Rollback(ctx)` after a commit returns ErrTxClosed by design.
+        # It is the pattern the pgx documentation itself writes, and the commit's
+        # own error is what a caller acts on.
+        - (github.com/jackc/pgx/v5.Tx).Rollback
+        # Draining and closing a response body that has already been read. The
+        # request's outcome is decided by then.
+        - (io.Closer).Close
+        - (io.ReadCloser).Close
+        - io.Copy
+        # Writing to an http.ResponseWriter. A failed write means the client
+        # went away, which is not something the handler can do anything about
+        # and not something worth logging on every dropped connection.
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (net/http.ResponseWriter).Write
+        # The same calls again, named by their concrete types. errcheck matches
+        # on what is written at the call site rather than on what the value
+        # satisfies, so `defer f.Close()` on an *os.File is not covered by the
+        # io.Closer line above. Listed rather than reached for with a wildcard:
+        # every one of these is a reader being closed or a connection being
+        # returned, and the two places where a *writer* was closed without its
+        # error being read are both fixed rather than listed here.
+        - (*os.File).Close
+        - (net.Listener).Close
+        - (*github.com/jackc/pgx/v5.Conn).Close
+        - (*github.com/jackc/pgx/v5/pgxpool.Pool).Close
+        - (github.com/jackc/pgx/v5.BatchResults).Close
+        # Colour-writing a log line to stderr. p9log is inherited; a logger that
+        # reported its own write failures would have nowhere to report them to.
+        - (*github.com/fatih/color.Color).Fprint
+
+  exclusions:
+    # The default exclusions hide, among other things, every errcheck finding on
+    # a deferred Close — which is most of what is worth seeing. Off, so that what
+    # is skipped is only what is written above.
+    presets: []
+    rules:
+      # pkg is an inherited library, trimmed to the three packages the platform
+      # imports and otherwise not rewritten here. Its tests carry a handful of
+      # style findings — a context key typed as a string, a type that could be
+      # inferred — which are worth neither changing nor pretending are ours.
+      # Its non-test code is linted like everything else.
+      - path: pkg/p9log/.*_test\.go
+        linters:
+          - staticcheck
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt

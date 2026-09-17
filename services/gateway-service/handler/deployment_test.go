@@ -1420,7 +1420,7 @@ func TestContinuousIntegrationRunsTheGate(t *testing.T) {
 		t.Fatal("the workflow defines no jobs")
 	}
 
-	var runsGate, fullClone bool
+	var runsGate, fullClone, installsLinter bool
 	var dsn string
 	for _, job := range wf.Jobs {
 		for _, step := range job.Steps {
@@ -1429,6 +1429,9 @@ func TestContinuousIntegrationRunsTheGate(t *testing.T) {
 				if v, ok := step.Env["TEST_DATABASE_DSN"]; ok {
 					dsn = v
 				}
+			}
+			if strings.Contains(step.Run, "golangci-lint") {
+				installsLinter = true
 			}
 			if strings.HasPrefix(step.Uses, "actions/checkout") {
 				if depth, ok := step.With["fetch-depth"]; ok {
@@ -1451,6 +1454,11 @@ func TestContinuousIntegrationRunsTheGate(t *testing.T) {
 	if !strings.Contains(dsn, "%s") {
 		t.Errorf("the gate runs with TEST_DATABASE_DSN=%q, which has no %%s in it. "+
 			"Every service would share one database and the suite would pass anyway.", dsn)
+	}
+	if !installsLinter {
+		t.Error("no job installs golangci-lint. The gate skips linting by name when it " +
+			"is absent, which is right on a laptop and wrong here: CI would run every " +
+			"other check, print one line about the one it did not, and pass.")
 	}
 }
 

@@ -255,13 +255,63 @@ func TestTheHistogramIsCumulativeAndAddsUp(t *testing.T) {
 	}
 
 	// Each call slept two milliseconds, so nothing can have landed in the
-	// millisecond bucket and everything must be in the five.
+	// millisecond bucket. That is a lower bound on how long the work took and it
+	// holds whatever else the machine is doing.
 	if n := bucketValue(t, body, "0.001"); n != 0 {
 		t.Errorf("%d requests were counted under a millisecond and each one slept two", n)
 	}
-	if n := bucketValue(t, body, "0.005"); n != calls {
-		t.Errorf("the 5ms bucket holds %d of %d requests that each slept 2ms", n, calls)
+
+	// The upper bound is deliberately not asserted per bucket.
+	//
+	// It used to be: everything had to be in the five-millisecond bucket, five
+	// calls sleeping two. That passed on a quiet machine and failed on the gate,
+	// where the same run is building thirty binaries — one call took six
+	// milliseconds and the build went red for a reason that had nothing to do
+	// with the change. A test that fails according to what else the machine is
+	// doing teaches people to re-run rather than to look.
+	//
+	// So the property asserted is the one that is actually about the histogram:
+	// the total time is consistent with the buckets. _sum must sit between the
+	// slowest bound anything fell under and the count times that bound — an
+	// arithmetic relation, true at any speed, and false if the buckets and the
+	// sum are counting different things.
+	sum := sumValue(t, body)
+	if sum < calls*0.002 {
+		t.Errorf("the histogram's sum is %v seconds for %d calls that each slept two "+
+			"milliseconds", sum, calls)
 	}
+	var smallestBoundHoldingAll float64
+	for _, bound := range Bounds {
+		if bucketValue(t, body, strconv.FormatFloat(bound, 'f', -1, 64)) == calls {
+			smallestBoundHoldingAll = bound
+			break
+		}
+	}
+	if smallestBoundHoldingAll == 0 {
+		t.Fatalf("no bound below +Inf holds all %d calls; each slept two milliseconds "+
+			"and the bounds go up to five seconds:\n%s", calls, body)
+	}
+	if sum > calls*smallestBoundHoldingAll {
+		t.Errorf("every call is counted under %v seconds and the sum is %v for %d of "+
+			"them, so the buckets and the sum are not counting the same requests",
+			smallestBoundHoldingAll, sum, calls)
+	}
+}
+
+func sumValue(t *testing.T, body string) float64 {
+	t.Helper()
+	const want = `gavya_request_duration_seconds_sum{procedure="milk.v1.MilkService/RecordMilk",code="200"} `
+	for _, line := range strings.Split(body, "\n") {
+		if rest, ok := strings.CutPrefix(line, want); ok {
+			v, err := strconv.ParseFloat(strings.TrimSpace(rest), 64)
+			if err != nil {
+				t.Fatalf("the histogram's sum is not a number: %q", rest)
+			}
+			return v
+		}
+	}
+	t.Fatalf("the histogram has no _sum:\n%s", body)
+	return 0
 }
 
 func scrape(t *testing.T, m *Metrics) string {

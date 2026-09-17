@@ -245,30 +245,9 @@ type listListingsResp struct {
 // breeding
 // ---------------------------------------------------------------------------
 
-type createCycleReq struct {
-	TenantID  string    `json:"tenant_id"`
-	CattleID  string    `json:"cattle_id"`
-	HeatDate  time.Time `json:"heat_date"`
-	Status    string    `json:"status"`
-	Notes     string    `json:"notes"`
-	CreatedBy string    `json:"created_by"`
-}
-
-type breedingCycleResp struct {
-	Cycle *struct {
-		ID string `json:"id"`
-	} `json:"cycle"`
-}
-
 type breedingHistoryReq struct {
 	TenantID string `json:"tenant_id"`
 	CattleID string `json:"cattle_id"`
-}
-
-type breedingHistoryResp struct {
-	Cycles []*struct {
-		ID string `json:"id"`
-	} `json:"cycles"`
 }
 
 // ---------------------------------------------------------------------------

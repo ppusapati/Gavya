@@ -360,6 +360,13 @@ func receiverIs(fn *ast.FuncDecl, typeName string) bool {
 func parseDir(t *testing.T, dir string) []*ast.File {
 	t.Helper()
 	fset := token.NewFileSet()
+	// parser.ParseDir is deprecated because it associates files with packages
+	// without consulting build tags. That is a real limitation and not one this
+	// reads into: it is pointed at services' handler and service packages, whose
+	// non-test files carry no build tags at all, and it excludes tests below.
+	// The alternative is golang.org/x/tools/go/packages, which is a type checker
+	// and a dependency, for a job that is "list the files in this directory".
+	//nolint:staticcheck // SA1019: build tags are not in play here; see above.
 	pkgs, err := parser.ParseDir(fset, dir, func(fi fs.FileInfo) bool {
 		return !strings.HasSuffix(fi.Name(), "_test.go")
 	}, 0)

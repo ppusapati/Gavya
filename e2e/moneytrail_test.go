@@ -42,10 +42,6 @@ type auditEntryProto struct {
 	AfterState   string `json:"after_state,omitempty"`
 }
 
-type auditByResourceResp struct {
-	AuditLogs []*auditEntryProto `json:"audit_logs"`
-}
-
 // trailFor reads everything recorded against one resource, from the database the
 // service writing it uses.
 func trailFor(t *testing.T, p *platform, database, resourceType, id string) []*auditEntryProto {

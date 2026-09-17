@@ -267,7 +267,8 @@ func TestADeviceIsIssuedACredentialAndItCanBeTakenAway(t *testing.T) {
 		"name": "dock-2-analyser", "secret": secret,
 	}, nil)
 	if code == 200 {
-		t.Error("a revoked credential still opens a session, so revoking it did nothing")
+		t.Errorf("a revoked credential still opens a session, so revoking it did "+
+			"nothing: %v", body)
 	}
 }
 

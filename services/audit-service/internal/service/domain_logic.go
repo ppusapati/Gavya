@@ -12,18 +12,13 @@ import (
 // a rejected argument from a failed query, and would have to report both the
 // same way. This service is append-only and validates nothing today, so the
 // marker exists for the classification the other services share.
+//
+// Wrapped with %w where a caller mistake is reported, which is how the other
+// services do it. There was a second mechanism here as well — an
+// invalidArgument type with its own Is, and a constructor for it — and nothing
+// ever called it: the handler matches on the marker and the tests wrap it. Two
+// ways to say the same thing, one of them never used, is how the two drift.
 var ErrInvalidArgument = errors.New("invalid argument")
-
-// invalidArgument carries the reason alone. The marker is matched through Is,
-// so errors.Is finds it while the message stays free of a prefix the error code
-// already conveys.
-type invalidArgument struct{ reason string }
-
-func (e *invalidArgument) Error() string { return e.reason }
-
-func (e *invalidArgument) Is(target error) bool { return target == ErrInvalidArgument }
-
-func invalid(msg string) error { return &invalidArgument{reason: msg} }
 
 func (s *Service) CreateAuditLog(ctx context.Context, tenantID, actorID, actorType, action, resourceType, resourceID, oldValue, newValue, ipAddress, userAgent, serviceName, traceID, createdBy string) (*domain.AuditLog, error) {
 	a := &domain.AuditLog{

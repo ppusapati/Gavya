@@ -71,8 +71,15 @@ func main() {
 		if err != nil {
 			fail(err)
 		}
-		defer out.Close()
 		if err := draft.Write(out); err != nil {
+			_ = out.Close()
+			fail(err)
+		}
+		// Closed here rather than deferred, and the error is read. A buffered
+		// write is not on disk until the close succeeds, so a deferred close
+		// whose error is dropped is how a profile is reported as written and
+		// is not there.
+		if err := out.Close(); err != nil {
 			fail(err)
 		}
 		fmt.Printf("\nWrote a draft profile to %s.\n", *writeProfile)

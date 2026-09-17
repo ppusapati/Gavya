@@ -80,6 +80,15 @@ jobs:
           sudo apt-get install -y --no-install-recommends postgresql-client-16
           pg_dump --version
 
+      - name: Install golangci-lint
+        # The gate skips linting, by name, when this is absent — so without this
+        # step CI would run every other check and quietly not this one, which is
+        # the difference between a gate and most of a gate. Built from source
+        # against the workspace's Go version on purpose: the released binaries
+        # are built with an older toolchain and refuse a module targeting a newer
+        # one, which is how this first failed.
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy

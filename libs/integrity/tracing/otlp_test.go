@@ -228,7 +228,7 @@ func TestACollectorThatIsDownCostsNothingButSpans(t *testing.T) {
 
 // No endpoint configured is no exporter, and recording to it is safe.
 func TestNoEndpointMeansNoTracingAndNoCrash(t *testing.T) {
-	var e *OTLP = NewOTLP("")
+	e := NewOTLP("")
 	if e != nil {
 		t.Fatal("an empty endpoint produced an exporter")
 	}

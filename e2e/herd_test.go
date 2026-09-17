@@ -149,7 +149,7 @@ type breedingCycleProto struct {
 }
 
 // fullBreedingHistoryResp reads the cow each cycle belongs to, which
-// erp_test's breedingHistoryResp does not carry — and which is the whole
+// the shape erp_test used to read does not carry — and which is the whole
 // question when two cows are served in the same moment.
 type fullBreedingHistoryResp struct {
 	Cycles []*breedingCycleProto `json:"cycles"`

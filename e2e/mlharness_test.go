@@ -82,6 +82,13 @@ var (
 	mlSkip    string
 	mlProcs   []*exec.Cmd
 	mlProcsMu sync.Mutex
+	// mlBaseURLs is where the ML platform's Go services are listening, so
+	// TestMain can ask them what they served before they are killed. Several
+	// routes are reached only from this platform — accepting a reconciliation
+	// needs a run that converged, and converging needs the reconciler — and a
+	// coverage count that did not read these reported those routes as never
+	// called. See coverage_test.go.
+	mlBaseURLs = map[string]string{}
 )
 
 // startMLPlatform returns the ML-enabled services, scoped to a tenant of this
@@ -94,7 +101,7 @@ func startMLPlatform(t *testing.T) *mlPlatform {
 	t.Helper()
 	_ = dsn(t, "postgres")
 
-	mlOnce.Do(func() { mlShared, mlErr, mlSkip = buildAndStartML() })
+	mlOnce.Do(func() { mlShared, mlSkip, mlErr = buildAndStartML() })
 	if mlSkip != "" {
 		t.Skip(mlSkip)
 	}
@@ -108,15 +115,18 @@ func startMLPlatform(t *testing.T) *mlPlatform {
 	}
 }
 
-func buildAndStartML() (*mlPlatform, error, string) {
+// The skip reason comes back beside the error, and the error is last: a cargo
+// that is not installed is not a failure of this repository, and the two have to
+// be told apart by the caller.
+func buildAndStartML() (*mlPlatform, string, error) {
 	if _, err := exec.LookPath("cargo"); err != nil {
-		return nil, nil, "cargo is not on PATH, so the Rust ML tier cannot be built; " +
-			"the ML-enabled tests are skipped and the disabled-tier tests still ran"
+		return nil, "cargo is not on PATH, so the Rust ML tier cannot be built; " +
+			"the ML-enabled tests are skipped and the disabled-tier tests still ran", nil
 	}
 
 	root, err := os.Getwd()
 	if err != nil {
-		return nil, err, ""
+		return nil, "", err
 	}
 	root = filepath.Dir(root)
 	mlRoot := filepath.Join(root, "ml")
@@ -127,8 +137,8 @@ func buildAndStartML() (*mlPlatform, error, string) {
 	build := exec.Command("cargo", "build", "--workspace", "--offline")
 	build.Dir = mlRoot
 	if out, err := build.CombinedOutput(); err != nil {
-		return nil, nil, fmt.Sprintf(
-			"the Rust workspace did not build, so the ML-enabled tests are skipped:\n%s", out)
+		return nil, fmt.Sprintf(
+			"the Rust workspace did not build, so the ML-enabled tests are skipped:\n%s", out), nil
 	}
 
 	p := &mlPlatform{clients: map[string]*svcclient.Client{}, mlURLs: map[string]string{}}
@@ -139,13 +149,13 @@ func buildAndStartML() (*mlPlatform, error, string) {
 	for _, svc := range mlServices {
 		bin := filepath.Join(mlRoot, "target", "debug", svc.bin)
 		if _, err := os.Stat(bin); err != nil {
-			return nil, fmt.Errorf("%s built and produced no binary at %s: %w",
-				svc.bin, bin, err), ""
+			return nil, "", fmt.Errorf("%s built and produced no binary at %s: %w",
+				svc.bin, bin, err)
 		}
 
 		port, err := freePortErr()
 		if err != nil {
-			return nil, err, ""
+			return nil, "", err
 		}
 		addr := fmt.Sprintf("127.0.0.1:%d", port)
 
@@ -153,7 +163,7 @@ func buildAndStartML() (*mlPlatform, error, string) {
 		cmd.Env = append(os.Environ(), "LISTEN_ADDR="+addr, "LOG_LEVEL=warn")
 		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 		if err := cmd.Start(); err != nil {
-			return nil, fmt.Errorf("start %s: %w", svc.bin, err), ""
+			return nil, "", fmt.Errorf("start %s: %w", svc.bin, err)
 		}
 		mlProcsMu.Lock()
 		mlProcs = append(mlProcs, cmd)
@@ -162,7 +172,7 @@ func buildAndStartML() (*mlPlatform, error, string) {
 		url := "http://" + addr
 		client := svcclient.New(svcclient.Config{BaseURL: url, Timeout: 10 * time.Second})
 		if err := waitReadyErr(client); err != nil {
-			return nil, fmt.Errorf("%s did not become ready on %s: %w", svc.bin, addr, err), ""
+			return nil, "", fmt.Errorf("%s did not become ready on %s: %w", svc.bin, addr, err)
 		}
 		p.mlURLs[svc.bin] = url
 		for _, env := range svc.urlEnv {
@@ -173,7 +183,7 @@ func buildAndStartML() (*mlPlatform, error, string) {
 	// A second copy of each Go caller, this time told where the tier is.
 	binDir, err := os.MkdirTemp("", "gavya-e2e-ml")
 	if err != nil {
-		return nil, err, ""
+		return nil, "", err
 	}
 	// Deleted by TestMain along with the main platform's, for the same reason:
 	// a directory of service binaries per run adds up faster than it looks.
@@ -181,20 +191,20 @@ func buildAndStartML() (*mlPlatform, error, string) {
 	for _, name := range mlCallers {
 		svc, found := serviceByName(name)
 		if !found {
-			return nil, fmt.Errorf("%s is not in the harness's services list, so its database "+
-				"and schema are unknown here", name), ""
+			return nil, "", fmt.Errorf("%s is not in the harness's services list, so its database "+
+				"and schema are unknown here", name)
 		}
 
 		bin := filepath.Join(binDir, name)
 		b := exec.Command("go", "build", "-o", bin, "./cmd/server")
 		b.Dir = filepath.Join(root, "services", name)
 		if out, err := b.CombinedOutput(); err != nil {
-			return nil, fmt.Errorf("build %s: %v\n%s", name, err, out), ""
+			return nil, "", fmt.Errorf("build %s: %v\n%s", name, err, out)
 		}
 
 		port, err := freePortErr()
 		if err != nil {
-			return nil, err, ""
+			return nil, "", err
 		}
 		addr := fmt.Sprintf("127.0.0.1:%d", port)
 
@@ -207,7 +217,7 @@ func buildAndStartML() (*mlPlatform, error, string) {
 		cmd.Env = append(cmd.Env, mlEnv...)
 		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 		if err := cmd.Start(); err != nil {
-			return nil, fmt.Errorf("start %s with ML: %w", name, err), ""
+			return nil, "", fmt.Errorf("start %s with ML: %w", name, err)
 		}
 		mlProcsMu.Lock()
 		mlProcs = append(mlProcs, cmd)
@@ -218,12 +228,15 @@ func buildAndStartML() (*mlPlatform, error, string) {
 			Timeout: 15 * time.Second,
 		})
 		if err := waitReadyErr(client); err != nil {
-			return nil, fmt.Errorf("%s did not become ready with ML configured: %w",
-				name, err), ""
+			return nil, "", fmt.Errorf("%s did not become ready with ML configured: %w",
+				name, err)
 		}
 		p.clients[name] = client
+		mlProcsMu.Lock()
+		mlBaseURLs[name] = "http://" + addr
+		mlProcsMu.Unlock()
 	}
-	return p, nil, ""
+	return p, "", nil
 }
 
 func serviceByName(name string) (service, bool) {
@@ -236,7 +249,6 @@ func serviceByName(name string) (service, bool) {
 }
 
 func (p *mlPlatform) observation() *svcclient.Client { return p.clients["observation-service"] }
-func (p *mlPlatform) shadow() *svcclient.Client      { return p.clients["shadow-settlement-service"] }
 func (p *mlPlatform) balance() *svcclient.Client     { return p.clients["balance-service"] }
 
 func (p *mlPlatform) opts() svcclient.CallOptions {

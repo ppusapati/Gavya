@@ -47,7 +47,10 @@ func (s *SizeLimitedFile) Write(p []byte) (n int, err error) {
 
 func (s *SizeLimitedFile) Rotate() error {
 	if closer, ok := s.writer.(io.Closer); ok {
-		closer.Close()
+		// Nothing useful to do with a failure here: the rotation is already
+		// under way and the new file is about to replace this one. Discarded
+		// deliberately rather than by omission.
+		_ = closer.Close()
 	}
 	currentTime := time.Now()
 	timestamp := currentTime.Format("2006-01-02-15-04-05")
@@ -87,7 +90,7 @@ func (w *SizeLimitedFileWriter) Write(p []byte) (n int, err error) {
 
 func (w *SizeLimitedFileWriter) Close() error {
 	// Ensure that the log file is closed and any resources are released
-	if closer, ok := w.SizeLimitedFile.writer.(io.Closer); ok {
+	if closer, ok := w.writer.(io.Closer); ok {
 		return closer.Close()
 	}
 	return nil

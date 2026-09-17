@@ -28,7 +28,12 @@ step() {
 }
 
 echo "=== formatting"
-unformatted="$(gofmt -l libs services e2e tools 2>/dev/null)"
+# pkg included. It was not, and the comment immediately below — which says pkg is
+# gated like everything else — was true of every step except this one. A file in
+# it had been unformatted for as long as it had been here and nothing said so,
+# which is what a check with a scope nobody re-reads looks like. Found by
+# golangci-lint, whose gofmt runs per module and therefore had no such list.
+unformatted="$(gofmt -l libs services e2e tools pkg 2>/dev/null)"
 if [ -n "$unformatted" ]; then
   echo "    not gofmt'd:"; echo "$unformatted" | sed 's/^/      /'; fail=1
 fi
@@ -37,9 +42,40 @@ fi
 # was a library dump of over a hundred packages from another product, most of
 # which did not build. It now holds the two packages the platform imports and
 # nothing else, and is gated like everything else.
+# golangci-lint, when it is here.
+#
+# Skipped by name rather than silently, the way cargo is below: a linter that is
+# absent and says nothing is a gate step that passes because it did not run.
+#
+# What it checks and what it deliberately does not is in .golangci.yml, beside
+# the reasons. It runs per module because the workspace has thirty-five of them
+# and the linter takes one module at a time.
+# It also has to have been built with a Go at least as new as the one these
+# modules target. golangci-lint refuses a module whose language version is above
+# its own build's, and the released binaries lag — so the copy on PATH can be
+# present, look fine, and fail every module with a message about toolchains.
+# Checked here rather than discovered thirty-five times.
+lint=""
+want="$(go env GOVERSION | sed 's/^go//;s/\([0-9]*\.[0-9]*\).*/\1/')"
+for candidate in "$(command -v golangci-lint 2>/dev/null)" "$(go env GOPATH)/bin/golangci-lint"; do
+  [ -x "$candidate" ] || continue
+  built="$("$candidate" --version 2>/dev/null | sed -n 's/.*built with go\([0-9]*\.[0-9]*\).*/\1/p')"
+  if [ -n "$built" ] && [ "$(printf '%s\n%s\n' "$want" "$built" | sort -V | head -1)" = "$want" ]; then
+    lint="$candidate"
+    break
+  fi
+done
+if [ -z "$lint" ]; then
+  echo; echo "==> lint: no golangci-lint built with Go $want or newer, skipping."
+  echo "    go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest"
+fi
+
 for dir in $(go list -m -f '{{.Dir}}' 2>/dev/null); do
   name="${dir#$ROOT/}"
   step "vet $name"  bash -c "cd '$dir' && go vet ./..."
+  if [ -n "$lint" ]; then
+    step "lint $name" bash -c "cd '$dir' && '$lint' run --timeout 10m ./..."
+  fi
   step "test $name" bash -c "cd '$dir' && go test -count=1 ./..."
 done
 

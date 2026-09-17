@@ -148,11 +148,11 @@ that is now watched (`NotificationOutboxStalled`, `OutboxDepthUnknown`).
 | NFR2.2 Graceful degradation | **Held** — every ML call is advisory and the platform answers with the tier switched off; `/readyz` names the dependency that is down |
 | NFR2.3 Retry on transient failures | **Held**, and narrowly: only retryable codes, and no retry by default, because repeating a call that already had an effect double-counts a collection |
 | **NFR2.4 Circuit breaker** | **Owed** — not clearly needed. Retries are bounded and off by default, so there is no amplification to break. Recorded rather than done |
-| NFR3.1 80% test coverage | **Not measured as a percentage.** What is measured is better and narrower: all 261 routes are in the permission table, the table is gate-tested against the routes each service actually registers, and each route is exercised end to end against a real database. See *what nothing checks* below |
+| NFR3.1 80% test coverage | **Not measured as a percentage.** What is measured is better and narrower: all 261 routes are in the permission table, the table is gate-tested against the routes each service registers, and every one is now *counted* as exercised end to end — the suite asks each service what it served and compares, rather than somebody counting by hand |
 | NFR3.2 Package documentation | **Largely held** — every `libs/integrity` package has a doc comment that says why it exists, not what it contains |
 | NFR3.3 Duplication under 5% | **Not measured** |
-| NFR6.2 gofmt | **Held**, gated |
-| **NFR6.3 golangci-lint** | **Owed** — the gate runs `go vet` across all 35 modules and `govulncheck` in CI, and no linter beyond that |
+| NFR6.2 gofmt | **Held**, gated — and the gate's own list had omitted `pkg` since it was written, which is how one file stayed unformatted without anything saying so |
+| NFR6.3 golangci-lint | **Held** — five linters, chosen one at a time for what each has found here, configured in `.golangci.yml` with the reasons beside them. The gate runs it per module and skips by name where it is absent; CI installs it, and a test fails the build if that step is removed |
 | NFR6.4–6.5 Few dependencies, standard library preferred | **Held** — `libs/integrity` has no third-party dependency beyond pgx and Connect |
 | NFR7.1 Go 1.25.4+ | Exceeded — Go 1.26.1 |
 | NFR7.2 PostgreSQL 12+ | **Narrowed** — PostgreSQL 16. Forced row-level security and the schema history table are what it is built and tested against |
@@ -197,11 +197,18 @@ Nothing lost, nothing counted, until somebody telephones.
 `services/gateway-service/handler/clients_test.go` compares them now, on every
 run of the gate.
 
-What that test does **not** check is field names. The bench's closed
-vocabularies were verified by hand and agree — `ACCEPTED`, `DUPLICATE_REPLAY`,
-`QUARANTINED`, session status `OPEN`, and the `records` shape of a batch — but
-by hand is not the same as gated, and a renamed JSON tag would put the bench's
-outbox into `unrecognised`, which is the state it treats as *not delivered*.
+The payloads are compared too, now. Every field name the console declares
+against the JSON tags of the four services it calls; every field the bench sends
+or reads against ingestion-service's alone; and the bench's Connect error
+vocabulary against the platform's, including that its fallback is `unknown` —
+because the outbox decides whether a record may be sent again from that code, and
+a fallback of `unavailable` would make every unrecognised refusal look like
+something worth retrying.
+
+What that does **not** check is which message a field belongs to. Doing it
+properly means resolving nested types across two languages; a field moved between
+two messages of the same service would pass. The failure worth catching is a
+renamed tag, and that is caught.
 
 ---
 
@@ -242,18 +249,50 @@ itself. And the gate's `dbintegration` scan walked `services` and `tools` but no
 `libs`, so the suite that asks the server what it actually applied would never
 have run.
 
-## Pending, in the order I would do them
+## Then the other three
 
-1. **Field names in the client contract.** The procedure names are gated; the
-   payloads are not, and the bench's outbox is what depends on them.
-2. **`golangci-lint` in the gate.** Cheap; likely to find little, given `go vet`
-   across 35 modules and the mutation testing, which is why it is here and not
-   higher.
-3. **A check that the end-to-end suite still covers every route.** 261 of 261 was
-   true when it was counted by hand. Nothing recounts it, so a route added
-   tomorrow is covered by the permission table and by nothing else.
+**Field names in the client contract** — above.
 
-Not on this list, and unchanged: the platform has never been deployed anywhere
-and has no real users or real data, and three things are blocked on somebody
-outside this repository — one real AMCU export file, one analyser bench capture,
-and twenty conversations with people who would buy it.
+**A check that the end-to-end suite still covers every route.** It counts now,
+and it counts at runtime: every service already tallies what it served, per
+procedure, so the suite asks each of them and compares the answer against the
+permission table. Reading the suite's own source for call sites was tried first
+and was worse than useless — it reported twenty-one routes uncovered and nineteen
+of them were covered, by a constant with a digit on the end, by a method name in
+a loop variable, by identity-service's own tests.
+
+The counting version then reported three, and **one was real**: ingestion's
+`ListSessions` had never been called by anything. The other two were covered on
+the ML-enabled platform, which the count was not asking — the same failure
+arriving inside the check itself. All three are covered now, from the plain
+platform, so they stay covered on a machine with no Rust toolchain.
+
+**`golangci-lint` in the gate.** I said it was likely to find little. It found
+seventy, of which about ten were real:
+
+- A profile written to a file whose `Close` was deferred and unchecked. A
+  buffered write is not on disk until the close succeeds, so the tool reported a
+  draft written that might not be there.
+- Two dead error helpers, one of them a second way of reporting an invalid
+  argument that the service already reported another way.
+- An ineffectual assignment in the tracing middleware.
+- `pgxpool.BeforeAcquire` — deprecated, and the reason matters: it answers with a
+  bool, so a failure to set the tenant destroys the connection and retries, which
+  under a database refusing `SET` is a pool that churns silently. `PrepareConn`
+  answers with a bool *and* an error, so the connection goes back and the query
+  fails with the reason. Changed.
+- And the gate's own `gofmt` step listed `libs services e2e tools` — not `pkg` —
+  directly above a comment saying pkg is gated like everything else. One file had
+  been unformatted for as long as it had been in the repository.
+
+The rest were the conventional discards, and they are named one by one in
+`.golangci.yml` rather than silenced in a block.
+
+## Pending
+
+Nothing in the code from this cross-check.
+
+Unchanged: the platform has never been deployed anywhere and has no real users or
+real data, and three things are blocked on somebody outside this repository — one
+real AMCU export file, one analyser bench capture, and twenty conversations with
+people who would buy it.

@@ -46,7 +46,7 @@ func TestParseLevel(t *testing.T) {
 		{"fatal lowercase", "fatal", LevelFatal},
 		{"fatal uppercase", "FATAL", LevelFatal},
 		{"unknown", "unknown", LevelInfo}, // defaults to Info
-		{"empty", "", LevelInfo},           // defaults to Info
+		{"empty", "", LevelInfo},          // defaults to Info
 	}
 
 	for _, tt := range tests {

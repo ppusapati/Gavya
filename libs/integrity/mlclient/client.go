@@ -211,4 +211,10 @@ func (c *Client) Health(ctx context.Context) error {
 
 // asMLError is errors.As specialised to *Error, so callers can branch on the
 // structured code without importing errors at every call site.
+//
+// Used only by contract_integration_test.go, which is behind the mlintegration
+// build tag. It was deleted once on a report that nothing called it, and the
+// build tag is exactly why: a linter that compiles only the default build sees
+// a tagged file's callers as no callers at all. The tags are configured in
+// .golangci.yml now, and this is the reason they are.
 func asMLError(err error, target **Error) bool { return errors.As(err, target) }

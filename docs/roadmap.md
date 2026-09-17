@@ -186,15 +186,13 @@ and it has caught more real problems than reading the code did.
 
 ## Open work
 
-This section said "in the code, none" until the cross-check in
+In the code, none. The cross-check in
 [`docs/requirements-crosscheck.md`](requirements-crosscheck.md) read the platform
-back against the three things in this repository that state what it should do.
-Seven items came out of that; four are closed — the database ones, in *Two
-defaults that multiplied* below — and the remaining three are at the foot of that
-document rather than duplicated here. None of the three is about finding out when
-something is wrong.
+back against the three things in this repository that state what it should do and
+turned up seven items; all seven are closed, in *Two defaults that multiplied* and
+*Counting what the suite actually called* below.
 
-The rest of what is open is that **this has never run anywhere**, and that is not
+What is open is that **this has never run anywhere**, and that is not
 a small remainder — it is most of the distance to production. Setting it out
 honestly, in the order it would hurt:
 
@@ -1819,6 +1817,106 @@ platform can ask for 264" — rather than with a diff.
 
 ---
 
+## Counting what the suite actually called
+
+"261 of 261, covered end to end" was true on the afternoon somebody counted it,
+and nothing recounted it. A route added after that got an entry in the permission
+table — gated — and nothing else, and the difference between a procedure nobody
+has exercised and one that has never worked is invisible until somebody
+telephones. That state is not hypothetical here: procedures have been found in
+this repository that were registered, reachable and failed on their first real
+call.
+
+The first version read the suite's own source for `<serviceConst>+"/Method"`,
+which is how most of these calls are written. It reported twenty-one routes
+uncovered and **nineteen of them were covered** — by a constant with a digit on
+the end that the pattern did not match, by a method name arriving in a loop
+variable, by identity-service's tests, which post to a URL they build themselves.
+A coverage check that cannot read the call reports gaps where there are none, and
+the end of that is an exception list that grows until the check means nothing.
+
+So it asks the services instead. Every one of them has counted what it served,
+per procedure, since readiness was added; a procedure with a non-zero count is
+one the suite reached, whatever shape the call was written in. The measurement
+comes off the same `/metrics` endpoint Prometheus scrapes, so the thing being
+trusted is a thing the platform relies on anyway.
+
+That version reported three, and then did the same thing to itself. Two of the
+three were covered — on the ML-enabled platform, a second copy of three Go
+services that the sweep was not asking. The failure this whole check is about,
+arriving inside the check: a count is only as good as the set of things it asks,
+and a thing it does not know to ask reads exactly like a thing that never ran.
+
+**The third was real.** `ingestion.v1.IngestionService/ListSessions` had never
+been called by anything.
+
+All three are covered now and covered from the plain platform, which matters more
+than it sounds: the ML tests skip where cargo is absent, so a route reached only
+through them goes back to uncovered on a machine with no Rust toolchain. A run
+that did not converge is exactly what balance-service produces without the
+reconciler, and it is the half worth testing — accepting one would state that a
+period closed on an arithmetic that never closed. A flagged observation can be
+made with SQL, and the schema still refuses one with no score behind it, which is
+the constraint doing its job.
+
+The comparison itself has its own test, against sets whose answer is known. It
+had nothing checking it otherwise: a version that always answered "nothing
+missing" would have passed every run of the suite and every mutation of
+everything else.
+
+### Where the clients meet the platform
+
+The procedure names were gated; the payloads were not. A renamed json tag moves
+with the Go and is invisible to every Go test — the console draws a blank cell,
+and the bench, which treats anything outside its closed vocabulary as *not
+delivered*, leaves a morning's collections in an outbox that will never empty.
+
+Compared now: every field the console declares against the json tags of the four
+services it calls; every field the bench sends or reads against
+ingestion-service's alone; and the bench's Connect error vocabulary against the
+platform's, including that its fallback is `unknown`. That last is the sharpest
+of the three — the outbox decides whether a record may be sent again from the
+code that came back, so a fallback of `unavailable` would make every unrecognised
+refusal look worth retrying, which for a device holding a day's collections is
+the difference between a retry and a double count.
+
+What it does not check is which message a field belongs to, and that is written
+down where the check is.
+
+### A linter, and what it found
+
+I said golangci-lint was likely to find little. It found seventy, of which about
+ten were real, and two of those were the kind this document exists for.
+
+`pgxpool.BeforeAcquire` — the hook every tenant's isolation runs through — is
+deprecated, and the replacement is better for a reason that has nothing to do
+with deprecation. BeforeAcquire answers with a bool: a failure to set the tenant
+returns false, which destroys the connection and retries on a new one, so a
+database that has started refusing `SET` becomes a pool that opens connections,
+fails to configure them, throws them away and opens more, with the caller waiting
+and nothing saying why. `PrepareConn` answers with a bool *and* an error, so the
+connection goes back to the pool and the query that wanted it fails with the
+reason.
+
+And the gate's own formatting step listed `libs services e2e tools`. Not `pkg` —
+directly above a comment saying that pkg is gated like everything else. One file
+had been unformatted for as long as it had been in the repository and nothing
+said so, because the linter's gofmt runs per module and has no such list to
+forget.
+
+The rest: a draft profile written to a file whose close was deferred and
+unchecked, which is how a tool reports something written that is not on disk; two
+dead error helpers, one of them a second way of reporting an invalid argument the
+service already reported another way; an ineffectual assignment in the tracing
+middleware. Fifty-six were the conventional discards, and they are named
+individually in `.golangci.yml` rather than silenced in a block — the two places
+where the error did matter are fixed rather than listed.
+
+Five linters, not a hundred. Each is in the file with what it has found here, and
+a sixth is a decision somebody should make on the same terms.
+
+---
+
 ## Blocked, and has been since early on
 
 None of these can be worked around by writing more code, and each has been
@@ -1879,3 +1977,8 @@ diff.
 | A rising number is declared a counter | `rate()` and `increase()` are written against counters, and Prometheus uses the declared type to tell a process restart from a value that fell. A monotonic gauge works by accident and is a lie in the exposition. |
 | A span named from a bounded vocabulary, and silent where it cannot be sure | A trace store indexes on the name, so one name per statement makes it unusable — and a name that is confidently wrong sends somebody to the wrong table. `db SELECT` is the honest answer when the target is a subquery. |
 | A query outside a request gets a counter, not a trace | A sweep makes one service call and hundreds of queries. Starting a trace per query would bury every trace somebody actually asked for. The opposite of what `Inject` does, on purpose. |
+| Coverage counted from what the services served, not read out of the tests | The source-reading version reported twenty-one gaps and nineteen were not gaps. A check that cannot read the call reports gaps where there are none, and the end of that is an exception list nobody trusts. |
+| A route covered from the plain platform, not only the ML one | The ML tests skip where cargo is absent, so a route reached only through them is uncovered on any machine without a Rust toolchain — and a check that passes or fails according to what is installed gets deleted. |
+| The comparison in a coverage check has its own test | A version that always answered "nothing missing" would pass every run of the suite and every mutation of everything else. |
+| Five linters, each with what it found written beside it | A hundred linters across thirty-five modules is some thousands of findings, most of them style, and the end is a wall of nolint or a gate somebody turned off. |
+| The conventional error discards named one by one | A blanket exclusion also hides the two places where the error mattered. Both of those are fixed; the list is what is left. |

@@ -28,6 +28,7 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/signal"
@@ -144,12 +145,7 @@ func runCapture(from, listen, dial, out string) {
 	fmt.Printf("Now run: bench-capture --analyse %s\n", out)
 }
 
-type closer interface {
-	Read(p []byte) (int, error)
-	Close() error
-}
-
-func open(from, listen, dial string, rec *capture.Recorder) (closer, string, error) {
+func open(from, listen, dial string, rec *capture.Recorder) (io.ReadCloser, string, error) {
 	switch {
 	case from == "-":
 		return os.Stdin, "standard input", nil

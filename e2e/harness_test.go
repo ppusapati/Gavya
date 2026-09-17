@@ -408,6 +408,24 @@ func TestMain(m *testing.M) {
 	}
 
 	code := m.Run()
+
+	// What the suite actually called, asked of the services while they are still
+	// up. See coverage_test.go for why this is counted rather than read out of
+	// the source, and why it lives here rather than in a test — a test that has
+	// to run after every other test is a test that depends on file ordering.
+	for _, baseURL := range sharedBaseURLs {
+		recordServedProcedures(baseURL)
+	}
+	for _, baseURL := range mlBaseURLs {
+		recordServedProcedures(baseURL)
+	}
+	if report, fatal := reportRouteCoverage(mlSkip); report != "" {
+		fmt.Fprint(os.Stderr, report)
+		if fatal {
+			code = 1
+		}
+	}
+
 	stopMLPlatform()
 	for _, cmd := range sharedProcs {
 		_ = cmd.Process.Kill()

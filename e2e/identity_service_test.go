@@ -60,6 +60,11 @@ func identityAt(t *testing.T) (base string, owner *pgx.Conn) {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	})
+	// Registered after the kill so it runs before it: cleanups are last in,
+	// first out. identity-service is the one service the shared harness does not
+	// start, so it is the one whose counters have to be read while it is alive —
+	// TestMain's sweep would find nothing here. See coverage_test.go.
+	t.Cleanup(func() { recordServedProcedures("http://" + addr) })
 
 	base = "http://" + addr
 	deadline := time.Now().Add(20 * time.Second)
