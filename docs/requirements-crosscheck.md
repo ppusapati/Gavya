@@ -69,7 +69,7 @@ than a dependency-injection framework.
 | FR1.3 Transactions via Unit of Work | **Divergence** — explicit `pgx.Tx` in each repository. The audit entry is written inside the same transaction, which is the property Unit of Work was wanted for | every `internal/repository` |
 | FR1.4 SQL injection prevention | **Held** — handwritten parameterised SQL throughout; no string-built queries | — |
 | FR1.5 Generic repository helpers | **Divergence** — handwritten, on purpose | — |
-| FR1.6 Configurable timeouts on all database operations | **Partly held, and the weaker half is missing.** The HTTP server bounds a request (`ReadTimeout` 30s, `WriteTimeout` 2m) and a caller's context deadline propagates. Nothing bounds a *single query*: there is no statement timeout, so one query against a lock can hold a connection for the whole two minutes | `libs/integrity/serve/serve.go:89` |
+| FR1.6 Configurable timeouts on all database operations | **Held.** The HTTP server bounds a request (`ReadTimeout` 30s, `WriteTimeout` 2m); `statement_timeout` now bounds one query at 60s and `idle_in_transaction_session_timeout` bounds a transaction that has stopped doing anything. Both are set on every pooled connection and overridable per DSN | `libs/integrity/tenantdb/limits.go` |
 | FR1.7 Runtime field-name validation | **Not applicable** — no dynamic query builder, so there are no field masks to validate |
 | FR7.1–7.2 Tenant from headers, propagated | **Held** | `tenantctx`, `X-Gavya-Tenant` |
 | FR7.3–7.4 Per-tenant database routing and pools | **Divergence** — row-level security instead. A pool per tenant is a connection count that grows with the customer list |
@@ -88,22 +88,26 @@ than a dependency-injection framework.
 |---|---|
 | FR3.1 Multiple metrics providers (Prometheus, OTel, Datadog) | **Divergence** — one hand-rolled Prometheus text exposition. A provider abstraction for one provider is an abstraction nobody has tested against a second |
 | FR3.3 HTTP request metrics | **Held** — count, seconds, a duration histogram and in-flight, per procedure |
-| **FR3.2 Database operation metrics** | **Owed** |
-| **FR3.4 Connection pool statistics** | **Owed** |
+| FR3.2 Database operation metrics | **Held** — `gavya_db_queries_total`, `gavya_db_query_seconds_total`, `gavya_db_query_failures_total`, counted in the pgx tracer so they cover sweeps and boot checks as well as requests |
+| FR3.4 Connection pool statistics | **Held** — seven numbers off `pgxpool.Stat()`, summed across the pools a process holds so the modulith reads correctly |
 | FR3.5 Configurable backend | Divergence, as FR3.1 |
-| FR3.6 Per-table, per-operation query metrics | **Owed**, and the least urgent of the three |
+| FR3.6 Per-table, per-operation query metrics | **Owed**, and the least urgent. The per-table breakdown exists in the traces (a span is named `db SELECT collections`); as a metric it would need labels, which `observe` does not have |
 | FR4.1 OpenTelemetry-based tracing | **Held in protocol, not in library** — W3C trace context and OTLP/HTTP JSON export, written directly rather than through the OTel SDK |
 | FR4.2 Jaeger, Zipkin and OTLP exporters | **Partly** — OTLP only. Both of the others accept OTLP |
-| **FR4.3 Automatic spans for database operations** | **Owed.** A trace covers service-to-service hops and stops at the database, which is where the collection path's time actually goes |
+| FR4.3 Automatic spans for database operations | **Held** — a span per query via pgx's `QueryTracer`, named from a bounded vocabulary rather than the SQL text |
 | FR4.4 Context propagation across services | **Held** — `svcclient` injects on every call |
 
-FR3.2, FR3.4 and FR4.3 are one gap seen from three angles: **the database is the
-one thing in this platform nothing watches.** `deploy/monitoring/alerts.yml`
-already says so in its closing note, and says why it does not alert on it — the
+FR3.2, FR3.4 and FR4.3 were one gap seen from three angles: **the database was
+the one thing in this platform nothing watched.** `deploy/monitoring/alerts.yml`
+said so in its closing note and gave a reason not to close it from there — the
 check beside those rules verifies that every metric an alert names is one a live
-handler emits, and it cannot do that for an exporter nothing runs. Publishing
-`pgxpool.Stat()` through `observe.Publish` would close that: the numbers come
-from a pool the service already holds, so the check can still verify them.
+handler emits, and it cannot do that for an exporter nothing runs. That reason
+covered the exporter and never covered these: they are read off a pool the
+service is already holding, so a live handler does emit them.
+
+Closing it turned up something larger than a missing metric, which is in
+*Pending* below and in the roadmap: the pool sizes and the server's connection
+limit had never been on the same page, and did not add up.
 
 ### Configuration (FR8), auth (FR9), server (FR10), DI (FR11)
 
@@ -136,8 +140,8 @@ that is now watched (`NotificationOutboxStalled`, `OutboxDepthUnknown`).
 
 | Req | State |
 |---|---|
-| NFR1.1 Database operation timeouts | As FR1.6 — **the statement timeout is owed** |
-| **NFR1.2 Pool sizing: max 30, idle 10** | **Owed, and it is a default that looks like a decision.** Nothing in this platform sets a pool size. `pgxpool` defaults to `max(4, numCPU)`, so a service in a one-CPU container holds four connections — against a collection path the load test found to be database-bound. The DSN supports `pool_max_conns`; no deployment sets it |
+| NFR1.1 Database operation timeouts | **Held**, as FR1.6 |
+| NFR1.2 Pool sizing | **Held, at eight rather than the thirty this document asked for**, and the number is not the interesting part. Nothing set a pool size at all and nothing set `max_connections` either, so twenty-eight pools of `max(4, numCPU)` faced a server limit of 100 — 112 on the four-core machine the load test ran on, 224 on an eight-core host. Both numbers now stated, and their arithmetic is gated | `libs/integrity/tenantdb/limits.go`, `TestThePoolsFitTheDatabase` |
 | NFR1.3 Minimal middleware overhead | **Held, and measured** — p50 3.4ms, p99 7.3ms at ten booths recording at once (`e2e/load_test.go`) |
 | NFR1.4 Caching with TTL and LRU | **Divergence** — there is no cache. Nothing in the measured path wanted one |
 | NFR2.1 No panics in production paths | **Held** |
@@ -201,25 +205,51 @@ outbox into `unrecognised`, which is the state it treats as *not delivered*.
 
 ---
 
+## Done since this was written — the database
+
+Items 1, 2, 3 and 5 of the original list, and closing them turned up a defect
+none of them named.
+
+**The pools and the server limit had never been on the same page.** `pgxpool`
+sizes a pool at `max(4, numCPU)` unless told otherwise, and nothing told it
+otherwise. PostgreSQL allows 100 connections unless told otherwise, and no
+deployment here told it otherwise. Twenty-eight services open a pool against the
+same `dairy` database, so the platform's ceiling was 112 on a four-core host and
+224 on an eight-core one, against a limit of 100. Neither default was wrong on
+its own; nothing anywhere multiplied them. What that looks like when the morning
+arrives is `FATAL: sorry, too many clients already` from whichever services ask
+last.
+
+Now: `tenantdb.MaxConns` is eight and `tenantdb.Headroom` is forty, both compose
+files declare `max_connections=300`, and `TestThePoolsFitTheDatabase` does the
+arithmetic on every run of the gate. The Kubernetes shape points at a PostgreSQL
+this repository does not deploy, so that one is documented rather than checked —
+a test comparing a manifest against a limit nobody here controls would pass while
+the cluster ran out of connections.
+
+Alongside it: a statement timeout and an idle-in-transaction timeout on every
+pooled connection, both read back off a real server rather than off a config
+struct; seven pool gauges and three query counters on the same `/metrics`
+handler as everything else; three alerts; and a span per query, named from a
+bounded vocabulary — `db SELECT collections` — so a trace no longer stops at the
+database.
+
+Two checks had to be widened to see any of it, and both had the same shape of
+blindness. The alert-name scanner walked only `services/`, so an alert naming a
+metric published from `libs/` would have read as an alert on a metric nothing
+emits — the exact failure that check exists to catch, arriving through the check
+itself. And the gate's `dbintegration` scan walked `services` and `tools` but not
+`libs`, so the suite that asks the server what it actually applied would never
+have run.
+
 ## Pending, in the order I would do them
 
-1. **Watch the database.** Publish `pgxpool.Stat()` through `observe.Publish` from
-   `tenantdb`, and alert on it. Closes FR3.2 and FR3.4 and the gap
-   `alerts.yml` already names. Small, and the one thing on this list that is
-   about finding out when something is wrong.
-2. **Size the pool, or say why the default is right.** `pool_max_conns` on the
-   DSN, set in the deployments. Four connections per service against a
-   database-bound collection path is a default nobody chose.
-3. **A statement timeout.** One query should not be able to hold a connection for
-   the two minutes the HTTP write timeout allows.
-4. **Field names in the client contract.** The procedure names are gated; the
+1. **Field names in the client contract.** The procedure names are gated; the
    payloads are not, and the bench's outbox is what depends on them.
-5. **Spans around database calls.** A trace that stops at the database points at
-   the wrong service.
-6. **`golangci-lint` in the gate.** Cheap; likely to find little, given `go vet`
+2. **`golangci-lint` in the gate.** Cheap; likely to find little, given `go vet`
    across 35 modules and the mutation testing, which is why it is here and not
    higher.
-7. **A check that the end-to-end suite still covers every route.** 261 of 261 was
+3. **A check that the end-to-end suite still covers every route.** 261 of 261 was
    true when it was counted by hand. Nothing recounts it, so a route added
    tomorrow is covered by the permission table and by nothing else.
 

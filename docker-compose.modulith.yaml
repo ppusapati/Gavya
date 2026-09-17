@@ -32,6 +32,16 @@ version: "3.9"
 services:
   postgres:
     image: postgres:16-alpine
+    # The same arithmetic as the other file, and it is not smaller here.
+    #
+    # The modulith is one process, but it does not merge the databases and so it
+    # does not merge the pools: each of its twenty-eight modules opens its own,
+    # exactly as it does when it runs alone. One container, twenty-eight pools,
+    # the same ceiling.
+    #
+    # 300 = 28 pools x tenantdb.MaxConns (8) + tenantdb.Headroom (40), rounded
+    # up, checked by TestThePoolsFitTheDatabase.
+    command: ["postgres", "-c", "max_connections=300"]
     environment:
       POSTGRES_USER: postgres
       # No default, for the same reason as the other file: a password baked into

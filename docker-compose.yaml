@@ -3,6 +3,24 @@ version: "3.9"
 services:
   postgres:
     image: postgres:16-alpine
+    # max_connections, stated rather than defaulted, and the number is checked.
+    #
+    # PostgreSQL's own default is 100. Twenty-eight services open a pool against
+    # this one database, and pgxpool's default pool size is the greater of four
+    # and the number of CPUs — so on a four-core host the platform's ceiling was
+    # 112 against a limit of 100, and on an eight-core host 224. Neither number
+    # was chosen by anybody; they were two defaults multiplying, and what it
+    # looks like when they meet is "FATAL: sorry, too many clients already" from
+    # whichever services ask last, during the morning collection.
+    #
+    # 300 = 28 pools x tenantdb.MaxConns (8) + tenantdb.Headroom (40), rounded
+    # up. The headroom is for the migration runner, a backup, and somebody with
+    # psql open trying to find out why the platform is unhappy — which is
+    # precisely when every connection is taken.
+    #
+    # TestThePoolsFitTheDatabase in gateway-service does that arithmetic against
+    # this line and fails the build if it stops adding up.
+    command: ["postgres", "-c", "max_connections=300"]
     environment:
       POSTGRES_USER: postgres
       # No default. A password baked into a compose file is a password that

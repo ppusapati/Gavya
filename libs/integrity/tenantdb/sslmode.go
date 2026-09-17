@@ -84,10 +84,11 @@ func checkSSLMode(dsn string) error {
 		shown, why, InsecureEnv, InsecurePhrase)
 }
 
-// sslModeOf reads the setting out of either DSN shape pgx accepts.
+// sslModeOf reads the setting, and refuses a DSN there is nothing to read.
 //
-// Both, because this repository uses the URL form and a deployment may well hand
-// it the keyword form — and a check that understands one of the two formats
+// The reading itself is settingOf in limits.go, which understands both DSN
+// shapes pgx accepts — this repository writes the URL form and a deployment may
+// well hand it the keyword form, and a check that understands one of the two
 // passes everything written in the other.
 func sslModeOf(dsn string) (string, error) {
 	trimmed := strings.TrimSpace(dsn)
@@ -101,21 +102,9 @@ func sslModeOf(dsn string) (string, error) {
 	}
 
 	if strings.HasPrefix(trimmed, "postgres://") || strings.HasPrefix(trimmed, "postgresql://") {
-		u, err := url.Parse(trimmed)
-		if err != nil {
+		if _, err := url.Parse(trimmed); err != nil {
 			return "", fmt.Errorf("tenantdb: %w", err)
 		}
-		return strings.ToLower(strings.TrimSpace(u.Query().Get("sslmode"))), nil
 	}
-
-	// Keyword form: sslmode=require host=... — last occurrence wins, as libpq
-	// reads it.
-	mode := ""
-	for _, field := range strings.Fields(trimmed) {
-		key, value, found := strings.Cut(field, "=")
-		if found && strings.EqualFold(strings.TrimSpace(key), "sslmode") {
-			mode = strings.ToLower(strings.TrimSpace(value))
-		}
-	}
-	return mode, nil
+	return settingOf(trimmed, "sslmode"), nil
 }

@@ -1756,36 +1756,50 @@ func composeListeningPorts(t *testing.T, root string) map[string]int {
 	return out
 }
 
-// gaugesServicesPublish is every metric name a service registers with
-// observe.Publish, read out of the source.
+// gaugesServicesPublish is every metric name the platform registers with
+// observe.Publish or observe.PublishCounter, read out of the source.
+//
+// It walks libs as well as services, and that was not always true. The first
+// version looked only under services/, because the only two things publishing a
+// number were settlement's outbox reader and audit's chain walk. Then tenantdb
+// began publishing the pool statistics — from libs/integrity, where every
+// service's database connection is made — and the scanner could not see any of
+// them. An alert naming one would have read as an alert on a metric nothing
+// emits, which is the exact failure this whole check exists to catch, arriving
+// through the check itself.
 func gaugesServicesPublish(t *testing.T, root string) map[string]bool {
 	t.Helper()
 	// observe.Publish(observe.Gauge{ Name: "..." — the name is the first field
 	// and the call is always written this way, which the check below enforces by
-	// failing when it finds none.
-	published := regexp.MustCompile(`observe\.Publish\(observe\.Gauge\{\s*\n?\s*Name:\s*"([a-zA-Z_][a-zA-Z0-9_]*)"`)
+	// failing when it finds none. Counters are registered the same way and count
+	// the same: what matters here is whether a scrape would contain the name.
+	published := regexp.MustCompile(
+		`observe\.Publish(?:Counter)?\(observe\.(?:Gauge|Counter)\{\s*\n?\s*Name:\s*"([a-zA-Z_][a-zA-Z0-9_]*)"`)
 
 	out := map[string]bool{}
-	err := filepath.WalkDir(filepath.Join(root, "services"), func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") ||
-			strings.HasSuffix(path, "_test.go") {
-			return err
+	for _, tree := range []string{"services", "libs"} {
+		err := filepath.WalkDir(filepath.Join(root, tree), func(path string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") ||
+				strings.HasSuffix(path, "_test.go") {
+				return err
+			}
+			b, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			for _, m := range published.FindAllStringSubmatch(string(b), -1) {
+				out[m[1]] = true
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
 		}
-		b, readErr := os.ReadFile(path)
-		if readErr != nil {
-			return readErr
-		}
-		for _, m := range published.FindAllStringSubmatch(string(b), -1) {
-			out[m[1]] = true
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
 	}
 	if len(out) == 0 {
-		t.Fatal("no service publishes a gauge, and two do. The pattern has stopped " +
-			"matching, and an alert on a gauge that no longer exists would pass here")
+		t.Fatal("nothing in the platform publishes a gauge, and several things do. " +
+			"The pattern has stopped matching, and an alert on a gauge that no " +
+			"longer exists would pass here")
 	}
 	return out
 }

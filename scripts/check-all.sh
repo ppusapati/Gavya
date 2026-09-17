@@ -66,11 +66,13 @@ if [ -n "${TEST_DATABASE_DSN:-}" ]; then
       # them. Provision it here, once, from the same template the e2e harness
       # uses, and run every module that carries such a suite.
       if url="$(cd "$ROOT/e2e" && go run ./cmd/provision -dsn "$TEST_DATABASE_DSN" -root "$ROOT")"; then
-        # services and tools both: the backup round trip lives under tools, and
+        # services, tools and libs: the backup round trip lives under tools, and
         # a glob that named only services would have left it unrun, which is the
-        # exact failure this step was added to fix.
+        # exact failure this step was added to fix. libs was added for the same
+        # reason one step later — tenantdb's settings are read back off a real
+        # connection, and a suite nothing runs proves nothing.
         for dir in $(grep -rl --include='*_test.go' '^//go:build dbintegration' \
-                       "$ROOT/services" "$ROOT/tools" \
+                       "$ROOT/services" "$ROOT/tools" "$ROOT/libs" \
                      | xargs -n1 dirname | sort -u); do
           rel="${dir#$ROOT/}"
           # The backup suite creates and drops databases of its own, so it needs

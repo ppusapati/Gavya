@@ -189,12 +189,10 @@ and it has caught more real problems than reading the code did.
 This section said "in the code, none" until the cross-check in
 [`docs/requirements-crosscheck.md`](requirements-crosscheck.md) read the platform
 back against the three things in this repository that state what it should do.
-Seven items came out of that, and they are listed at the foot of that document
-rather than duplicated here. The one worth naming in this place is the first,
-because it is about finding out when something is wrong: **nothing watches the
-database.** No pool statistics, no query metrics, no spans around a query — and
-the reason `alerts.yml` gives for not alerting on it covers an exporter nobody
-runs, not numbers a service can read off a pool it is already holding.
+Seven items came out of that; four are closed — the database ones, in *Two
+defaults that multiplied* below — and the remaining three are at the foot of that
+document rather than duplicated here. None of the three is about finding out when
+something is wrong.
 
 The rest of what is open is that **this has never run anywhere**, and that is not
 a small remainder — it is most of the distance to production. Setting it out
@@ -214,13 +212,16 @@ so it no longer depends on being remembered, and — in *The morning, measured* 
 the first figures anybody has for what this platform does under load, and
 something that reads the metrics it has always published.
 
-The two blind spots that were named here are closed, in *The two quiet
-failures*. What is left unwatched is written at the foot of
-`deploy/monitoring/alerts.yml` and is one thing: the database itself —
-connections, replication lag, disk. The usual exporter covers it, no deployment
-here runs one, and alerting on its metric names is deliberately not done from
-this repository, because the check beside those rules cannot verify a name
-belonging to an exporter that is not running.
+The blind spots that were named here are closed. The two quiet failures are in
+*The two quiet failures*, and the database — which was the last one — is in *Two
+defaults that multiplied*. What is left unwatched is written at the foot of
+`deploy/monitoring/alerts.yml` and is now narrower than it was: what the database
+itself is doing, meaning replication lag, disk, checkpoints, locks. The usual
+exporter covers those, no deployment here runs one, and alerting on its metric
+names is deliberately not done from this repository, because the check beside
+those rules cannot verify a name belonging to an exporter that is not running.
+Connections were on that list and should never have been: they are read off a
+pool the service is already holding.
 
 One caution about everything below. It is thorough and it is self-validated:
 every check in this repository was written by the same process that wrote the
@@ -1698,6 +1699,126 @@ a client has.
 
 ---
 
+## Two defaults that multiplied
+
+The cross-check said the database was the one thing nothing watched, and that was
+true and was not the worst of it. Going to publish the numbers meant reading what
+the pool was actually configured with, and the answer was nothing.
+
+`pgxpool` sizes a pool at the greater of four and the number of CPUs unless it is
+told otherwise. Nothing told it otherwise. PostgreSQL allows a hundred
+connections unless it is told otherwise. No deployment in this repository told it
+otherwise. Twenty-eight services open a pool, every one of them against the same
+`dairy` database — so the platform's ceiling was 112 on the four-core machine the
+load test ran on, and 224 on an eight-core host, against a limit of 100.
+
+Neither default is wrong. pgxpool's is a reasonable guess for one service and
+PostgreSQL's is a reasonable guess for one machine. The defect is that the two
+numbers had never appeared on the same page, and the product of them is what the
+platform actually asks for. It does not show at rest, because `min_conns` is zero
+and a pool holds nothing until somebody asks; it shows when every service is busy
+at once, which is the morning collection, and it shows as `FATAL: sorry, too many
+clients already` to whichever services ask last. A booth being turned away, with
+nothing in any log saying why the number was what it was.
+
+The pool size is eight now and the headroom forty, both in
+`libs/integrity/tenantdb/limits.go` with the arithmetic beside them, and both
+compose files declare `max_connections=300`. Eight because four was measured to
+be enough — the load test sustained about 2,800 collections a second at fifty
+booths with pools of four — and eight is that with room. A DSN that sets
+`pool_max_conns` still wins, because a deployment that knows its own database is
+the one entitled to override this.
+
+The number is not what makes this closed. `TestThePoolsFitTheDatabase` multiplies
+the per-service maximum by the services that actually open a pool — counted from
+the code, because the gateway is in both compose files and never touches a
+database — and fails if the result does not fit under what those files declare. A
+number chosen today is worth little; a number that cannot silently stop adding up
+is worth a great deal.
+
+Kubernetes is documented rather than checked. Those manifests point at a
+PostgreSQL this repository does not deploy, and a test comparing a manifest
+against a limit nobody here controls would pass while the cluster ran out of
+connections.
+
+### Holding a connection for two minutes
+
+Two more settings nothing had made. `serve`'s WriteTimeout allows a request two
+minutes, deliberately, because a settlement print is slow — but that bounds the
+request, not the statement. A query waiting on a lock held a pooled connection
+for the whole two minutes, and with a pool of four that was most of a service's
+capacity spent on one row. Worse, and with no bound at all: a transaction left
+open by a handler that returned without committing held its connection, its locks
+and its rows until the process died. A statement timeout does not touch that one
+— nothing is running.
+
+`statement_timeout` and `idle_in_transaction_session_timeout`, sixty seconds
+each, on every pooled connection, overridable per DSN.
+
+Both are asked of the server rather than of a configuration struct. The unit
+tests beside them assert what `applyLimits` put in a `pgxpool.Config`, and that is
+worth very little: a runtime parameter PostgreSQL does not recognise would
+satisfy every one of them, and a GUC set to a value the server never applied is
+exactly the shape of thing this repository keeps finding. So there is a
+`dbintegration` suite that runs `SHOW statement_timeout` on a connection the
+platform's own `NewPool` opened, and compares what comes back.
+
+### What it takes to see any of this
+
+Seven gauges off `pgxpool.Stat()` and three counters from the query tracer, on
+the same `/metrics` handler as everything else, so the existing scrape
+configuration reaches them unchanged. Summed across the pools a process holds,
+because the modulith is twenty-eight modules in one process and does not merge
+the databases — a gauge per pool would have left the twenty-eighth module as the
+only one reported.
+
+`observe` gained a Counter alongside its Gauge for this. Three of the pool
+numbers only ever rise, `rate()` and `increase()` are written against counters,
+and Prometheus uses the declared type to tell a process restart from a value that
+fell. A monotonic number declared as a gauge works by accident and is a lie in
+the exposition.
+
+And a span per query, through pgx's `QueryTracer`, so a trace no longer stops at
+the database. The name comes from a bounded vocabulary — `db SELECT collections`
+— because a trace store indexes on the name and one name per statement is how it
+stops being usable. Where it cannot be sure what the statement targets, it says
+`db SELECT` rather than guessing: a span name that is confidently wrong sends
+somebody to the wrong table.
+
+The counters are separate from the spans on purpose. A span exists only when a
+collector is configured and only inside a request; the counters are always there
+and cover the sweeps and the boot checks, which deliberately have no span. "How
+much of this service's time goes to the database" is a question somebody asks
+before they have set up tracing.
+
+### Two checks that could not see the work
+
+Both had the same shape, and it is the shape this document keeps returning to.
+
+The alert-name scanner — the one that fails the build if an alert names a metric
+nothing publishes — walked `services/` and nothing else. The pool numbers are
+published from `libs/integrity/tenantdb`, because that is where every service's
+database connection is made. An alert naming one would have read as an alert on a
+metric nothing emits, which is precisely the failure that check exists to catch,
+arriving through the check itself.
+
+And the gate's `dbintegration` scan walked `services` and `tools`. `tools` was
+added when the backup round trip turned out to be unrun; `libs` was not, so the
+suite that asks the server what it actually applied would have sat there proving
+nothing. Both widened.
+
+Thirteen mutants on this work, all killed: a pool left at the default, a DSN's
+own setting overwritten, the idle-in-transaction bound dropped, `eachPool`
+reading only the first pool, counters rendered as gauges, `Child` starting a
+trace where it should start none and omitting the parent where it should name
+one, the compose limit returned to a hundred, the scanner narrowed back to
+`services/`, the span named after the statement, and the two query counters
+stopped. The one worth naming is the compose limit: with it at a hundred, the
+arithmetic test fails with the sentence a person would need — "allows 100 and the
+platform can ask for 264" — rather than with a diff.
+
+---
+
 ## Blocked, and has been since early on
 
 None of these can be worked around by writing more code, and each has been
@@ -1753,3 +1874,8 @@ diff.
 | Every alert that can go blind has a second alert watching it | A check that has stopped looks exactly like a check that keeps finding nothing. |
 | No alerts on metrics from an exporter this repository does not run | The check beside the rules verifies that every name an alert uses is one the platform actually emits. Rules it cannot verify would be the one thing in that file nothing had checked. |
 | The clients are a requirement, and are compared like one | `web/` and `mobile/` are the only statement of what was promised that a person actually sees. They are in two other languages in two other modules, so every Go-side check moves with a rename and none of them notices. |
+| A pool size and a server limit are one arithmetic, and it is gated | Two defaults, neither chosen, multiplying: twenty-eight pools of `max(4, numCPU)` against a `max_connections` of 100. Both numbers were reasonable alone and nothing put them on the same page. The test is the page. |
+| A GUC is asked of the server, not of a config struct | A runtime parameter PostgreSQL does not recognise satisfies every unit test that checks what was sent. `SHOW statement_timeout` on a connection the platform's own code opened is the only version of that check worth having. |
+| A rising number is declared a counter | `rate()` and `increase()` are written against counters, and Prometheus uses the declared type to tell a process restart from a value that fell. A monotonic gauge works by accident and is a lie in the exposition. |
+| A span named from a bounded vocabulary, and silent where it cannot be sure | A trace store indexes on the name, so one name per statement makes it unusable — and a name that is confidently wrong sends somebody to the wrong table. `db SELECT` is the honest answer when the target is a subquery. |
+| A query outside a request gets a counter, not a trace | A sweep makes one service call and hundreds of queries. Starting a trace per query would bury every trace somebody actually asked for. The opposite of what `Inject` does, on purpose. |

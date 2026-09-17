@@ -40,23 +40,13 @@ import (
 
 // ServiceNameEnv names this process in a trace.
 //
-// Read here rather than passed in, the way the rate limit is: adding a parameter
-// would mean editing thirty main functions, and the one that is edited wrongly
-// is the service that appears in every trace under somebody else's name. Every
-// deployment already sets it — it is in each service's ConfigMap and in compose.
-const ServiceNameEnv = "SERVICE_NAME"
+// Defined by tracing and re-exported here because this is where a reader looking
+// at how a service is started expects to find it. One constant, so a second
+// spelling cannot appear.
+const ServiceNameEnv = tracing.ServiceNameEnv
 
 // serviceName is what this process calls itself in a span.
-//
-// "unknown-service" rather than empty, because a span with no service is one a
-// collector groups with every other nameless span in the platform, which looks
-// like one enormous service that does everything.
-func serviceName() string {
-	if v := os.Getenv(ServiceNameEnv); v != "" {
-		return v
-	}
-	return "unknown-service"
-}
+func serviceName() string { return tracing.ServiceName() }
 
 // The general rate, per caller.
 //

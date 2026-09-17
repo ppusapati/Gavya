@@ -164,9 +164,28 @@ type Gauge struct {
 	Read func() float64
 }
 
+// A Counter is a number a service publishes that only ever goes up.
+//
+// A separate type from Gauge rather than a field on it, because the difference
+// is the whole of what a reader does with the number. `rate()` and `increase()`
+// are written against counters, and Prometheus uses the declared type to know
+// that a drop is a process restart rather than a value falling. A monotonic
+// number declared as a gauge works by accident today and is a lie in the
+// exposition, which is the kind of thing this platform does not leave lying
+// about for somebody to trust later.
+//
+// Same rule as Gauge about the function: it runs inside the scrape, so it reads
+// a variable and does not go to the database.
+type Counter struct {
+	Name string
+	Help string
+	Read func() float64
+}
+
 var (
 	gaugesMu sync.RWMutex
 	gauges   []Gauge
+	counters []Counter
 )
 
 // Publish registers a gauge. Meant to be called at boot, once per name.
@@ -190,6 +209,22 @@ func Publish(g Gauge) {
 	gauges = append(gauges, g)
 }
 
+// PublishCounter registers a counter, on the same terms as Publish.
+func PublishCounter(c Counter) {
+	if c.Name == "" || c.Read == nil {
+		return
+	}
+	gaugesMu.Lock()
+	defer gaugesMu.Unlock()
+	for i := range counters {
+		if counters[i].Name == c.Name {
+			counters[i] = c
+			return
+		}
+	}
+	counters = append(counters, c)
+}
+
 // publishedGauges is a copy, so the handler is not holding the lock while it
 // calls somebody else's function.
 func publishedGauges() []Gauge {
@@ -200,11 +235,20 @@ func publishedGauges() []Gauge {
 	return out
 }
 
+func publishedCounters() []Counter {
+	gaugesMu.RLock()
+	defer gaugesMu.RUnlock()
+	out := make([]Counter, len(counters))
+	copy(out, counters)
+	return out
+}
+
 // forgetGauges exists for tests, which would otherwise see each other's.
 func forgetGauges() {
 	gaugesMu.Lock()
 	defer gaugesMu.Unlock()
 	gauges = nil
+	counters = nil
 }
 
 // NewMetrics returns a fresh set.
@@ -342,6 +386,16 @@ func (m *Metrics) Handler() http.HandlerFunc {
 			fmt.Fprintf(&b, "# HELP %s %s\n", g.Name, g.Help)
 			fmt.Fprintf(&b, "# TYPE %s gauge\n", g.Name)
 			fmt.Fprintf(&b, "%s %s\n", g.Name, strconv.FormatFloat(g.Read(), 'f', -1, 64))
+		}
+
+		publishedCounts := publishedCounters()
+		sort.Slice(publishedCounts, func(i, j int) bool {
+			return publishedCounts[i].Name < publishedCounts[j].Name
+		})
+		for _, c := range publishedCounts {
+			fmt.Fprintf(&b, "# HELP %s %s\n", c.Name, c.Help)
+			fmt.Fprintf(&b, "# TYPE %s counter\n", c.Name)
+			fmt.Fprintf(&b, "%s %s\n", c.Name, strconv.FormatFloat(c.Read(), 'f', -1, 64))
 		}
 
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")

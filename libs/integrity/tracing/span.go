@@ -3,6 +3,7 @@ package tracing
 import (
 	"context"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 )
@@ -72,6 +73,71 @@ func record(s Span) {
 	r := collector
 	collectorMu.RUnlock()
 	r.Record(s)
+}
+
+// ServiceNameEnv names this process in a trace.
+//
+// Read from the environment rather than passed in: threading it through would
+// mean editing thirty main functions, and the one edited wrongly is the service
+// that appears in every trace under somebody else's name. Every deployment
+// already sets it — it is in each service's ConfigMap and in both compose files.
+//
+// It lives here rather than in serve because serve is no longer the only thing
+// that names a span: tenantdb records one per query, and it does not import
+// serve.
+const ServiceNameEnv = "SERVICE_NAME"
+
+// ServiceName is what this process calls itself in a span.
+//
+// "unknown-service" rather than empty, because a span with no service is one a
+// collector groups with every other nameless span in the platform, which looks
+// like one enormous service that does everything.
+func ServiceName() string {
+	if v := os.Getenv(ServiceNameEnv); v != "" {
+		return v
+	}
+	return "unknown-service"
+}
+
+// Child records one span inside a request that is already being traced, and
+// returns the function that ends it.
+//
+// The end function takes the error the work returned, so that a failed span is
+// marked without the caller having to decide what "failed" means.
+//
+// # IT DOES NOTHING WHEN THERE IS NO TRACE
+//
+// That is the decision worth stating, because Inject does the opposite: an
+// outgoing service call with no trace on its context starts one, so that the
+// work still appears. This does not, and the difference is volume. A background
+// sweep makes one service call and hundreds of queries. Starting a trace per
+// query would fill a trace store with single-span traces nobody asked for, and
+// the traces somebody did ask for would be harder to find among them.
+//
+// The cost is that a query made outside a request is not traced at all. That is
+// the right way round: those are the sweeps and the boot checks, and they are
+// watched by their own gauges rather than by traces.
+func Child(ctx context.Context, service, name string) func(err error) {
+	parent, ok := From(ctx)
+	if !ok {
+		return func(error) {}
+	}
+	here := parent.Child()
+	start := time.Now()
+	var once sync.Once
+	return func(err error) {
+		once.Do(func() {
+			record(Span{
+				Context: here,
+				Parent:  parent.SpanID,
+				Service: service,
+				Name:    name,
+				Start:   start,
+				End:     time.Now(),
+				Failed:  err != nil,
+			})
+		})
+	}
 }
 
 // Middleware continues the caller's trace, or starts one, and records the span.

@@ -44,6 +44,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ppusapati/gavya/libs/integrity/tenantctx"
+	"github.com/ppusapati/gavya/libs/integrity/tracing"
 )
 
 // The session parameter the isolation policies read.
@@ -111,7 +112,23 @@ func NewPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("tenantdb: %w", err)
 	}
 	Configure(cfg)
-	return pgxpool.NewWithConfig(ctx, cfg)
+
+	// Sizing and the two timeouts, for the same reason the sslmode check is
+	// here: these are properties of the platform, and the twenty-eight copies of
+	// a wrong answer that this package exists to prevent came from each service
+	// deciding for itself. See limits.go for the arithmetic.
+	applyLimits(cfg, dsn)
+
+	// Every query this pool runs gets a span, inside whatever request is being
+	// traced. Nothing when no collector is configured, which is the usual case.
+	cfg.ConnConfig.Tracer = queryTracer{service: tracing.ServiceName()}
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	watch(pool)
+	return pool, nil
 }
 
 // Configure installs the tenant handling on a pool configuration the caller has

@@ -140,6 +140,65 @@ groups:
             slowed and every caller is waiting on it. The per-caller rate limit
             bounds one client, not the total.
 
+  - name: gavya-the-database
+    rules:
+      - alert: PoolNearlyExhausted
+        # Connections in use against connections allowed. Per job, because a
+        # single service saturating its pool is the ordinary case — a report that
+        # scans a fortnight — and the platform-wide number would hide it.
+        expr: |
+          gavya_db_pool_acquired_conns / gavya_db_pool_max_conns > 0.9
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: '{{ $labels.job }} is holding more than nine tenths of its database connections'
+          description: >-
+            Every request beyond this waits for a connection before it does
+            anything, so latency rises for work that is not itself slow. Either
+            the service is doing more than the pool was sized for, or something
+            is holding connections it is not using — a transaction left open, a
+            query waiting on a lock. Look at ProcedureSlow beside this: if one
+            procedure got slow first, the pool is the symptom.
+
+      - alert: CallersWaitingForConnections
+        # The sharper signal, and the reason the pool statistics are counters.
+        # Depth above is a level and can sit high on a busy morning without
+        # anything being wrong; this is the rate at which callers arrive and find
+        # nothing free, which is work being delayed rather than work being done.
+        expr: |
+          rate(gavya_db_pool_empty_acquires_total[5m]) > 10
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: '{{ $labels.job }} is waiting for a database connection more than ten times a second'
+          description: >-
+            The pool is the constraint. Raising it is not automatically the
+            answer: the collection path is bound by the database, so more
+            connections against a database already at its service rate makes the
+            queue longer rather than shorter. Check whether the database is
+            saturated first, and note that the per-service pool size and the
+            server's max_connections are one arithmetic — see
+            libs/integrity/tenantdb/limits.go.
+
+      - alert: AcquiresBeingAbandoned
+        # A caller that gave up waiting. This is the failure the two above are
+        # trying to predict: by the time it fires, requests are being refused.
+        expr: |
+          rate(gavya_db_pool_canceled_acquires_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: '{{ $labels.job }} has requests giving up before they reach the database'
+          description: >-
+            A request whose context expired while waiting for a connection. It
+            never ran a query, so nothing was half-done — but the caller was
+            turned away, and if this is a collection procedure that is a booth
+            being told to try again. Check PoolNearlyExhausted and
+            CallersWaitingForConnections above for which of the two it is.
+
   - name: gavya-the-quiet-failures
     rules:
       - alert: NotificationOutboxStalled
@@ -210,18 +269,27 @@ groups:
 #
 # Recorded because a gap nobody wrote down is one nobody closes.
 #
-#   - Anything about the database itself: connections, replication lag, disk. The
-#     usual exporter covers it and no deployment here runs one. Deliberately not
-#     alerted on from here: the test beside these rules verifies that every
-#     gavya_ metric an alert names is one a live handler actually emits, and it
-#     cannot do that for an exporter that is not running. Rules naming pg_ metrics
-#     would be the one thing in this file nothing had checked.
-#   - Anything the platform does that is not a request and not one of the two
-#     above. The gauge registry in libs/integrity/observe is how a service
-#     publishes such a thing, and it is worth reaching for before writing an
-#     alert on a number nobody is emitting.
+#   - What the database itself is doing: replication lag, disk, checkpoints,
+#     locks, the size of anything. The usual exporter covers it and no deployment
+#     here runs one. Still deliberately not alerted on from here, and for the
+#     unchanged reason: the test beside these rules verifies that every metric an
+#     alert names is one a live handler actually emits, and it cannot do that for
+#     an exporter that is not running.
+#
+#     Connections used to be on that list and are not any more, because that
+#     reason never covered them. They are read off a pool the service is already
+#     holding, so a live handler does emit them and the check can see them — see
+#     the gavya-the-database group above and libs/integrity/tenantdb/watch.go.
+#     The gap this closed was not a small one: twenty-eight pools sized by a
+#     default nobody chose, against a server limit nobody set.
+#   - Anything the platform does that is not a request and not one of the ones
+#     above. The registry in libs/integrity/observe is how a service publishes
+#     such a thing — Publish for a number that goes both ways, PublishCounter for
+#     one that only rises — and it is worth reaching for before writing an alert
+#     on a number nobody is emitting.
 #
 # The settlement outbox and the audit chain were on this list and are not any
 # more; they are the group above. Both needed a metric that did not exist, which
 # is why they sat here: a service could count requests and could say nothing
-# about its own work. Tracing was here too and is in libs/integrity/tracing now.
+# about its own work. Tracing was here too and is in libs/integrity/tracing now,
+# and it reaches into the database rather than stopping at it.
