@@ -1077,7 +1077,7 @@ func TestTheDatabaseRefusesOneCollectionInTwoCycles(t *testing.T) {
 	collection := newID("col")
 	line := func(cycleID string) error {
 		_, err := conn.Exec(ctx, `
-			INSERT INTO cycle_lines
+			INSERT INTO settlement_service.cycle_lines
 				(id,tenant_id,cycle_id,producer_ref,collection_id,collected_on,shift,
 				 quantity,quantity_unit,currency,amount_scale,amount_minor_units)
 			VALUES ($1,$2,$3,$4,$5,'2026-03-02','MORNING','10.000','PER_LITRE','INR',2,43000)`,

@@ -485,6 +485,25 @@ var (
 // suite that silently assumes a hand-migrated database fails with a connection
 // error the first time someone new runs it, and passes against a schema that
 // may be several changes behind.
+// schemaPrelude puts the connection in the schema a file's tables belong to.
+//
+// The same rule as tools/dbadmin's Step.Prelude and provision's, and compared
+// against them by TestEveryApplierPutsASchemaInTheSamePlace.
+func schemaPrelude(path string) string {
+	parts := strings.Split(filepath.ToSlash(path), "/")
+	for i, p := range parts {
+		if p == "services" && i+1 < len(parts) {
+			service := parts[i+1]
+			if service == "audit-service" {
+				break
+			}
+			ns := strings.ReplaceAll(service, "-", "_")
+			return fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s; SET search_path = %s, public;", ns, ns)
+		}
+	}
+	return "SET search_path = public;"
+}
+
 func prepareDatabaseErr(root string, svc service) error {
 	prepareMu.Lock()
 	defer prepareMu.Unlock()
@@ -534,6 +553,18 @@ func prepareDatabaseErr(root string, svc service) error {
 			sql, err := os.ReadFile(filepath.Join(root, path))
 			if err != nil {
 				return fmt.Errorf("read %s: %w", path, err)
+			}
+			// Into the schema that service's pool will look in.
+			//
+			// This harness gives each service a database of its own, which is
+			// right for isolating a test and is also why it could not see the
+			// collision that made the namespaces necessary. It still has to put
+			// the tables where the service will look for them: a service whose
+			// pool resolves in order_service and whose tables landed in public
+			// would fail on every query, which is a harness fault reported as a
+			// broken service.
+			if _, err := conn.Exec(ctx, schemaPrelude(path)); err != nil {
+				return fmt.Errorf("prepare the schema for %s in %s: %w", path, svc.database, err)
 			}
 			// Every schema here is written with IF NOT EXISTS, so applying it to
 			// a database left behind by an earlier run is a no-op rather than a

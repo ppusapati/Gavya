@@ -16,8 +16,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -58,11 +60,21 @@ func isolated(t *testing.T) (owner, app *pgx.Conn) {
 	t.Cleanup(func() { owner.Close(context.Background()) })
 
 	root := workspaceRoot(t)
+	// Each service's schema into its own, the way both deployments build it.
+	//
+	// This database was the last place in the repository that put every service
+	// in one flat namespace — which is the arrangement that hid the invoices
+	// collision for as long as it did, and the tests that use this database make
+	// the platform's strongest claims. A harness more forgiving than the
+	// deployment is one whose passes mean less than they look.
 	run := func(path string) {
 		t.Helper()
 		b, err := os.ReadFile(filepath.Join(root, path))
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
+		}
+		if _, err := owner.Exec(ctx, schemaPrelude(path)); err != nil {
+			t.Fatalf("prepare the schema for %s: %v", path, err)
 		}
 		if _, err := owner.Exec(ctx, string(b)); err != nil {
 			t.Fatalf("apply %s: %v", path, err)
@@ -82,6 +94,12 @@ func isolated(t *testing.T) (owner, app *pgx.Conn) {
 	run("libs/integrity/isolation/foreignkeys.sql")
 	run("libs/integrity/isolation/references.sql")
 
+	// Back to public before the sweeps: they range over every schema and read
+	// nothing from the search path, but one that later creates a table would
+	// create it wherever the last file left us.
+	if _, err := owner.Exec(ctx, "SET search_path = public"); err != nil {
+		t.Fatal(err)
+	}
 	for _, stmt := range []string{
 		"SELECT gavya_apply_tenant_isolation()",
 		"SELECT gavya_grant_app_access()",
@@ -101,8 +119,16 @@ func isolated(t *testing.T) (owner, app *pgx.Conn) {
 		run(rel)
 	}
 
+	// The owner is a fixture from here on: it seeds rows and reads them back
+	// across whatever service a test is about, so it looks everywhere. Set after
+	// the build rather than before it, because the build needs each file to land
+	// in one schema and this would have put them all in the first.
+	if _, err := owner.Exec(ctx, "SET search_path = "+everySchema(t)); err != nil {
+		t.Fatal(err)
+	}
+
 	appDSN := strings.Replace(dsn(t, db), "postgres://", "postgres://", 1)
-	app, err = pgx.Connect(ctx, asRole(appDSN, "gavya_app"))
+	app, err = pgx.Connect(ctx, lookingEverywhere(t, asRole(appDSN, "gavya_app")))
 	if err != nil {
 		t.Fatalf("connect as gavya_app: %v", err)
 	}
@@ -821,4 +847,57 @@ func TestEveryEnforcedDecisionBecameAKey(t *testing.T) {
 	if err := refused.Err(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// everySchema is the search path a test fixture looks at the database with.
+//
+// Twenty-seven services have a schema of their own now, and the connections in
+// this package are not services: they seed rows, read them back and check
+// policies across whatever service the test is about. A path naming every schema
+// is "look everywhere", which is what an inspecting connection wants.
+//
+// No service gets this, and that is the point. A service's pool is opened by
+// tenantdb.NewPoolFor with its own schema and public and nothing else, so a
+// query that reaches into somebody else's tables fails there exactly as it
+// should. Widening the fixture does not widen them: tenantdb only sets a search
+// path the DSN has not already named, and no service's DSN names one.
+func everySchema(t *testing.T) string {
+	t.Helper()
+	root := workspaceRoot(t)
+	schemas, err := filepath.Glob(filepath.Join(root, "services", "*", "internal", "db", "schema.sql"))
+	if err != nil || len(schemas) == 0 {
+		t.Fatalf("no service schemas under %s (%v)", root, err)
+	}
+	var path []string
+	for _, s := range schemas {
+		if ns := namespaceOfPath(s); ns != "" {
+			path = append(path, ns)
+		}
+	}
+	sort.Strings(path)
+	return strings.Join(append(path, "public"), ", ")
+}
+
+// namespaceOfPath is schemaPrelude's rule, as a name.
+func namespaceOfPath(path string) string {
+	parts := strings.Split(filepath.ToSlash(path), "/")
+	for i, p := range parts {
+		if p == "services" && i+1 < len(parts) {
+			if parts[i+1] == "audit-service" {
+				return ""
+			}
+			return strings.ReplaceAll(parts[i+1], "-", "_")
+		}
+	}
+	return ""
+}
+
+// lookingEverywhere adds that path to a DSN, for a connection this package owns.
+func lookingEverywhere(t *testing.T, dsn string) string {
+	t.Helper()
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	return dsn + sep + "search_path=" + url.QueryEscape(everySchema(t))
 }

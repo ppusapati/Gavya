@@ -44,6 +44,30 @@ func main() {
 	}
 }
 
+// prelude puts the connection in the schema this file's tables belong to.
+//
+// A copy of tools/dbadmin's Step.Prelude rather than an import: this command is
+// in the e2e module and exists to build the database those suites read, and a
+// dependency from e2e on the migration tool would tie the suite's ability to run
+// to that tool's build. The rule it copies is one line long and is checked
+// against the original by TestProvisionAgreesWithThePlan.
+func prelude(path string) string {
+	parts := strings.Split(filepath.ToSlash(path), "/")
+	for i, p := range parts {
+		if p == "services" && i+1 < len(parts) {
+			service := parts[i+1]
+			// audit-service's one table is the shared audit trail, written by
+			// twenty-five services under an unqualified name. It stays in public.
+			if service == "audit-service" {
+				break
+			}
+			ns := strings.ReplaceAll(service, "-", "_")
+			return fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s; SET search_path = %s, public;", ns, ns)
+		}
+	}
+	return "SET search_path = public;"
+}
+
 func run(template, name, root string) error {
 	if !strings.Contains(template, "%s") {
 		return fmt.Errorf("the DSN template has no %%s in it: %q", template)
@@ -69,7 +93,8 @@ func run(template, name, root string) error {
 	}
 	defer conn.Close(ctx)
 
-	files := []string{filepath.Join(root, "pkg", "database", "schema", "gen_ulid_polyfill.sql")}
+	polyfill := filepath.Join(root, "pkg", "database", "schema", "gen_ulid_polyfill.sql")
+	files := []string{polyfill}
 	schemas, err := filepath.Glob(filepath.Join(root, "services", "*", "internal", "db", "schema.sql"))
 	if err != nil {
 		return err
@@ -84,6 +109,14 @@ func run(template, name, root string) error {
 		sql, err := os.ReadFile(f)
 		if err != nil {
 			return err
+		}
+		// Each service's tables into that service's own schema, the way both
+		// deployments now build it. Without this the suites below would run
+		// against one flat namespace and would be the only arrangement in the
+		// platform where two services can still collide.
+		if _, err := conn.Exec(ctx, prelude(f)); err != nil {
+			rel, _ := filepath.Rel(root, f)
+			return fmt.Errorf("prepare the schema for %s: %w", rel, err)
 		}
 		if _, err := conn.Exec(ctx, string(sql)); err != nil {
 			rel, _ := filepath.Rel(root, f)

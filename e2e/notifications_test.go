@@ -193,7 +193,7 @@ func TestPayingSomebodyTellsTheAuditorThroughTheOutbox(t *testing.T) {
 		var rows, delivered, attempts int
 		if err := conn.QueryRow(ctx, `
 			SELECT count(*), count(delivered_at), COALESCE(sum(attempts), 0)
-			  FROM notification_outbox
+			  FROM settlement_service.notification_outbox
 			 WHERE tenant_id = $1 AND reference_id = $2 AND event = 'payable_paid'`,
 			p.tenant, pay.ID).Scan(&rows, &delivered, &attempts); err != nil {
 			t.Fatalf("read the outbox: %v", err)

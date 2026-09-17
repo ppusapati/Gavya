@@ -52,7 +52,7 @@ func auditing(t *testing.T) (owner *pgx.Conn, pool *pgxpool.Pool) {
 	root := workspaceRoot(t)
 	applySQL(t, owner, root, "services/audit-service/internal/db/tamper_evidence.sql")
 
-	cfg, err := pgxpool.ParseConfig(asRole(dsn(t, "e2e_isolation"), "gavya_app"))
+	cfg, err := pgxpool.ParseConfig(lookingEverywhere(t, asRole(dsn(t, "e2e_isolation"), "gavya_app")))
 	if err != nil {
 		t.Fatal(err)
 	}

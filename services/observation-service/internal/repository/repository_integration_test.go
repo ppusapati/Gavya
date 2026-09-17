@@ -50,6 +50,16 @@ func pool(t *testing.T) *pgxpool.Pool {
 	if dsn == "" {
 		t.Skip("TEST_DATABASE_URL is not set")
 	}
+	// The same search path this service's pool runs with.
+	//
+	// TEST_DATABASE_URL names a database holding every service's schema, each in
+	// its own — which is what both deployments build. The queries below are this
+	// service's, written unqualified, so a connection without its search path
+	// resolves none of them. See libs/integrity/tenantdb/namespace.go.
+	dsn, err := tenantdb.NamespacedDSN(dsn, "observation-service")
+	if err != nil {
+		t.Fatal(err)
+	}
 	poolOnce.Do(func() {
 		p, err := pgxpool.New(context.Background(), dsn)
 		if err != nil {

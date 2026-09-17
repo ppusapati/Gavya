@@ -93,7 +93,10 @@ func TestBothShapesDeclareTheSameLimit(t *testing.T) {
 // touching a database.
 func servicesThatOpenAPool(t *testing.T, root string) int {
 	t.Helper()
-	opens := regexp.MustCompile(`tenantdb\.NewPool\(`)
+	// NewPool and NewPoolFor both. Twenty-seven services open a pool in their
+	// own schema and one — audit-service, whose table is the shared audit trail
+	// — opens one in public; all twenty-eight hold a pool and count here.
+	opens := regexp.MustCompile(`tenantdb\.NewPool(For)?\(`)
 
 	found := map[string]bool{}
 	err := filepath.WalkDir(filepath.Join(root, "services"), func(path string, d os.DirEntry, err error) error {

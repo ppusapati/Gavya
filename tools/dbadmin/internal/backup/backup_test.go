@@ -207,7 +207,10 @@ func seed(t *testing.T, ctx context.Context, dsn string) {
 
 	const tenant = "TNT_BACKUP_TEST"
 	for _, stmt := range []string{
-		`INSERT INTO tenants (id, name, slug, status, contact_email, currency, currency_scale, created_by, updated_by)
+		// Schema-qualified: tenants belongs to tenant-service and lives in its
+		// schema now. audit_logs below stays in public, because it is the one
+		// table every service shares.
+		`INSERT INTO tenant_service.tenants (id, name, slug, status, contact_email, currency, currency_scale, created_by, updated_by)
 		 VALUES ('` + tenant + `', 'Backup Test', 'backup-test', 'active', 'backup@test.invalid', 'INR', 2, 'test', 'test')`,
 		`INSERT INTO audit_logs (id, tenant_id, actor_id, actor_type, action, resource_type,
 		                         resource_id, service_name, created_by)
@@ -270,21 +273,24 @@ func run(t *testing.T, root, script string, args ...string) {
 func catalogue(t *testing.T, ctx context.Context, conn *pgx.Conn) []string {
 	t.Helper()
 	rows, err := conn.Query(ctx, `
-		SELECT 'column   ' || table_name || '.' || column_name || ' ' || data_type
-		  FROM information_schema.columns WHERE table_schema = 'public'
+		SELECT 'column   ' || table_schema || '.' || table_name || '.' || column_name || ' ' || data_type
+		  FROM information_schema.columns
+		 WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+		   AND table_schema NOT LIKE 'pg\\_%'
 		UNION ALL
 		SELECT 'constraint ' || conrelid::regclass::text || ' ' || conname || ' ' || pg_get_constraintdef(oid)
 		  FROM pg_constraint WHERE connamespace = 'public'::regnamespace
 		UNION ALL
-		SELECT 'index    ' || tablename || ' ' || regexp_replace(indexdef, 'INDEX \S+ ON', 'INDEX ? ON')
-		  FROM pg_indexes WHERE schemaname = 'public'
+		SELECT 'index    ' || schemaname || '.' || tablename || ' ' || regexp_replace(indexdef, 'INDEX \S+ ON', 'INDEX ? ON')
+		  FROM pg_indexes WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
 		UNION ALL
-		SELECT 'policy   ' || tablename || ' ' || policyname || ' ' || COALESCE(qual, '-')
-		  FROM pg_policies WHERE schemaname = 'public'
+		SELECT 'policy   ' || schemaname || '.' || tablename || ' ' || policyname || ' ' || COALESCE(qual, '-')
+		  FROM pg_policies WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
 		UNION ALL
-		SELECT 'rls      ' || relname || ' enabled=' || relrowsecurity || ' forced=' || relforcerowsecurity
+		SELECT 'rls      ' || n.nspname || '.' || relname || ' enabled=' || relrowsecurity || ' forced=' || relforcerowsecurity
 		  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-		 WHERE n.nspname = 'public' AND c.relkind = 'r'
+		 WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+		   AND n.nspname NOT LIKE 'pg\\_%' AND c.relkind = 'r'
 		UNION ALL
 		SELECT 'function ' || proname || '(' || pg_get_function_identity_arguments(oid) || ')'
 		  FROM pg_proc WHERE pronamespace = 'public'::regnamespace
@@ -336,8 +342,10 @@ var castNoise = regexp.MustCompile(`::(?:character varying|text)(?:\[\])?`)
 func rowCounts(t *testing.T, ctx context.Context, conn *pgx.Conn) map[string]int {
 	t.Helper()
 	rows, err := conn.Query(ctx,
-		`SELECT table_name FROM information_schema.tables
-		  WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`)
+		`SELECT quote_ident(table_schema) || '.' || quote_ident(table_name)
+		   FROM information_schema.tables
+		  WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+		    AND table_schema NOT LIKE 'pg\\_%' AND table_type = 'BASE TABLE'`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -361,7 +369,8 @@ func rowCounts(t *testing.T, ctx context.Context, conn *pgx.Conn) map[string]int
 func countIn(t *testing.T, ctx context.Context, conn *pgx.Conn, table string) int {
 	t.Helper()
 	var n int
-	if err := conn.QueryRow(ctx, `SELECT count(*) FROM "`+table+`"`).Scan(&n); err != nil {
+	// Already quoted and schema-qualified by the query that listed it.
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM `+table).Scan(&n); err != nil {
 		t.Fatalf("count %s: %v", table, err)
 	}
 	return n

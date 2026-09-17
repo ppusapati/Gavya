@@ -1349,7 +1349,7 @@ func TestDeletingAnAnimalRecordsWhoDidIt(t *testing.T) {
 	var updatedBy string
 	var deletedAt *time.Time
 	if err := conn.QueryRow(context.Background(),
-		`SELECT updated_by, deleted_at FROM cattle WHERE id=$1 AND tenant_id=$2`,
+		`SELECT updated_by, deleted_at FROM cattle_service.cattle WHERE id=$1 AND tenant_id=$2`,
 		created.Cattle.ID, p.tenant).Scan(&updatedBy, &deletedAt); err != nil {
 		t.Fatalf("read the deleted row: %v", err)
 	}

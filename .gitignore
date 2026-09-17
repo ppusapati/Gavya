@@ -17,3 +17,4 @@
 /backups/
 /secrets/
 *-secret.yaml
+e2e/provision

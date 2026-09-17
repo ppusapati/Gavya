@@ -86,7 +86,9 @@ pg_restore --dbname "$target" --no-owner --exit-on-error "$from/database.dump"
 
 # What came back. Not the exit code — the properties.
 tables="$(psql --dbname "$target" --tuples-only --no-align --command \
-  "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")"
+  "SELECT count(*) FROM information_schema.tables
+     WHERE table_schema NOT IN ('pg_catalog','information_schema')
+       AND table_schema NOT LIKE 'pg\\_%'")"
 echo "restore: $tables tables"
 
 if [ -f "$from/manifest.txt" ]; then

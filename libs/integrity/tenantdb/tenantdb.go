@@ -95,12 +95,21 @@ func Clear(ctx context.Context, conn Execer) error {
 }
 
 // NewPool opens a pool whose connections carry the tenant of the context that
-// acquired them.
+// acquired them, and whose names resolve in public.
 //
 // A pool built any other way works against these schemas right up until a policy
-// is consulted, and then returns nothing, so this is the only supported way to
-// connect.
+// is consulted, and then returns nothing, so this and NewPoolFor are the only
+// supported ways to connect.
+//
+// Almost nothing should resolve in public. Twenty-seven of the twenty-eight
+// services have a schema of their own and call NewPoolFor; this is for the one
+// whose tables are the shared ones, and for tools that operate on the database
+// rather than serve from it. See namespace.go.
 func NewPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
+	return newPool(ctx, dsn, "")
+}
+
+func newPool(ctx context.Context, dsn, namespace string) (*pgxpool.Pool, error) {
 	// Before anything connects. Every service in this platform reaches its
 	// database through here, so this is the one place the question "is this
 	// connection encrypted" can be asked once instead of twenty-eight times.
@@ -118,6 +127,14 @@ func NewPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 	// a wrong answer that this package exists to prevent came from each service
 	// deciding for itself. See limits.go for the arithmetic.
 	applyLimits(cfg, dsn)
+
+	// Which schema an unqualified name means. A DSN that says so itself wins,
+	// for the same reason the pool size and the timeouts work that way: a
+	// deployment that has said something deliberate is the one entitled to.
+	if cfg.ConnConfig.RuntimeParams == nil {
+		cfg.ConnConfig.RuntimeParams = map[string]string{}
+	}
+	setIfAbsent(cfg.ConnConfig.RuntimeParams, "search_path", searchPath(namespace))
 
 	// Every query this pool runs gets a span, inside whatever request is being
 	// traced. Nothing when no collector is configured, which is the usual case.

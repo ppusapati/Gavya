@@ -191,13 +191,13 @@ func catalogue(t *testing.T, ctx context.Context, conn *pgx.Conn) []string {
 		       || ' prec=' || COALESCE(numeric_precision::text, '-') || ',' || COALESCE(numeric_scale::text, '-')
 		       || ' null=' || is_nullable
 		       || ' default=' || COALESCE(column_default, '-')
-		  FROM information_schema.columns WHERE table_schema = 'public'
+		  FROM information_schema.columns WHERE table_schema NOT IN ('pg_catalog', 'information_schema') AND table_schema NOT LIKE 'pg\\_%'
 		UNION ALL
 		SELECT 'constraint ' || conrelid::regclass::text || ' ' || pg_get_constraintdef(oid)
 		  FROM pg_constraint WHERE connamespace = 'public'::regnamespace
 		UNION ALL
 		SELECT 'index    ' || tablename || ' ' || regexp_replace(indexdef, 'INDEX \S+ ON', 'INDEX ? ON')
-		  FROM pg_indexes WHERE schemaname = 'public'
+		  FROM pg_indexes WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
 		UNION ALL
 		SELECT 'function ' || proname || '(' || pg_get_function_identity_arguments(oid) || ') secdef=' || prosecdef
 		  FROM pg_proc WHERE pronamespace = 'public'::regnamespace
@@ -206,7 +206,7 @@ func catalogue(t *testing.T, ctx context.Context, conn *pgx.Conn) []string {
 		  FROM pg_trigger WHERE NOT tgisinternal
 		UNION ALL
 		SELECT 'view     ' || table_name
-		  FROM information_schema.views WHERE table_schema = 'public'`)
+		  FROM information_schema.views WHERE table_schema NOT IN ('pg_catalog', 'information_schema') AND table_schema NOT LIKE 'pg\\_%'`)
 	if err != nil {
 		t.Fatalf("read the catalogue: %v", err)
 	}

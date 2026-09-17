@@ -29,7 +29,7 @@ import (
 // things: closing it, and asking it whether the service is ready to serve.
 func Build(ctx context.Context, log *p9log.Helper) (serve.Registrar, *pgxpool.Pool, error) {
 	cfg := config.Load()
-	pool, err := tenantdb.NewPool(ctx, cfg.DatabaseURL)
+	pool, err := tenantdb.NewPoolFor(ctx, cfg.DatabaseURL, "inventory-service")
 	if err != nil {
 		return nil, nil, fmt.Errorf("inventory-service: db connect: %w", err)
 	}

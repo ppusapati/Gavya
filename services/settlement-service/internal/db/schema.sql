@@ -555,7 +555,13 @@ BEGIN
          ORDER BY created_at
          LIMIT p_limit;
 END
-$fn$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public;
+-- settlement_service first: notification_outbox is this service's table and
+-- lives in this service's schema. A definer-rights function pins its own search
+-- path deliberately — that is what stops a caller redirecting it at a table of
+-- their own — so the pin has to name where the table actually is. It said
+-- `public` while every table was there, and would have gone on saying it while
+-- resolving nothing.
+$fn$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = settlement_service, public;
 
 -- Granted to the application role where that role exists. It exists wherever
 -- libs/integrity/isolation has been applied — every deployment — and not in a

@@ -507,10 +507,13 @@ COMMENT ON FUNCTION gavya_reference_decisions() IS
 -- every declared reference in the platform would have quietly stopped being a
 -- key, and the check beside it would have gone on passing.
 --
--- A table in two schemas is refused rather than guessed at. That is the
--- collision case tools/dbadmin's coexist check exists for, and enforcing a
--- reference on whichever copy was found first is how one of the two silently
--- gets a constraint the other does not.
+-- A table in two schemas is refused rather than guessed at, on either end of
+-- the reference. That is the collision case tools/dbadmin's coexist check exists
+-- for, and enforcing on whichever copy was found first is how one of the two
+-- silently gets a constraint the other does not.
+--
+-- A reference that crosses schemas is enforced, not refused. Twenty-two of these
+-- do; see the note beside the target lookup.
 DROP FUNCTION IF EXISTS gavya_enforce_references(text);
 DROP FUNCTION IF EXISTS gavya_enforce_references();
 CREATE FUNCTION gavya_enforce_references()
@@ -520,7 +523,9 @@ DECLARE
     v_name    text;
     v_orphans bigint;
     p_schema  text;
+    v_target  text;
     v_homes   text[];
+    v_targets text[];
 BEGIN
     FOR d IN SELECT * FROM gavya_reference_decisions() WHERE enforce ORDER BY table_name, column_name
     LOOP
@@ -549,18 +554,45 @@ BEGIN
         END IF;
         p_schema := v_homes[1];
 
-        -- The target has to be in the same schema. A reference across two
-        -- services' namespaces is a coupling nobody declared, and adding it here
-        -- would make it permanent before anyone had noticed.
-        IF NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-                       WHERE c.relkind = 'r' AND n.nspname = p_schema
-                         AND c.relname = d.references_table) THEN
+        -- The target, found the same way, and it may be in another schema.
+        --
+        -- The first version of this required the target to be in the referencing
+        -- table's own schema, on the reasoning that a key across two services'
+        -- namespaces is a coupling nobody declared. That reasoning was wrong and
+        -- the database said so: twenty-two of these references cross services.
+        -- Fourteen point at cattle-service's `cattle` — a breeding cycle, a
+        -- vaccination, a milk session and a vet visit all name an animal — and
+        -- four more point at product-catalog's `skus`.
+        --
+        -- They are declared couplings, each with a reason recorded above, and
+        -- they were keys before the schemas were split. Refusing them would have
+        -- dropped twenty-two guarantees on the way to tidying the namespaces,
+        -- which is a worse trade than the tidiness is worth. What the split buys
+        -- is that a table name cannot collide; it was never going to mean the
+        -- services do not refer to each other.
+        SELECT array_agg(n.nspname ORDER BY n.nspname) INTO v_targets
+          FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE c.relkind = 'r' AND c.relname = d.references_table
+           AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+           AND n.nspname NOT LIKE 'pg_%';
+
+        IF v_targets IS NULL THEN
             constraint_name := v_name;
-            outcome := format('skipped: %I.%I names %I, which is not in that schema',
+            outcome := format('skipped: %I.%I names %I, which is in no schema',
                               p_schema, d.table_name, d.references_table);
             RETURN NEXT;
             CONTINUE;
         END IF;
+        IF array_length(v_targets, 1) > 1 THEN
+            constraint_name := v_name;
+            outcome := format('REFUSED: %I names %I, which exists in %s schemas (%s), so there '
+                              'is no one table this points at.',
+                              d.table_name, d.references_table,
+                              array_length(v_targets, 1), array_to_string(v_targets, ', '));
+            RETURN NEXT;
+            CONTINUE;
+        END IF;
+        v_target := v_targets[1];
 
         IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = v_name) THEN
             constraint_name := v_name;
@@ -577,7 +609,7 @@ BEGIN
             'SELECT count(*) FROM %I.%I s WHERE s.%I IS NOT NULL AND NOT EXISTS ('
             '  SELECT 1 FROM %I.%I t WHERE t.tenant_id = s.tenant_id AND t.id = s.%I)',
             p_schema, d.table_name, d.column_name,
-            p_schema, d.references_table, d.column_name)
+            v_target, d.references_table, d.column_name)
         INTO v_orphans;
 
         IF v_orphans > 0 THEN
@@ -594,7 +626,7 @@ BEGIN
         -- foreign-key converter adds these, so this is usually a no-op.
         BEGIN
             EXECUTE format('ALTER TABLE %I.%I ADD CONSTRAINT %I UNIQUE (tenant_id, id)',
-                           p_schema, d.references_table,
+                           v_target, d.references_table,
                            left(d.references_table || '_tenant_id_key', 63));
         EXCEPTION WHEN duplicate_table OR duplicate_object THEN
             NULL;
@@ -604,7 +636,7 @@ BEGIN
             'ALTER TABLE %I.%I ADD CONSTRAINT %I FOREIGN KEY (tenant_id, %I) '
             'REFERENCES %I.%I (tenant_id, id) ON UPDATE NO ACTION ON DELETE NO ACTION',
             p_schema, d.table_name, v_name, d.column_name,
-            p_schema, d.references_table);
+            v_target, d.references_table);
 
         constraint_name := v_name;
         outcome := format('now (tenant_id, %I) -> %I (tenant_id, id)', d.column_name, d.references_table);

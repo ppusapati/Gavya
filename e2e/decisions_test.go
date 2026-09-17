@@ -190,7 +190,7 @@ func TestARetiredMappingStopsResolvingWithoutDisappearing(t *testing.T) {
 	defer conn.Close(context.Background())
 	var supersededBy string
 	if err := conn.QueryRow(ctx,
-		`SELECT COALESCE(superseded_by,'') FROM external_identities
+		`SELECT COALESCE(superseded_by,'') FROM canonical_service.external_identities
 		  WHERE id=$1 AND tenant_id=$2 AND superseded_at IS NOT NULL`,
 		made.Identity.ID, p.tenant).Scan(&supersededBy); err != nil {
 		t.Fatalf("the retired mapping is not in the table with a superseded_at: %v\n"+

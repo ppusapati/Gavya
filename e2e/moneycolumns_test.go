@@ -124,7 +124,8 @@ func TestEveryMoneyColumnHoldsFourDecimals(t *testing.T) {
 			rows, err := conn.Query(ctx, `
 				SELECT table_name || '.' || column_name, numeric_precision, numeric_scale
 				  FROM information_schema.columns
-				 WHERE table_schema = 'public' AND data_type = 'numeric'`)
+				 WHERE table_schema NOT IN ('pg_catalog', 'information_schema') AND table_schema NOT LIKE 'pg\\_%'
+				   AND data_type = 'numeric'`)
 			if err != nil {
 				t.Fatalf("read columns: %v", err)
 			}

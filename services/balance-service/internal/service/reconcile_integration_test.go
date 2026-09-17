@@ -31,12 +31,24 @@ import (
 
 	"github.com/ppusapati/gavya/services/balance-service/internal/domain"
 	"github.com/ppusapati/gavya/services/balance-service/internal/repository"
+
+	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
 )
 
 func TestASeriesNodeReconcilesAgainstTheRealReconcilerAndWithoutIt(t *testing.T) {
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("TEST_DATABASE_URL is not set")
+	}
+	// The same search path this service's pool runs with.
+	//
+	// TEST_DATABASE_URL names a database holding every service's schema, each in
+	// its own — which is what both deployments build. The queries below are this
+	// service's, written unqualified, so a connection without its search path
+	// resolves none of them. See libs/integrity/tenantdb/namespace.go.
+	dsn, err := tenantdb.NamespacedDSN(dsn, "balance-service")
+	if err != nil {
+		t.Fatal(err)
 	}
 	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {

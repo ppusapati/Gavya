@@ -44,6 +44,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/ppusapati/gavya/tools/dbadmin/internal/schema"
 )
 
 // knownCollisions are the ones this check found when it was written.
@@ -57,20 +59,20 @@ import (
 // defect, written down, with a fix that is a decision rather than a typo — see
 // the invoices entry.
 var knownCollisions = map[string]string{
-	"order-service invoices": "" +
-		"billing-service and order-service both define a table called invoices and " +
-		"they are not the same table. billing's has customer_id, reference_id and " +
-		"reference_type; order's has order_id NOT NULL REFERENCES orders(id). " +
-		"billing sorts first in the glob deploy/postgres-init loops over, so " +
-		"billing's table is the one that exists and order's CREATE TABLE IF NOT " +
-		"EXISTS is skipped in silence.\n" +
-		"What it costs: every write order-service makes to an invoice fails with " +
-		"\"column order_id of relation invoices does not exist\". Its invoicing has " +
-		"never worked in either deployed shape. Nothing caught it because the " +
-		"end-to-end suite gives each service its own database.\n" +
-		"Fixing it is a decision, not a rename: either the two services get a " +
-		"namespace each, or somebody decides whether billing and order share " +
-		"invoicing at all.",
+	// Empty, and it held one entry when it was written: order-service lost
+	// invoices.order_id to billing-service's table of the same name, and its
+	// invoicing had never worked in either deployed shape.
+	//
+	// Closed by giving each service a schema of its own rather than by renaming
+	// the table, because a rename fixes today and leaves the mechanism: the
+	// twenty-ninth service defines a table somebody already has and the same
+	// silence follows. See libs/integrity/tenantdb/namespace.go.
+	//
+	// This check is worth more now than it was then. It cannot find a name
+	// collision any more — there is nowhere for one to happen — so what it
+	// watches is whether the namespaces work at all: a service whose schema
+	// lands in public, through an applier that forgot or a service nobody gave a
+	// namespace to, collides again exactly as before.
 }
 
 // A table defined the same way twice is not a collision. tenant_currency is
@@ -181,10 +183,13 @@ func whatIsLost(alone map[string]map[string]bool, shared map[string]bool) map[st
 			if shared[col] {
 				continue
 			}
-			table, column, ok := strings.Cut(col, ".")
-			if !ok {
+			// From the right: the key is schema.table.column, and reading
+			// left to right would take the schema for the table.
+			cut := strings.LastIndexByte(col, '.')
+			if cut < 0 {
 				continue
 			}
+			table, column := col[:cut], col[cut+1:]
 			if out[service] == nil {
 				out[service] = map[string][]string{}
 			}
@@ -209,7 +214,7 @@ func otherDefinersOf(alone map[string]map[string]bool, table, except string) []s
 			continue
 		}
 		for col := range cols {
-			if name, _, ok := strings.Cut(col, "."); ok && name == table {
+			if cut := strings.LastIndexByte(col, '.'); cut > 0 && col[:cut] == table {
 				out = append(out, service)
 				break
 			}
@@ -226,18 +231,24 @@ func otherDefinersOf(alone map[string]map[string]bool, table, except string) []s
 // this file.
 func TestTheComparisonFindsAColumnThatWentMissing(t *testing.T) {
 	alone := map[string]map[string]bool{
-		"billing-service": {"invoices.id": true, "invoices.customer_id": true},
-		"order-service":   {"invoices.id": true, "invoices.order_id": true, "orders.id": true},
+		"billing-service": {"public.invoices.id": true, "public.invoices.customer_id": true},
+		"order-service": {
+			"public.invoices.id": true, "public.invoices.order_id": true,
+			"public.orders.id": true,
+		},
 	}
 	// What one database holding both actually ends up with: billing's invoices,
 	// because it was applied first, plus order's own tables.
-	shared := map[string]bool{"invoices.id": true, "invoices.customer_id": true, "orders.id": true}
+	shared := map[string]bool{
+		"public.invoices.id": true, "public.invoices.customer_id": true,
+		"public.orders.id": true,
+	}
 
 	lost := whatIsLost(alone, shared)
 	if len(lost) != 1 {
 		t.Fatalf("one service loses something and the comparison says %d do: %v", len(lost), lost)
 	}
-	if got := lost["order-service"]["invoices"]; len(got) != 1 || got[0] != "order_id" {
+	if got := lost["order-service"]["public.invoices"]; len(got) != 1 || got[0] != "order_id" {
 		t.Fatalf("order-service loses invoices.order_id and the comparison says %v", got)
 	}
 	if _, wrongly := lost["billing-service"]; wrongly {
@@ -248,15 +259,15 @@ func TestTheComparisonFindsAColumnThatWentMissing(t *testing.T) {
 	// Nothing lost is reported as nothing, not as an empty entry somebody has to
 	// filter: the report above iterates what comes back.
 	if lost := whatIsLost(alone, map[string]bool{
-		"invoices.id": true, "invoices.customer_id": true,
-		"invoices.order_id": true, "orders.id": true,
+		"public.invoices.id": true, "public.invoices.customer_id": true,
+		"public.invoices.order_id": true, "public.orders.id": true,
 	}); len(lost) != 0 {
 		t.Errorf("with every column present the comparison still reports %v", lost)
 	}
 
 	// And who else defines it, which is the sentence that tells somebody what to
 	// do about it.
-	if others := otherDefinersOf(alone, "invoices", "order-service"); len(others) != 1 ||
+	if others := otherDefinersOf(alone, "public.invoices", "order-service"); len(others) != 1 ||
 		others[0] != "billing-service" {
 		t.Errorf("the other definer of invoices is billing-service and this says %v", others)
 	}
@@ -264,6 +275,11 @@ func TestTheComparisonFindsAColumnThatWentMissing(t *testing.T) {
 
 // columnsAfterApplying builds a database from these files and returns
 // "table.column" for everything in it.
+// perService is the plan's own rule for which schema a file's tables go in,
+// borrowed rather than restated: a copy here could drift from the thing being
+// tested and the drift would look like a pass.
+var perService = schema.Step{PerService: true}
+
 func columnsAfterApplying(ctx context.Context, t *testing.T, admin *pgx.Conn,
 	dsnFor, name, polyfill string, schemas ...string,
 ) map[string]bool {
@@ -290,16 +306,26 @@ func columnsAfterApplying(ctx context.Context, t *testing.T, admin *pgx.Conn,
 		if err != nil {
 			t.Fatal(err)
 		}
+		// Into the schema the deployment puts it in. Built any other way this
+		// would be comparing an arrangement nothing deploys.
+		if _, err := conn.Exec(ctx, perService.Prelude(f)); err != nil {
+			t.Fatalf("prepare the schema for %s: %v", f, err)
+		}
 		if _, err := conn.Exec(ctx, string(sql)); err != nil {
 			rel, _ := filepath.Rel(filepath.Dir(filepath.Dir(f)), f)
 			t.Fatalf("apply %s to %s: %v", rel, name, err)
 		}
 	}
 
+	// Schema-qualified. Two services may now define a table of the same name
+	// precisely because they are in different schemas, so a comparison that
+	// dropped the schema would call that a collision and be wrong about the one
+	// thing this exists to be right about.
 	rows, err := conn.Query(ctx, `
-		SELECT table_name || '.' || column_name
+		SELECT table_schema || '.' || table_name || '.' || column_name
 		  FROM information_schema.columns
-		 WHERE table_schema = 'public'`)
+		 WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+		   AND table_schema NOT LIKE 'pg\_%'`)
 	if err != nil {
 		t.Fatalf("read the catalogue of %s: %v", name, err)
 	}

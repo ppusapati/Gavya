@@ -140,6 +140,9 @@ func run(dsn, root string, dryRun bool, timeout time.Duration) error {
 			if err != nil {
 				return err
 			}
+			if _, err := conn.Exec(ctx, step.Prelude(f)); err != nil {
+				return fmt.Errorf("prepare the schema for %s: %w", rel, err)
+			}
 			at := time.Now()
 			if _, err := conn.Exec(ctx, string(sql)); err != nil {
 				return fmt.Errorf("apply %s: %w", rel, err)
@@ -150,6 +153,12 @@ func run(dsn, root string, dryRun bool, timeout time.Duration) error {
 			fmt.Printf("migrate:   %s\n", rel)
 		}
 		if step.Command != "" {
+			// Back to public first. The commands are sweeps across every
+			// schema and read nothing from the search path, but one that later
+			// creates a table would create it wherever the last file left us.
+			if _, err := conn.Exec(ctx, "SET search_path = public"); err != nil {
+				return err
+			}
 			if _, err := conn.Exec(ctx, step.Command); err != nil {
 				return fmt.Errorf("%s: %w", step.Describe, err)
 			}

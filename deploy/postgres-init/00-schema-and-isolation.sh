@@ -27,11 +27,39 @@ psql=(psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --no-psqlrc --qui
 echo "gavya: applying the ULID polyfill"
 "${psql[@]}" --file /repo/pkg/database/schema/gen_ulid_polyfill.sql
 
-echo "gavya: applying service schemas"
+# A schema of its own for each service, and why.
+#
+# billing-service and order-service both define a table called invoices, and
+# they are not the same table. Applied into one flat namespace the second
+# definition was not an error — the schemas are CREATE TABLE IF NOT EXISTS
+# because they have to be re-runnable — so it was skipped, billing sorts first,
+# and every write order-service made to an invoice failed on a column that was
+# never created. Nothing caught it: the end-to-end suite gives each service a
+# database of its own and is the one arrangement where it cannot happen.
+#
+# audit-service is the exception and stays in public. Its schema is one table,
+# audit_logs, and twenty-five services write to it under an unqualified name.
+namespace_of() {
+    case "$1" in
+        audit-service) echo "" ;;
+        *) echo "${1//-/_}" ;;
+    esac
+}
+
+echo "gavya: applying service schemas, each in its own"
 count=0
 for f in /repo/services/*/internal/db/schema.sql; do
-    echo "gavya:   $(basename "$(dirname "$(dirname "$(dirname "$f")")")")"
-    "${psql[@]}" --file "$f"
+    service="$(basename "$(dirname "$(dirname "$(dirname "$f")")")")"
+    ns="$(namespace_of "$service")"
+    if [ -n "$ns" ]; then
+        echo "gavya:   $service -> $ns"
+        "${psql[@]}" --command "CREATE SCHEMA IF NOT EXISTS $ns; SET search_path = $ns, public;
+                                \\i $f"
+    else
+        echo "gavya:   $service -> public"
+        "${psql[@]}" --command "SET search_path = public;
+                                \\i $f"
+    fi
     count=$((count + 1))
 done
 if [ "$count" -eq 0 ]; then
@@ -87,8 +115,18 @@ fi
 # result that gets corrected, not the other way round.
 for extra in /repo/services/*/internal/db/isolation.sql; do
     [ -e "$extra" ] || continue
-    echo "gavya: applying $(basename "$(dirname "$(dirname "$(dirname "$extra")")")") isolation"
-    "${psql[@]}" --file "$extra"
+    service="$(basename "$(dirname "$(dirname "$(dirname "$extra")")")")"
+    ns="$(namespace_of "$service")"
+    echo "gavya: applying $service isolation"
+    # Into the same schema its tables went into, or the policies would be
+    # created against a table of that name somewhere else — or against nothing.
+    if [ -n "$ns" ]; then
+        "${psql[@]}" --command "SET search_path = $ns, public;
+                                \\i $extra"
+    else
+        "${psql[@]}" --command "SET search_path = public;
+                                \\i $extra"
+    fi
 done
 
 # Append-only enforcement and the hash chain. After the grants, because it

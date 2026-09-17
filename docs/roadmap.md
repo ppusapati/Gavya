@@ -186,12 +186,10 @@ and it has caught more real problems than reading the code did.
 
 ## Open work
 
-One thing in the code, and it is not small: **order-service's invoicing has
-never worked in either deployed shape.** billing-service and order-service both
-define a table called `invoices`, differently, and both deployments put every
-service in one database. It is set out in *Twenty-eight schemas, one database*
-below, along with the check that now finds it and the decision that has to be
-made to close it.
+In the code, none. The one open item — order-service's invoicing, which had
+never worked in either deployed shape — is closed: each service has a schema of
+its own now. *Twenty-eight schemas, one database* below is how it was found and
+*A schema each* is how it was closed.
 
 The cross-check in
 [`docs/requirements-crosscheck.md`](requirements-crosscheck.md) read the platform
@@ -2005,17 +2003,98 @@ Six mutants, all killed. The one worth naming is reversing the apply order:
 `billing-service` then loses four columns and `order-service` none, which is the
 mechanism stated in the failure message rather than asserted about.
 
-### What has to be decided
+### What was decided
 
-Three ways to close it, and it is not a rename:
+A namespace per module, of the three. A rename fixes today and leaves the
+mechanism: the twenty-ninth service defines a table somebody already has and the
+same silence follows. Below is what that cost.
 
-- **A namespace per module** — `SET search_path` per pool in `tenantdb`. Modules
-  stay independent and a collision becomes impossible rather than resolved. Most
-  change, least recurrence.
-- **Rename the colliding table.** Two tables today, cheap, and the next collision
-  arrives the same silent way.
-- **Merge them** — decide whether billing and order share invoicing at all. The
-  largest change, and a domain question rather than a technical one.
+---
+
+## A schema each
+
+Twenty-seven services have a schema of their own. audit-service does not, and is
+the only one that should not: its whole schema is `audit_logs`, and twenty-five
+services write to it through `libs/integrity/audit` under an unqualified name. It
+is the platform's shared table rather than that service's private one, so it
+stays in public where everything already finds it.
+
+A pool's search path is its own schema then public. First means an unqualified
+table is the service's own; second means an unqualified `audit_logs`,
+`gen_ulid()` or `gavya_current_tenant()` is the shared one. It is a startup
+parameter rather than a statement per acquire: it travels in the connection's
+opening packet, costs nothing per query, and cannot be left unset by a path
+somebody forgot.
+
+The service's own name, passed by its `app.Build`, not `SERVICE_NAME` from the
+environment. The modulith runs twenty-eight modules in one process and
+`SERVICE_NAME` is `gavya` for all of them, so a pool that read it would have put
+every module in one namespace and rebuilt the collision inside the shape that was
+meant to be the way out.
+
+### The thing I had wrong
+
+Before starting I checked for foreign keys between services' tables, found none,
+and said so — that no service's tables need to reach into another's was what made
+the split straightforward.
+
+It was wrong, and the database said so the moment the schemas were actually
+split: four e2e tests failed because **twenty-two enforced references cross
+services.** Fourteen of them point at cattle-service's `cattle` — a breeding
+cycle, a vaccination, a milk session, a vet visit and a treatment all name an
+animal — and four more at product-catalog's `skus`.
+
+The reason the check missed them is worth more than the number. They are not in
+any schema file's `REFERENCES` clause. They are in `gavya_reference_decisions`,
+each with a written reason, and `gavya_enforce_references` creates them as keys
+during deployment. I looked at the declarations and not at what the platform
+actually builds — which is the same mistake as trusting a test that runs in the
+one arrangement where the bug cannot happen.
+
+The first version of the enforcement refused a reference whose ends were in
+different schemas, on the reasoning that such a coupling was undeclared. That
+reasoning was wrong: they are declared, and they were keys. Refusing them would
+have dropped twenty-two guarantees as a side effect of tidying the namespaces.
+Enforcement now finds both ends wherever they are, and refuses only when either
+end exists in two schemas — which is the collision case, and cannot happen now.
+
+What the split buys is that a table name cannot collide. It was never going to
+mean the services do not refer to each other.
+
+### Four appliers, and the one that was the last flat one
+
+Schemas are applied in four places and none can call the others:
+`deploy/postgres-init` is a shell script inside the PostgreSQL container with no
+Go in it, `tools/dbadmin` migrates a database that already exists,
+`e2e/cmd/provision` builds the one the repository suites read, and the e2e
+harness builds one per service. Each learned the same rule, and a test compares
+them — a service whose tables land in the wrong schema is a service whose every
+query fails, and one that lands in public after somebody else's of the same name
+is the original collision arriving from an applier nobody updated.
+
+`e2e_isolation` was the last database in the repository built flat, and it is the
+one the isolation and audit tests use — the platform's strongest claims, running
+against an arrangement nothing deploys. It is namespaced now. Its fixture
+connections look at every schema at once, which is what an inspecting connection
+wants and what no service gets: a service's pool is opened with its own schema
+and public and nothing else, so a query reaching into somebody else's tables
+fails there exactly as it should.
+
+Three more things had to move with it. settlement-service has a definer-rights
+function that pins `SET search_path = public` — deliberately, because that pin is
+what stops a caller redirecting it at a table of their own — and it was pinning
+the wrong place the moment `notification_outbox` left public. Six repository
+suites connect with plain pgx against the provisioned database and now ask for
+their own service's path, because their queries are their service's queries. And
+every check that scoped itself to `public` — the backup catalogue, the upgrade
+comparison, the money-column sweep, the restore's own table count — now reads
+every schema, because a table that moved out of public would otherwise simply
+stop being checked.
+
+Six mutants, all killed. The one worth naming is putting the plan's prelude back
+to public: the coexist check then reports order-service losing `invoices.order_id`
+in exactly the words it first found it in.
+
 
 ---
 
@@ -2086,3 +2165,8 @@ diff.
 | The conventional error discards named one by one | A blanket exclusion also hides the two places where the error mattered. Both of those are fixed; the list is what is left. |
 | A schema check that applies the schemas rather than reading them | Several of these files add columns past their CREATE TABLE. A parser that stopped at the create would report columns missing that are there, and the first thing anybody would do with a check like that is stop believing it. |
 | One known collision, written down with what it costs | A check cannot report next month's collision from inside a build that is already red. The entry buys that, and a second check fails if it outlives the thing it describes — which is the only thing that makes such a list safe to keep. |
+| A schema per service, not a rename of the colliding table | A rename fixes today and leaves the mechanism: the twenty-ninth service defines a table somebody already has, and the same silence follows. |
+| The audit trail stays in public | Twenty-five services write to it under an unqualified name. It is the platform's shared table, not audit-service's private one, and putting it in a schema of its own would mean every one of those writes had to know where it went. |
+| A service's own name, passed in, rather than SERVICE_NAME | The modulith runs twenty-eight modules in one process and SERVICE_NAME is `gavya` for all of them. A pool that read it would have rebuilt the collision inside the shape meant to be the way out. |
+| A reference may cross schemas; a table may not exist in two | Twenty-two enforced references cross services, each with a recorded reason, and every one was a key before the split. The split buys that a table name cannot collide — not that the services stop referring to each other. |
+| The test fixture looks at every schema; no service does | An inspecting connection seeds and reads across whatever service the test is about. Widening it does not widen the services: their pools name their own schema and public, so a query reaching somewhere else still fails there. |

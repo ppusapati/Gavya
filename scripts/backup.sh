@@ -89,7 +89,9 @@ if [ "${entries:-0}" -lt 50 ]; then
 fi
 
 tables="$(psql --dbname "$dsn" --tuples-only --no-align --command \
-  "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")"
+  "SELECT count(*) FROM information_schema.tables
+     WHERE table_schema NOT IN ('pg_catalog','information_schema')
+       AND table_schema NOT LIKE 'pg\\_%'")"
 rows="$(psql --dbname "$dsn" --tuples-only --no-align --command \
   "SELECT COALESCE(sum(n_live_tup),0) FROM pg_stat_user_tables")"
 

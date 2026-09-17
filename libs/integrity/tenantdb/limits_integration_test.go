@@ -116,3 +116,49 @@ func TestTheTenantIsStillAppliedAlongsideTheLimits(t *testing.T) {
 			SettingName, set, tenant)
 	}
 }
+
+// The search path, asked of the server.
+//
+// The same reason as the timeouts above: a startup parameter the server did not
+// accept, or accepted differently, satisfies every assertion made about the
+// configuration that was sent. And this one decides which table a query means —
+// twenty-seven services resolve their own tables through it, and a pool that
+// silently fell back to public would find somebody else's table of the same
+// name, which is the failure the schemas were split to end.
+func TestAPoolResolvesInItsServicesSchema(t *testing.T) {
+	ctx, dsn := openedByTheCode(t)
+
+	pool, err := NewPoolFor(ctx, dsn, "order-service")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() {
+		Forget(pool)
+		pool.Close()
+	}()
+
+	var shown string
+	if err := pool.QueryRow(ctx, "SHOW search_path").Scan(&shown); err != nil {
+		t.Fatalf("SHOW search_path: %v", err)
+	}
+	if shown != "order_service, public" {
+		t.Errorf("the server resolves names against %q, want \"order_service, public\"", shown)
+	}
+
+	// And a pool opened without one is in public, which is where the shared
+	// audit trail is.
+	shared, err := NewPool(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() {
+		Forget(shared)
+		shared.Close()
+	}()
+	if err := shared.QueryRow(ctx, "SHOW search_path").Scan(&shown); err != nil {
+		t.Fatalf("SHOW search_path: %v", err)
+	}
+	if shown != "public" {
+		t.Errorf("a pool with no service resolves against %q, want \"public\"", shown)
+	}
+}

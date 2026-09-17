@@ -209,6 +209,8 @@ func TestTheReviewQueueHoldsTheFlaggedReadingAndNotItsNeighbour(t *testing.T) {
 		CreatedBy: "operator",
 	})
 
+	// Schema-qualified: observation-service's tables live in its own schema now,
+	// and this connection is a plain pgx one with no search path of its own.
 	conn, err := pgx.Connect(ctx, dsn(t, "e2e_observation"))
 	if err != nil {
 		t.Fatalf("connect to the observation database: %v", err)
@@ -220,7 +222,8 @@ func TestTheReviewQueueHoldsTheFlaggedReadingAndNotItsNeighbour(t *testing.T) {
 	// constraint doing exactly what it is for — a review queue full of readings
 	// flagged by nothing is a queue nobody can act on.
 	if _, err := conn.Exec(ctx,
-		`UPDATE observations SET anomaly_flagged = true, anomaly_score = 0.97,
+		`UPDATE observation_service.observations
+		    SET anomaly_flagged = true, anomaly_score = 0.97,
 		        anomaly_method = 'e2e', anomaly_model_version = 'e2e',
 		        anomaly_scored_at = NOW()
 		  WHERE id = $1 AND tenant_id = $2`, odd.ID, p.tenant); err != nil {

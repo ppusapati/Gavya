@@ -26,7 +26,7 @@ func pooled(t *testing.T) *pgxpool.Pool {
 	owner, _ := isolated(t)
 	_ = owner
 
-	cfg, err := pgxpool.ParseConfig(asRole(dsn(t, "e2e_isolation"), "gavya_app"))
+	cfg, err := pgxpool.ParseConfig(lookingEverywhere(t, asRole(dsn(t, "e2e_isolation"), "gavya_app")))
 	if err != nil {
 		t.Fatal(err)
 	}

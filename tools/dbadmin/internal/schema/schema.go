@@ -32,6 +32,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // A Step is one thing to do to the database, in order.
@@ -50,6 +51,34 @@ type Step struct {
 	Command string
 	// Optional marks a glob that may legitimately match nothing.
 	Optional bool
+	// PerService means each file in the glob belongs to the service in its path
+	// and applies into that service's own schema, which is created first.
+	//
+	// The reason is in libs/integrity/tenantdb/namespace.go: two services
+	// defined a table of the same name, both deployments put every service in
+	// one database, and CREATE TABLE IF NOT EXISTS made the second definition a
+	// silent skip rather than an error.
+	PerService bool
+}
+
+// NamespaceOf is the schema a file under services/<name>/... belongs in.
+//
+// Derived from the path rather than from a list, so a new service gets a schema
+// by existing. Empty for a path that is not under a service, and for
+// audit-service, whose one table is the shared audit trail and stays in public —
+// twenty-five services write to it by an unqualified name.
+func NamespaceOf(path string) string {
+	parts := strings.Split(filepath.ToSlash(path), "/")
+	for i, p := range parts {
+		if p == "services" && i+1 < len(parts) {
+			service := parts[i+1]
+			if service == "audit-service" {
+				return ""
+			}
+			return strings.ReplaceAll(service, "-", "_")
+		}
+	}
+	return ""
 }
 
 // Plan is the whole sequence, in the order it has to run.
@@ -65,8 +94,9 @@ func Plan() []Step {
 			File:     "pkg/database/schema/gen_ulid_polyfill.sql",
 		},
 		{
-			Describe: "service schemas",
-			Glob:     "services/*/internal/db/schema.sql",
+			Describe:   "service schemas, each in its own",
+			Glob:       "services/*/internal/db/schema.sql",
+			PerService: true,
 		},
 		{
 			Describe: "tenant isolation",
@@ -84,9 +114,10 @@ func Plan() []Step {
 			Command:  "SELECT constraint_name, outcome FROM gavya_enforce_references();",
 		},
 		{
-			Describe: "per-service isolation for tables with no tenant column",
-			Glob:     "services/*/internal/db/isolation.sql",
-			Optional: true,
+			Describe:   "per-service isolation for tables with no tenant column",
+			Glob:       "services/*/internal/db/isolation.sql",
+			Optional:   true,
+			PerService: true,
 		},
 		{
 			Describe: "an append-only, tamper-evident audit trail",
@@ -97,6 +128,24 @@ func Plan() []Step {
 			Command:  "SELECT gavya_apply_tenant_isolation();",
 		},
 	}
+}
+
+// Prelude is what to run on the connection before applying this file.
+//
+// Emitted before every file rather than only before the ones that need it, so
+// that a per-service search path cannot outlive the file it was set for and
+// carry the next service's tables into somebody else's schema. The whole point
+// of the split is that a table lands where it was meant to; leaving that to
+// whatever the previous statement set would be the same bug one level up.
+func (s Step) Prelude(path string) string {
+	ns := ""
+	if s.PerService {
+		ns = NamespaceOf(path)
+	}
+	if ns == "" {
+		return "SET search_path = public;"
+	}
+	return fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s; SET search_path = %s, public;", ns, ns)
 }
 
 // Files resolves a step to the files it applies, in the order they apply.

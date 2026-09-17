@@ -16,9 +16,10 @@
 // deployment only reads REFUSED. Every declared reference in the platform would
 // have quietly stopped being a key.
 //
-// It now finds each decision's table wherever it lives. These are the two
-// branches that creates, neither of which anything else exercises: a table that
-// exists in two schemas, and a table whose target does not travel with it.
+// It now finds each decision's table wherever it lives, and its target too.
+// These are the branches that creates, which nothing else exercises: a table
+// that exists in two schemas, and a reference whose two ends are in different
+// ones — which twenty-two of the platform's are.
 package schema_test
 
 import (
@@ -68,16 +69,27 @@ func TestAReferenceOnATableInTwoSchemasIsRefused(t *testing.T) {
 
 // A table that moved and a target that did not.
 //
-// This is what a half-finished namespace move looks like, and the honest answer
-// is to skip it and say so rather than reach across into another schema. A
-// foreign key between two services' namespaces is a coupling nobody declared,
-// and adding it here would make it permanent before anyone had noticed.
-func TestAReferenceWhoseTargetDidNotTravelIsSkipped(t *testing.T) {
+// The first version of this asserted a skip: a reference whose target was in
+// another schema was refused, on the reasoning that a key across two services'
+// namespaces is a coupling nobody declared.
+//
+// The database disagreed, at the moment the schemas were actually split.
+// Twenty-two of the enforced decisions cross services — fourteen of them at
+// cattle-service's `cattle`, which a breeding cycle, a vaccination, a milk
+// session and a vet visit all name — and every one of them was a key before the
+// split and has a recorded reason. Refusing them would have dropped twenty-two
+// guarantees as a side effect of tidying the namespaces.
+//
+// So this asserts the opposite of what it used to, and the reasoning is written
+// down rather than quietly replaced: the split buys that a table name cannot
+// collide, and was never going to mean the services do not refer to each other.
+func TestAReferenceIsEnforcedAcrossSchemas(t *testing.T) {
 	ctx := context.Background()
 	conn := built(ctx, t, "refs_apart")
 
-	// cattle_ownership moves; cattle stays. The key that was there has to go
-	// with it, or the move itself would be refused.
+	// cattle_ownership moves; cattle stays. The key that was there goes with it,
+	// so that what is measured is the enforcement rather than what was already
+	// in place.
 	if _, err := conn.Exec(ctx, `
 		CREATE SCHEMA solo;
 		ALTER TABLE public.cattle_ownership DROP CONSTRAINT IF EXISTS cattle_ownership_cattle_id_fkey;
@@ -86,13 +98,26 @@ func TestAReferenceWhoseTargetDidNotTravelIsSkipped(t *testing.T) {
 	}
 
 	outcome := enforcementFor(ctx, t, conn, "cattle_ownership_cattle_id_fkey")
-	if !strings.HasPrefix(outcome, "skipped") {
-		t.Fatalf("with cattle_ownership in solo and cattle still in public, enforcement "+
-			"said %q — it has to skip rather than reach across schemas", outcome)
+	if !strings.HasPrefix(outcome, "now") {
+		t.Fatalf("with cattle_ownership in solo and cattle in public, enforcement said "+
+			"%q — the reference is declared and crossing a schema does not undeclare "+
+			"it", outcome)
 	}
-	if !strings.Contains(outcome, "solo") || !strings.Contains(outcome, "cattle") {
-		t.Errorf("the skip does not say which table in which schema could not be "+
-			"satisfied: %q", outcome)
+
+	// And it is a key, pointing where it should.
+	var target string
+	if err := conn.QueryRow(ctx, `
+		SELECT tn.nspname || '.' || t.relname
+		  FROM pg_constraint k
+		  JOIN pg_class c ON c.oid = k.conrelid
+		  JOIN pg_class t ON t.oid = k.confrelid
+		  JOIN pg_namespace tn ON tn.oid = t.relnamespace
+		 WHERE k.conname = 'cattle_ownership_cattle_id_fkey' AND c.relname = 'cattle_ownership'`,
+	).Scan(&target); err != nil {
+		t.Fatalf("the constraint enforcement reported is not there: %v", err)
+	}
+	if target != "public.cattle" {
+		t.Errorf("the key points at %s, want public.cattle", target)
 	}
 }
 

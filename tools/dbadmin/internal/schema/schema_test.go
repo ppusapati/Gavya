@@ -178,3 +178,90 @@ func repoRoot(t *testing.T) string {
 	}
 	return wd
 }
+
+// Four places put a service's tables somewhere, and they have to agree.
+//
+// tools/dbadmin's Step.Prelude is the original; deploy/postgres-init has a shell
+// namespace_of, e2e/cmd/provision has a Go copy, and the end-to-end harness has
+// another. Each is a handful of lines and none of them can import the others —
+// the init script runs inside a PostgreSQL container with no Go in it, and the
+// e2e module cannot depend on the migration tool without tying the suite's
+// ability to run to that tool's build.
+//
+// So they are compared. A service whose tables land in the wrong schema is a
+// service whose every query fails, and a service whose tables land in public
+// after somebody else's of the same name is the collision this whole split
+// exists to end — arriving silently, from an applier that was not updated.
+func TestEveryApplierPutsASchemaInTheSamePlace(t *testing.T) {
+	root := repoRoot(t)
+	perService := Step{PerService: true}
+
+	shell := readFile(t, filepath.Join(root, "deploy", "postgres-init", "00-schema-and-isolation.sh"))
+	provision := readFile(t, filepath.Join(root, "e2e", "cmd", "provision", "main.go"))
+	harness := readFile(t, filepath.Join(root, "e2e", "harness_test.go"))
+
+	schemas, err := filepath.Glob(filepath.Join(root, "services", "*", "internal", "db", "schema.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(schemas) < 20 {
+		t.Fatalf("found %d service schemas; this is not reading the repository", len(schemas))
+	}
+
+	inPublic, inOwn := 0, 0
+	for _, path := range schemas {
+		ns := NamespaceOf(path)
+		if ns == "" {
+			inPublic++
+			continue
+		}
+		inOwn++
+		// Each copy has to name the schema somewhere, in the form it builds.
+		// Crude on purpose: what is being checked is that none of the four was
+		// left behind, and a copy that stopped naming any schema at all is the
+		// failure that matters.
+		want := "CREATE SCHEMA IF NOT EXISTS"
+		for name, src := range map[string]string{
+			"deploy/postgres-init": shell,
+			"e2e/cmd/provision":    provision,
+			"e2e/harness_test.go":  harness,
+		} {
+			if !strings.Contains(src, want) {
+				t.Errorf("%s never creates a schema, so whatever it applies lands in "+
+					"public — where two services' tables of the same name silently "+
+					"become one", name)
+			}
+		}
+		if got := perService.Prelude(path); !strings.Contains(got, ns) {
+			t.Errorf("the plan's prelude for %s does not name %s: %q", path, ns, got)
+		}
+	}
+
+	// audit-service and nothing else. Its schema is one table, the audit trail,
+	// which twenty-five services write to under an unqualified name.
+	if inPublic != 1 {
+		t.Errorf("%d services have no schema of their own; exactly one should — "+
+			"audit-service, whose one table is the shared audit trail", inPublic)
+	}
+	if inOwn < 20 {
+		t.Errorf("only %d services have a schema of their own", inOwn)
+	}
+
+	// And the exception is the one named. A different service falling into
+	// public would satisfy the count above.
+	if ns := NamespaceOf(filepath.Join(root, "services", "audit-service", "internal", "db", "schema.sql")); ns != "" {
+		t.Errorf("audit-service is in %q and its table is the shared one", ns)
+	}
+	if ns := NamespaceOf(filepath.Join(root, "services", "order-service", "internal", "db", "schema.sql")); ns != "order_service" {
+		t.Errorf("order-service is in %q, want order_service", ns)
+	}
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(b)
+}

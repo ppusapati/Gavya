@@ -29,6 +29,14 @@ import (
 // things: closing it, and asking it whether the service is ready to serve.
 func Build(ctx context.Context, log *p9log.Helper) (serve.Registrar, *pgxpool.Pool, error) {
 	cfg := config.Load()
+	// public, and the only service that is.
+	//
+	// audit-service's schema is one table, audit_logs, and twenty-five services
+	// write to it through libs/integrity/audit with an unqualified name. Put it
+	// in a schema of its own and every one of those writes would have to know
+	// where it went. It is the platform's shared table rather than this
+	// service's private one, so it lives where everything can see it and this
+	// service reads it there like everybody else.
 	pool, err := tenantdb.NewPool(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return nil, nil, fmt.Errorf("audit-service: db connect: %w", err)
