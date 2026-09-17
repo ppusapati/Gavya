@@ -186,13 +186,20 @@ and it has caught more real problems than reading the code did.
 
 ## Open work
 
-In the code, none. The cross-check in
+One thing in the code, and it is not small: **order-service's invoicing has
+never worked in either deployed shape.** billing-service and order-service both
+define a table called `invoices`, differently, and both deployments put every
+service in one database. It is set out in *Twenty-eight schemas, one database*
+below, along with the check that now finds it and the decision that has to be
+made to close it.
+
+The cross-check in
 [`docs/requirements-crosscheck.md`](requirements-crosscheck.md) read the platform
 back against the three things in this repository that state what it should do and
 turned up seven items; all seven are closed, in *Two defaults that multiplied* and
 *Counting what the suite actually called* below.
 
-What is open is that **this has never run anywhere**, and that is not
+Otherwise what is open is that **this has never run anywhere**, and that is not
 a small remainder — it is most of the distance to production. Setting it out
 honestly, in the order it would hurt:
 
@@ -1917,6 +1924,101 @@ a sixth is a decision somebody should make on the same terms.
 
 ---
 
+## Twenty-eight schemas, one database
+
+This came out of planning the modulith, which was going to be a short piece of
+work: the binary already exists, mounts all twenty-eight modules behind the
+gateway's own middleware, has a Dockerfile and a compose file with one published
+port. What it turned out not to have is a database its modules can share.
+
+Both deployments put every service in one database. Every `DATABASE_URL` in
+`docker-compose.yaml` points at `dairy`; the modulith gets one `DATABASE_URL` for
+all twenty-eight of its modules; and `deploy/postgres-init` applies every
+`services/*/internal/db/schema.sql` into it in a loop.
+
+**billing-service and order-service both define a table called `invoices`, and
+they are not the same table.** billing's has `customer_id`, `reference_id`,
+`reference_type`. order's has `order_id NOT NULL REFERENCES orders(id)`.
+
+Two things made that silent. The schemas are written `CREATE TABLE IF NOT
+EXISTS`, because they have to be re-runnable — so the second definition is not an
+error, it is skipped. And `billing-service` sorts before `order-service` in the
+glob the init script loops over, so billing's table is the one that exists.
+
+Asked of a database holding all twenty-eight:
+
+```
+ERROR:  column "order_id" of relation "invoices" does not exist
+```
+
+Every write order-service makes to an invoice fails. It has never worked outside
+a test.
+
+### Why nothing caught it
+
+The end-to-end suite gives each service a database of its own — `e2e_order`,
+`e2e_billing`, `e2e_ingestion` — which is right for isolating a test and means
+the suite runs in the one arrangement where this cannot happen. Every test
+passes; the deployment is broken. The same shape as the pool arithmetic: nothing
+was wrong in any one place, and nothing anywhere put the two facts on the same
+page.
+
+### The check
+
+`tools/dbadmin/internal/schema/coexist_integration_test.go` applies each schema
+alone to a database of its own, then all of them to one database in the order the
+deployment uses, and compares the catalogues. What a service gets alone is what
+it was written against; anything it loses when it shares is a column its queries
+name and the database does not have.
+
+Not by parsing SQL. Several of these files add columns further down, past their
+`CREATE TABLE`, so a reader that stopped at the create would report columns
+missing that are there — `invoices.tax_inclusive` is one. PostgreSQL is the
+parser.
+
+The answer, across all twenty-eight: **one collision, and nothing else lost.**
+`tenant_currency` is declared by five services and `schema_migrations` by two,
+and every one of those is byte-identical, so each service gets exactly the table
+it expects. That is worth as much as finding the collision — it says the fix is
+one decision rather than a sweep.
+
+The one collision is in a `knownCollisions` map with what it costs written beside
+it, so the check can be green for everything else; a new collision next month is
+what it is for, and it cannot report one from inside a build that is already red.
+The map has to reach zero, and a second check fails if an entry outlives the
+thing it describes.
+
+### The mutant that survived
+
+Neutering the comparison — so it never reports anything lost — passed both tests.
+The first passed because every loss it should have found was explained by
+`knownCollisions`; the second passed because it did its own comparison rather
+than using the first's.
+
+So the comparison is a function now, `whatIsLost`, with a test against catalogues
+somebody made up and no database at all, and the rot check uses the same function
+rather than a second copy. The two constrain each other: with the comparison
+neutered, the rot check now fires as well, because an entry whose collision has
+apparently vanished is exactly what that check is for.
+
+Six mutants, all killed. The one worth naming is reversing the apply order:
+`billing-service` then loses four columns and `order-service` none, which is the
+mechanism stated in the failure message rather than asserted about.
+
+### What has to be decided
+
+Three ways to close it, and it is not a rename:
+
+- **A namespace per module** — `SET search_path` per pool in `tenantdb`. Modules
+  stay independent and a collision becomes impossible rather than resolved. Most
+  change, least recurrence.
+- **Rename the colliding table.** Two tables today, cheap, and the next collision
+  arrives the same silent way.
+- **Merge them** — decide whether billing and order share invoicing at all. The
+  largest change, and a domain question rather than a technical one.
+
+---
+
 ## Blocked, and has been since early on
 
 None of these can be worked around by writing more code, and each has been
@@ -1982,3 +2084,5 @@ diff.
 | The comparison in a coverage check has its own test | A version that always answered "nothing missing" would pass every run of the suite and every mutation of everything else. |
 | Five linters, each with what it found written beside it | A hundred linters across thirty-five modules is some thousands of findings, most of them style, and the end is a wall of nolint or a gate somebody turned off. |
 | The conventional error discards named one by one | A blanket exclusion also hides the two places where the error mattered. Both of those are fixed; the list is what is left. |
+| A schema check that applies the schemas rather than reading them | Several of these files add columns past their CREATE TABLE. A parser that stopped at the create would report columns missing that are there, and the first thing anybody would do with a check like that is stop believing it. |
+| One known collision, written down with what it costs | A check cannot report next month's collision from inside a build that is already red. The entry buys that, and a second check fails if it outlives the thing it describes — which is the only thing that makes such a list safe to keep. |
