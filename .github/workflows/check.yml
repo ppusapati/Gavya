@@ -37,6 +37,11 @@ jobs:
     services:
       postgres:
         image: postgres:16
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
         env:
           # No password, reachable only from this job's network. The platform's
           # own credential handling is exercised by its tests, not by the CI
@@ -45,11 +50,6 @@ jobs:
           POSTGRES_DB: postgres
         ports:
           - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
 
     steps:
       - uses: actions/checkout@v4
@@ -65,6 +65,31 @@ jobs:
           cache-dependency-path: |
             **/go.sum
             go.work.sum
+
+      - name: Give PostgreSQL the limit the platform declares
+        # Both compose files set max_connections=300, for the arithmetic
+        # TestThePoolsFitTheDatabase spells out: twenty-eight pools of
+        # tenantdb.MaxConns, plus headroom. This server was on PostgreSQL's
+        # default of 100, and the suite runs the twenty-eight services plus two
+        # modulith processes against it — which failed with "remaining connection
+        # slots are reserved for roles with the SUPERUSER attribute" from every
+        # test after the modulith started.
+        #
+        # Done this way because a service container takes no command: the setting
+        # needs a restart, so it is written and the container bounced. Ugly, and
+        # the alternative is a CI database that cannot hold what the deployment
+        # declares — which would mean the gate passes here and the platform runs
+        # out of connections in a cluster.
+        run: |
+          id="$(docker ps --filter ancestor=postgres:16 --format '{{.ID}}' | head -1)"
+          test -n "$id" || { echo "no postgres container to configure"; exit 1; }
+          docker exec "$id" psql -U postgres -c "ALTER SYSTEM SET max_connections = 300"
+          docker restart "$id"
+          for _ in $(seq 1 30); do
+            if docker exec "$id" pg_isready -U postgres >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          docker exec "$id" psql -U postgres -tAc "SHOW max_connections"
 
       - name: Install the PostgreSQL client
         # The backup round trip shells out to pg_dump, pg_dumpall, pg_restore and

@@ -80,11 +80,18 @@ func theModulith(t *testing.T) string {
 }
 
 func startTheModulith(t *testing.T) (string, error) {
+	return startAModulith(t, modulithDatabase, "", true)
+}
+
+// startAModulith builds one and runs it. shared registers it for the route
+// coverage sweep; a second instance started to measure something does not want
+// to be counted as the platform.
+func startAModulith(t *testing.T, database, poolSize string, shared bool, extraEnv ...string) (string, error) {
 	t.Helper()
 
 	// A database of its own, built the way a deployment builds one: every
 	// schema in its own namespace, the isolation sweeps, the keys.
-	owner, _ := builtFrom(t, modulithDatabase)
+	owner, _ := builtFrom(t, database)
 	seedModulithIdentity(t, owner)
 
 	root := workspaceRoot(t)
@@ -110,7 +117,7 @@ func startTheModulith(t *testing.T) (string, error) {
 	env := append(os.Environ(),
 		"SERVICE_NAME=gavya",
 		"SERVER_ADDR="+addr,
-		"DATABASE_URL="+asRole(dsn(t, modulithDatabase), "gavya_app"),
+		"DATABASE_URL="+modulithDSN(t, database, poolSize),
 		// observation-service will not start without it, and the modulith
 		// mounts observation-service.
 		"MEASUREMENT_REGIME=IN_LEGAL_METROLOGY",
@@ -122,6 +129,7 @@ func startTheModulith(t *testing.T) (string, error) {
 	for _, name := range modulithUpstreamVars(t, root) {
 		env = append(env, name+"="+base)
 	}
+	env = append(env, extraEnv...)
 
 	cmd := exec.Command(bin)
 	cmd.Env = env
@@ -130,10 +138,12 @@ func startTheModulith(t *testing.T) (string, error) {
 		return "", fmt.Errorf("start: %w", err)
 	}
 	sharedProcs = append(sharedProcs, cmd)
-	// And what it served counts towards the route coverage in coverage_test.go.
-	// Recorded by TestMain's sweep, which reads this map before killing
-	// anything.
-	sharedBaseURLs["modulith"] = base
+	if shared {
+		// And what it served counts towards the route coverage in
+		// coverage_test.go. Recorded by TestMain's sweep, which reads this map
+		// before killing anything.
+		sharedBaseURLs["modulith"] = base
+	}
 
 	deadline := time.Now().Add(60 * time.Second)
 	lastSaid := "nothing answered"
@@ -156,6 +166,25 @@ func startTheModulith(t *testing.T) (string, error) {
 		time.Sleep(200 * time.Millisecond)
 	}
 	return "", fmt.Errorf("the modulith did not become ready on %s: %s", addr, lastSaid)
+}
+
+// modulithDSN is the database URL this instance connects with.
+//
+// poolSize, when a caller gives one, becomes pool_max_conns on the DSN — which
+// tenantdb obeys, because a DSN that says something deliberate wins over the
+// platform's default. Only this harness passes one; a deployment sets nothing and
+// gets tenantdb.MaxConns.
+func modulithDSN(t *testing.T, database, poolSize string) string {
+	t.Helper()
+	d := asRole(dsn(t, database), "gavya_app")
+	if poolSize == "" {
+		return d
+	}
+	sep := "?"
+	if strings.Contains(d, "?") {
+		sep = "&"
+	}
+	return d + sep + "pool_max_conns=" + poolSize
 }
 
 // modulithUpstreamVars is every environment variable the modulith's compose file
@@ -495,5 +524,100 @@ func TestTheModulithServesEveryModuleFromOneDoor(t *testing.T) {
 		t.Errorf("the invoice names order %v and it was raised for %v — order-service's "+
 			"invoices table is the one it defines, or it is billing-service's",
 			billed["order_id"], placed["id"])
+	}
+}
+
+// What a self-call costs, measured rather than reasoned about.
+//
+// Every internal call in the modulith goes out to its own address and back —
+// deliberately, so that session verification has one implementation rather than
+// a second path only this shape uses. The plan for this shape said the hop was
+// worth measuring before deciding anything about it, and this is the
+// measurement.
+//
+// It is not latency that turns out to matter. The per-caller rate limit is
+// applied by serve.Unguarded, outside the gateway's middleware — so it runs
+// before the gateway sets X-Gavya-Client, and ratelimit.ByClient falls back to
+// the peer address. For a self-call that peer is the process itself.
+//
+// So the verifier's call is charged to a bucket of its own, keyed on the
+// loopback address, and one such call happens for every authenticated request in
+// the platform. The number below is what that costs a caller.
+func TestWhatASelfCallCostsTheRateLimit(t *testing.T) {
+	// Small on purpose, and its own instance: the harness raises the limit out
+	// of the way for every other suite, which is right — dozens of tests from
+	// one address is not a client any deployment sees — and would hide exactly
+	// what this is measuring.
+	const burst = 20
+	//
+	// One connection per module rather than tenantdb.MaxConns: this instance is
+	// counting rate-limit tokens, not measuring capacity, and a second modulith
+	// at the platform's real pool size is another two hundred and twenty-four
+	// connections. That is what took the whole suite over the test server's
+	// limit the first time this ran — "remaining connection slots are reserved"
+	// from every test after it, which is the arithmetic in
+	// TestThePoolsFitTheDatabase arriving for real.
+	base, err := startAModulith(t, "e2e_modulith_limited", "1", false,
+		"GAVYA_RATE_PER_SECOND=1", fmt.Sprintf("GAVYA_RATE_BURST=%d", burst))
+	if err != nil {
+		t.Fatalf("start a rate-limited modulith: %v", err)
+	}
+
+	anonymous := aCaller{base: base}
+	code, body := anonymous.call(t, "gavya.identity.v1.IdentityService/SignIn", map[string]string{
+		"email": modulithEmail, "password": modulithPassword, "tenant_id": modulithTenant,
+	})
+	if code != http.StatusOK {
+		t.Fatalf("SignIn: %d %v", code, body)
+	}
+	token, _ := body["session_id"].(string)
+	caller := aCaller{base: base, session: token}
+
+	// Read after read, from one caller, until something is refused. A refusal
+	// arrives as 429 either to this caller or to the verifier — and the verifier
+	// reporting one comes back as unauthenticated or unavailable, which is the
+	// more misleading of the two.
+	served := 0
+	var refusal string
+	for i := 0; i < burst*2; i++ {
+		code, body := caller.call(t, "cattle.v1.CattleService/ListCattle", map[string]any{
+			"tenant_id": modulithTenant, "limit": 1,
+		})
+		if code == http.StatusOK {
+			served++
+			continue
+		}
+		refusal = fmt.Sprintf("%d %v", code, body)
+		break
+	}
+
+	t.Logf("burst %d, one caller: %d reads served before %q", burst, served, refusal)
+
+	if served == 0 {
+		t.Fatalf("nothing was served at all, so this is measuring something else: %s", refusal)
+	}
+
+	// One token a request, and the sign-in above spent one of them — so a burst
+	// of twenty buys nineteen reads, which is what this measures.
+	//
+	// It measured nine before ratelimit.ExemptProbes stopped counting the
+	// gateway's own call to VerifySession, and then answered 503 about an
+	// identity service that was running. Two tokens a request rather than one.
+	//
+	// Exact rather than generous: at one token a second the bucket does not
+	// refill meaningfully inside a loop this short, so an off-by-one here is a
+	// real change in what a request costs and worth failing on.
+	if served < burst-1 {
+		t.Errorf("one caller got %d reads out of a burst of %d, so each authenticated "+
+			"request spends about %.1f tokens.\n"+
+			"The extra one is the gateway's own call to VerifySession. It leaves this "+
+			"process and comes back, and the limiter sits outside the middleware that "+
+			"sets X-Gavya-Client — so it keys on the loopback address, and every "+
+			"authenticated request in the platform shares that one bucket.\n"+
+			"What that means deployed: the general rate limit, which exists to bound "+
+			"one client, becomes the platform's total ceiling on authenticated "+
+			"traffic. And it fails as %q — about a process that is running, and in "+
+			"this shape is the one answering.",
+			served, burst, float64(burst)/float64(served), refusal)
 	}
 }

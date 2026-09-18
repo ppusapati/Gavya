@@ -2173,6 +2173,93 @@ every signed-in call fail at the first hurdle.
 
 ---
 
+## What a self-call costs
+
+The plan for the modulith said the loopback hops were worth measuring before
+deciding anything about them, and named latency and a possible deadlock as the
+things to look for. It was neither.
+
+Every internal call in the modulith goes out to its own address and back — on
+purpose, so that session verification has one implementation rather than a second
+path only that shape uses. The gateway makes one such call per authenticated
+request, to VerifySession.
+
+The per-caller rate limit is applied by `serve.Unguarded`, **outside** the
+gateway's middleware. So it runs before the gateway sets `X-Gavya-Client`, and
+`ratelimit.ByClient` falls back to the peer address — which for a self-call is
+the process itself. One bucket, shared by every authenticated request in the
+platform.
+
+Measured: against a burst of twenty, one caller got **nine reads**. About two
+tokens a request, the second being the verifier's.
+
+What that means deployed is that the general rate limit, which exists to bound
+one client, became the platform's total ceiling on authenticated traffic — fifty
+requests a second, against a collection path measured at 2,800.
+
+And the way it failed is worse than the ceiling. The verifier reads a 429 as the
+identity service being unreachable and answers **503, "the identity service could
+not be reached"** — about a process that is running and, in the modulith, is the
+one printing the message. An operator is sent to look at the thing that is fine.
+
+### It was never only the modulith
+
+Written down because the first reading of this was "a modulith problem", and it
+is not. In the separate-process shape the gateway calls identity-service at its
+own address, and that call arrives at identity-service's limiter keyed on the
+gateway's address — the gateway being identity-service's only client. Same single
+bucket, same ceiling, arrived at from the other direction. The modulith did not
+introduce it; it made it visible by putting both ends in one process where a
+small burst could reach it.
+
+That is reasoning rather than a second measurement, and is marked as such. The
+fix is in the shared key function, so it lands in both shapes either way.
+
+### The fix, and the one that was not taken
+
+`ratelimit.ExemptProbes` already encodes the principle: a readiness probe that
+gets a 429 turns a rate limit into an outage, so the platform does not charge
+itself for its own plumbing. VerifySession is the same shape of thing — the
+gateway talking to itself — and is now exempt beside the probes. Nineteen reads
+out of a burst of twenty afterwards, and the refusal is an honest 429 to the
+caller rather than a 503 about somebody else.
+
+Not a hole. Signing in is still limited and more strictly — identity-service
+counts failures rather than attempts on that path, and it is the step that turns a
+password into a session. What is exempt is reading a session back: one indexed
+lookup, cheaper than the readiness probe already exempt beside it, and of no use
+to anybody who does not already hold a session id.
+
+The in-process transport the plan offered as the other option is not built. It
+would have removed the hop rather than the charge, and the measurement says the
+hop itself is not what hurt: the reads were served at full speed until the limiter
+bit. It is the thing to reach for if the hop's latency ever shows up in a
+measurement, and until then it is a second code path for a problem that is fixed.
+
+One mutant, killed: charging the verifier again takes the same caller from
+nineteen reads back to nine.
+
+### And the pool arithmetic arrived for real
+
+The measurement wanted a second modulith, with its own rate limit — and a second
+modulith is another twenty-eight pools. The suite then failed with **"remaining
+connection slots are reserved for roles with the SUPERUSER attribute"** from
+every test after it started.
+
+Which is `TestThePoolsFitTheDatabase` happening rather than being asserted. Both
+compose files declare `max_connections=300` for exactly this arithmetic; the test
+servers were on PostgreSQL's default of a hundred, so the check passed while the
+thing it checks was not true where the tests run.
+
+Two things followed. The measurement instance takes one connection per module
+rather than eight, because it is counting rate-limit tokens and not measuring
+capacity. And both test databases now hold what the deployment declares — CI by
+writing the setting and bouncing the container, because a service container takes
+no command. A gate that passes against a database smaller than the one the
+platform declares is a gate that would have let this reach a cluster.
+
+---
+
 ## Blocked, and has been since early on
 
 None of these can be worked around by writing more code, and each has been
@@ -2247,3 +2334,5 @@ diff.
 | The test fixture looks at every schema; no service does | An inspecting connection seeds and reads across whatever service the test is about. Widening it does not widen the services: their pools name their own schema and public, so a query reaching somewhere else still fails there. |
 | The probes are unauthenticated at the gateway, not only at each service | The modulith puts the gateway's middleware in front of the whole mux. A liveness probe answering 501 kills the pod, so the shape that ships would have restart-looped while nothing said why. |
 | A suite that signs in, because the shape that ships makes everything else | The other harness calls services directly and asserts the tenant in a header, which is right between two services and is the one thing the modulith exists to make impossible from outside. |
+| The platform does not charge a client for its own plumbing | A readiness probe that gets a 429 turns a rate limit into an outage, and the gateway's own call to VerifySession turned one into a platform-wide ceiling of fifty requests a second — reported as an identity service that could not be reached, about a process that was running. |
+| The hop measured before the transport was rewritten | An in-process transport would have removed the hop; the measurement says the hop was not what hurt. Building it anyway would have been a second code path for a problem already fixed. |
