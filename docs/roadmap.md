@@ -2316,6 +2316,80 @@ about. That is the fourth of four mutants, and the one worth naming.
 
 ---
 
+## Re-measured, and the shape that ships measured at all
+
+The figures in `e2e/load_test.go` were taken on 15 September. Ten commits had
+touched the request path since — pool sizing, a statement timeout, an
+idle-in-transaction timeout, a span and three counters per query, a `search_path`
+per connection, and a change to what the rate limiter charges — and
+`observe.Bounds` and two alert thresholds are derived from them. A figure nobody
+has re-taken after that is a claim.
+
+Two passes at each concurrency, and the modulith measured for the first time.
+
+	booths   twenty-nine processes        modulith (one door)
+	         p50        p99      per s    p50      p99      per s
+	10       2.9-3.4    21-23    2134+    5.1ms    41.7ms   1445/s
+	25       7.4-7.6    26-68    2214+    11.2ms   51.0ms   1860/s
+	50       14.2-14.8  37-52    3130+    22.5ms   73.8ms   2002/s
+
+### The median held; the tail did not
+
+Against September, the median and the throughput are unchanged or better. The
+tail is about three times worse, and reproducibly so.
+
+The obvious suspect was the only new per-query work — a span for every query, and
+`svcclient` puts a traceparent on every call, so every query in this path has one
+to attach to. **It is not that.** With `tracing.Child` returning a no-op the p99
+is 22.8ms at ten booths and 21.8ms at twenty-five, which is what it does with the
+span in. Exonerated by measurement rather than by argument, which is the only way
+worth doing it.
+
+What is left is the machine: this one is at ninety per cent of its disk and has
+been building and running databases all day, and a p99 sitting near twenty
+milliseconds at ten booths and twenty-five alike looks like a fixed stall rather
+than contention. A write-ahead log fsync on a nearly full disk is the ordinary
+explanation. Not chased further and not claimed as fact — what is claimed is that
+it reproduces, and that the code change which could have caused it did not.
+
+The decisions taken from the older figures still hold, which is the question that
+actually mattered. Every number above is inside the dense part of the histogram,
+twenty times under `ProcedureSlow`, and four times under `RequestsPilingUp`.
+
+### What the one door costs
+
+About half again on the median and about a third of the throughput. Worth having
+as a number rather than an intuition, and it is the number it should be: every
+request in that shape is authenticated, and authenticating it means the gateway
+calling VerifySession — out of the process and back through the whole middleware
+stack, plus a session lookup, before the collection is looked at. Two
+milliseconds at the median is one in-process round trip and one indexed read.
+
+Nothing was refused and nothing accepted was lost at any concurrency in either
+shape.
+
+### And the older measurement records collections against animals that do not exist
+
+`milk_sessions.cattle_id` is one of the twenty-two references that cross
+services, and in one database it is a foreign key. The separate-shape harness
+gives each service a database of its own — right for isolating a test — so
+cattle-service's table is not in milk-service's database and the key was never
+created. Both deployments put every service in one database, where an invented
+animal is refused. The first run of the modulith measurement found this by being
+refused.
+
+So that measurement is missing one foreign-key check per insert that a deployment
+performs. Recorded rather than fixed: fixing it means one database for the whole
+harness, a much larger change that would cost every other test the isolation it
+gets today. The modulith's measurement includes the check, and is the one to read
+for what a deployment does.
+
+It is the same blind spot as the invoices collision, in a third place: the
+arrangement that makes a test easy to write is the arrangement where a class of
+failure cannot happen.
+
+---
+
 ## Blocked, and has been since early on
 
 None of these can be worked around by writing more code, and each has been
@@ -2394,3 +2468,5 @@ diff.
 | The hop measured before the transport was rewritten | An in-process transport would have removed the hop; the measurement says the hop was not what hurt. Building it anyway would have been a second code path for a problem already fixed. |
 | A scrape configuration per deployment shape, with the rules shared | A static target list is only true of the shape it names. The rules are not: they key on labels rather than on which process published a number, so one copy serves both and cannot drift. |
 | The scrape checked against the running process, not only the file | A configuration pointing at the right port proves nothing about whether the endpoint carries anything. The second check was impossible until the modulith was started at all. |
+| A performance regression attributed by measurement, not by reasoning | The per-query span was the obvious suspect and was innocent. Disabling it changed nothing, which is the only way to know — and the alternative was a plausible story that would have sent somebody to optimise the wrong thing. |
+| Both deployment shapes measured in the same hour | Two figures taken weeks apart on different machines compare the machines. The cost of the one door is only meaningful beside a number taken the same afternoon. |

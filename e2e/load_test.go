@@ -30,26 +30,76 @@
 //
 // # WHAT IT MEASURED
 //
+// Re-measured on 18 September, because the figures below were taken on the 15th
+// and ten commits had touched the request path since: pool sizing, a statement
+// timeout, an idle-in-transaction timeout, a span and three counters per query,
+// a search_path per connection, and a change to what the rate limiter charges.
+// A figure nobody has re-taken after that is a claim.
+//
 // On a four-core machine running all twenty-nine services and their PostgreSQL
-// side by side, recording one thousand collections:
+// side by side, two passes at each shape:
 //
-//	booths   p50      p99      max      throughput
-//	10       3.4ms    7.3ms    11.4ms   2787/s
-//	25       8.6ms    16.4ms   20.3ms   2796/s
-//	50       17.2ms   27.7ms   83.9ms   2334-2822/s
+//	booths   p50           p99            throughput
+//	10       2.9-3.4ms     21.2-22.8ms    2134-2496/s
+//	25       7.4-7.6ms     25.8-68.4ms    2214-2907/s
+//	50       14.2-14.8ms   36.6-52.1ms    3130-3176/s
 //
-// Throughput is flat from ten booths upward and latency rises in proportion to
-// concurrency, which is the signature of a server at its service rate rather
-// than one falling over: the box does about 2,800 collections a second and each
-// booth waits its turn. Nothing was refused and nothing accepted was lost at any
-// of these.
+// Against 15 September, which was:
 //
-// One thing worth recording because it wasted an hour. The very first run showed
-// a bimodal distribution — 95% under 25ms and 5% at 2.5 seconds — which looked
-// like a fixed timer somewhere. It was not reproducible: it was cold start, with
-// the databases being created and every cache empty. The lesson is the one this
-// repository keeps relearning, that a single measurement is an anecdote; the
-// second and third runs are what made this a baseline.
+//	10       3.4ms         7.3ms          2787/s
+//	25       8.6ms         16.4ms         2796/s
+//	50       17.2ms        27.7ms         2334-2822/s
+//
+// The median and the throughput are unchanged or better. The tail is about three
+// times worse and noisier, reproducibly.
+//
+// # THE TAIL, AND WHAT IT IS NOT
+//
+// The obvious suspect was the only new per-query work: libs/integrity/tenantdb
+// records a span for every query now, and svcclient puts a traceparent on every
+// call, so every query in this path has one to attach to.
+//
+// It is not that. Measured with tracing.Child returning a no-op — p99 22.8ms at
+// ten booths and 21.8ms at twenty-five, which is what it does with the span in.
+// The span is exonerated by measurement rather than by argument.
+//
+// What is left is the machine. This one is at ninety per cent of its disk and has
+// been building and running databases all day; the one on the 15th was clean. A
+// p99 that sits near twenty milliseconds at ten booths and at twenty-five alike
+// looks like a fixed stall rather than contention, and a write-ahead log fsync on
+// a nearly full disk is the ordinary explanation. Not chased further, and not
+// claimed as fact: what is claimed is that it reproduces, and that the code
+// change that could have caused it did not.
+//
+// The decisions taken from the older figures still hold, which is the question
+// that actually mattered. observe.Bounds is dense from one millisecond to a tenth
+// of a second and runs to five seconds; ProcedureSlow fires above a second at the
+// ninety-ninth percentile; RequestsPilingUp above two hundred in flight. Every
+// number above is inside the dense part of the histogram, twenty times under the
+// latency threshold, and four times under the concurrency one.
+//
+// # WHAT THIS SHAPE CANNOT MEASURE
+//
+// It records collections against animals that do not exist.
+//
+// milk_sessions.cattle_id is one of the twenty-two references that cross services,
+// and in one database it is a foreign key. This harness gives each service a
+// database of its own — right for isolating a test — so cattle-service's table is
+// not in milk-service's database and the key was never created. Both deployments
+// put every service in one database, where an invented animal is refused.
+//
+// So this measurement is missing one foreign-key check per insert that a
+// deployment performs. Recorded rather than fixed: fixing it means one database
+// for the whole harness, which is a much larger change and would cost every other
+// test the isolation it currently gets. The measurement in modulith_load_test.go
+// does include the check, and is the one to read for what a deployment does.
+//
+// One thing worth recording because it wasted an hour, on the first measurement.
+// The very first run showed a bimodal distribution — 95% under 25ms and 5% at 2.5
+// seconds — which looked like a fixed timer somewhere. It was not reproducible:
+// it was cold start, with the databases being created and every cache empty. The
+// lesson is the one this repository keeps relearning, that a single measurement
+// is an anecdote; it is why everything above is two passes.
 //
 // Two things it does not measure, and both are deliberate. The rate limiter is
 // raised out of the way by the harness, because the question here is where the
