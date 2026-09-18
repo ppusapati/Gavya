@@ -2457,6 +2457,38 @@ daemon.
 
 ---
 
+## The pipeline has never run
+
+Written immediately after the section above, on looking at what the push
+actually did.
+
+Continuous integration was added on 14 September — *"a check that depends on
+being remembered stops happening the week everyone is busy"* — and has produced
+fifteen runs since. Every one of them failed. Each failed between three and forty
+seconds after it was created, with no step ever recorded, no log to download, an
+empty check output, and `runner_id: 0` with an empty runner name: no runner was
+ever allocated to any job. Whatever the cause — it is an account-level setting
+and not something in this repository — the workflow file has never executed a
+line.
+
+So everything that has been said here about CI is a description of a file. The
+gate has run before every commit on this branch, but it has run on this machine,
+because somebody remembered. That is precisely the arrangement the workflow was
+added to replace, and the replacement has been decorative for four days while
+fifteen red crosses accumulated where nobody was looking.
+
+It matters most for the section above it. The images have still never been built.
+The three static checks are real and run in the gate; the build is written, is
+the only thing that can answer the question, and has not happened. This is being
+recorded as a claim that is not yet backed rather than quietly left to read as
+one that is.
+
+The shape of it is the oldest defect class in this document, in the place with
+the least excuse: a control that reports success while doing nothing. Here it did
+not even report success. Nobody looked.
+
+---
+
 ## Blocked, and has been since early on
 
 None of these can be worked around by writing more code, and each has been
@@ -2541,3 +2573,4 @@ diff.
 | A bare go.mod for the test suite and the operator tools | They are listed in go.work, so the build will not start without them, and their code has no business in a release image. The module graph needs the go.mod and nothing else. |
 | Images built by a glob, on every push | The gate compiles a package; an image also has to say which files it needs. A list of thirty names in YAML is a list to forget, and what gets forgotten is the image added last. |
 | EXPOSE read from libs/integrity/ports | It is documentation except to `docker run -P`, which publishes it. Three said 8103 because they were copied from procurement-service, and the one place those numbers live already existed. |
+| A CI result looked at, not assumed | Fifteen runs, all failed, none allocated a runner, over four days in which the pipeline was described here as running the gate. A check nobody reads is worth what a check nobody wrote is worth. |
