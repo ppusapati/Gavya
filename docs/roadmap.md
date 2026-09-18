@@ -2260,6 +2260,62 @@ platform declares is a gate that would have let this reach a cluster.
 
 ---
 
+## The shape that ships was not watched
+
+Everything in `deploy/monitoring` — thirteen alert rules, the request histogram,
+the pool gauges, the query counters, the outbox and audit-chain watchers — was
+read in the twenty-nine container shape and in Kubernetes, and in neither case by
+the modulith. `docker-compose.modulith.yaml` had two services, `postgres` and
+`gavya`. No Prometheus. No Jaeger. `GAVYA_TRACE_ENDPOINT` unset.
+
+So the shape that ships served `/metrics` into nothing and recorded no spans —
+and `/metrics` was behind the front door until earlier the same week, which means
+it had never been readable there at all.
+
+This repository already has the rule and applies it to defences: a thing present
+only in the deployment nobody runs is not a weaker version of it, it is none. It
+had not been applied to the monitoring.
+
+### Two files, each true
+
+`deploy/monitoring/prometheus.modulith.yml`, rather than another job in the
+existing one. That file is a static list of twenty-nine container names: a job
+naming `gavya` would be permanently down in that shape, and those twenty-nine
+would be permanently down in this one. One file per shape, each true about its
+own deployment, is better than one file wrong about whichever is running.
+
+The alert rules are shared, not copied. Every rule in `alerts.yml` keys on the
+`job` and `procedure` labels rather than on which process published a number, so
+"this procedure is failing for one call in twenty" means the same thing whether
+the procedure is served by one of twenty-nine processes or by one of twenty-eight
+modules in a single one. The job name is load-bearing and is checked:
+`ServiceDown` selects `up{job=~"gavya-.*"}`, and a job called anything else is a
+target Prometheus scrapes and no alert watches — scraped and unwatched, which
+from outside looks exactly like watched.
+
+Tracing is on there now too, which is where it is worth most: every internal call
+in that shape is a loopback hop through the whole middleware stack, and a trace
+is the only thing that shows it.
+
+### And what the scrape actually gets
+
+The configuration being right and the endpoint carrying anything are two claims,
+so both are checked — the second against the running process, which is only
+possible since the modulith started being started.
+
+It asserts every metric family the alert rules name, the procedure label on a
+call just made, and the number that matters most here: **224**. Twenty-eight
+modules at `tenantdb.MaxConns` each, summed.
+
+That summing exists because of this shape. `observe.Publish` is keyed by name, so
+a gauge per pool would have left the twenty-eighth module silently the only one
+reported — and it was written, and unit-tested, for a deployment nothing had ever
+run. Taking it out now makes the process report eight connections while holding
+two hundred and twenty-four, against a server limit this platform does arithmetic
+about. That is the fourth of four mutants, and the one worth naming.
+
+---
+
 ## Blocked, and has been since early on
 
 None of these can be worked around by writing more code, and each has been
@@ -2336,3 +2392,5 @@ diff.
 | A suite that signs in, because the shape that ships makes everything else | The other harness calls services directly and asserts the tenant in a header, which is right between two services and is the one thing the modulith exists to make impossible from outside. |
 | The platform does not charge a client for its own plumbing | A readiness probe that gets a 429 turns a rate limit into an outage, and the gateway's own call to VerifySession turned one into a platform-wide ceiling of fifty requests a second — reported as an identity service that could not be reached, about a process that was running. |
 | The hop measured before the transport was rewritten | An in-process transport would have removed the hop; the measurement says the hop was not what hurt. Building it anyway would have been a second code path for a problem already fixed. |
+| A scrape configuration per deployment shape, with the rules shared | A static target list is only true of the shape it names. The rules are not: they key on labels rather than on which process published a number, so one copy serves both and cannot drift. |
+| The scrape checked against the running process, not only the file | A configuration pointing at the right port proves nothing about whether the endpoint carries anything. The second check was impossible until the modulith was started at all. |

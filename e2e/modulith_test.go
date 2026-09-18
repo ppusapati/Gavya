@@ -38,7 +38,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -48,6 +50,7 @@ import (
 
 	"github.com/ppusapati/gavya/libs/integrity/authz"
 	"github.com/ppusapati/gavya/libs/integrity/credential"
+	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
 )
 
 const (
@@ -620,4 +623,119 @@ func TestWhatASelfCallCostsTheRateLimit(t *testing.T) {
 			"this shape is the one answering.",
 			served, burst, float64(burst)/float64(served), refusal)
 	}
+}
+
+// What the scrape would actually get.
+//
+// deploy/monitoring/prometheus.modulith.yml points at this process and
+// gateway-service's tests check that it points at the right port with the right
+// job name. That is the configuration being right; whether the endpoint carries
+// anything is a different claim, and the one that matters.
+//
+// It matters here more than anywhere. libs/integrity/tenantdb/watch.go sums the
+// pool statistics across every pool in the process, and the reason written there
+// is the modulith — observe.Publish is keyed by name, so a gauge per pool would
+// leave the twenty-eighth module silently the only one reported. That summing
+// was written for a shape nothing had ever started.
+func TestTheModulithPublishesWhatTheScrapeReads(t *testing.T) {
+	caller := signedIn(t)
+
+	// Some traffic, so the per-procedure counters have something in them.
+	caller.call2xx(t, "cattle.v1.CattleService/ListCattle", map[string]any{
+		"tenant_id": modulithTenant, "limit": 5,
+	})
+
+	resp, err := http.Get(theModulith(t) + "/metrics")
+	if err != nil {
+		t.Fatalf("scrape the modulith: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("the metrics endpoint answered %d — Prometheus would read the whole "+
+			"platform as down", resp.StatusCode)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(raw)
+
+	// Every family the alert rules name, from one endpoint.
+	for _, name := range []string{
+		"gavya_requests_total",
+		"gavya_request_duration_seconds_bucket",
+		"gavya_requests_in_flight",
+		"gavya_uptime_seconds",
+		"gavya_db_pool_max_conns",
+		"gavya_db_pool_acquired_conns",
+		"gavya_db_pool_empty_acquires_total",
+		"gavya_db_queries_total",
+	} {
+		if !strings.Contains(body, "\n"+name+" ") && !strings.Contains(body, "\n"+name+"{") {
+			t.Errorf("%s is not on the modulith's metrics endpoint, so the alert that "+
+				"names it would evaluate to no data forever", name)
+		}
+	}
+
+	// The procedure that was just called, by name. A counter with no procedure
+	// labels is a counter that would satisfy the check above and tell nobody
+	// which module is failing.
+	if !strings.Contains(body, `procedure="cattle.v1.CattleService/ListCattle"`) {
+		t.Error("the request counters carry no label for a procedure that was just " +
+			"called, so ProceduresFailing could never name one")
+	}
+
+	// And the summing, which is the thing this shape exists to exercise.
+	//
+	// Twenty-eight modules, each with a pool of tenantdb.MaxConns, in one
+	// process. A gauge reporting one pool's eight would look perfectly healthy
+	// and would be under-reporting the process by a factor of twenty-eight —
+	// against a server limit this platform now does arithmetic about.
+	max := metricValue(t, body, "gavya_db_pool_max_conns")
+	modules := float64(len(modulithModules(t)))
+	if want := modules * float64(tenantdb.MaxConns); max != want {
+		t.Errorf("the process reports it may hold %v connections; %v modules at %d each "+
+			"is %v. A gauge that reports one pool rather than the sum reads as healthy "+
+			"while the process is holding twenty-eight times what it says.",
+			max, modules, tenantdb.MaxConns, want)
+	}
+}
+
+// metricValue reads one unlabelled metric off a scrape.
+func metricValue(t *testing.T, body, name string) float64 {
+	t.Helper()
+	for _, line := range strings.Split(body, "\n") {
+		got, rest, ok := strings.Cut(strings.TrimSpace(line), " ")
+		if !ok || got != name {
+			continue
+		}
+		v, err := strconv.ParseFloat(strings.TrimSpace(rest), 64)
+		if err != nil {
+			t.Fatalf("%s is %q, which is not a number", name, rest)
+		}
+		return v
+	}
+	t.Fatalf("%s is not on the endpoint", name)
+	return 0
+}
+
+// modulithModules is the list of modules the binary mounts, read out of its own
+// source rather than counted here — a number written in two places is a number
+// that stops agreeing.
+func modulithModules(t *testing.T) []string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(workspaceRoot(t), "services", "modulith", "cmd", "server", "main.go"))
+	if err != nil {
+		t.Fatalf("read the modulith's module list: %v", err)
+	}
+	found := regexp.MustCompile(`\{"([a-z-]+-service)",\s+\w+\.Build\}`).FindAllStringSubmatch(string(b), -1)
+	if len(found) < 20 {
+		t.Fatalf("read %d modules out of the modulith's source; there are twenty-eight, "+
+			"so the pattern has stopped matching", len(found))
+	}
+	var names []string
+	for _, m := range found {
+		names = append(names, m[1])
+	}
+	return names
 }

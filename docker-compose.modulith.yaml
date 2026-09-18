@@ -202,10 +202,68 @@ services:
       # the kind of setting that reaches production because nobody had to think
       # about it.
       CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-}"
+
+      # Where spans go.
+      #
+      # Unset until now, which meant the shape that ships was the one shape with
+      # tracing switched off — and it is the shape where a trace is most worth
+      # having, because every internal call is a loopback hop through the whole
+      # middleware stack and a trace is the only thing that shows it.
+      #
+      # Empty is still a supported deployment: libs/integrity/tracing builds no
+      # exporter without an endpoint and the platform is complete without one.
+      GAVYA_TRACE_ENDPOINT: "${GAVYA_TRACE_ENDPOINT:-http://jaeger:4318/v1/traces}"
     depends_on:
       postgres:
         condition: service_healthy
     restart: unless-stopped
 
+  # What reads the numbers this shape publishes.
+  #
+  # It had none. The whole of deploy/monitoring — thirteen alert rules, the
+  # request histogram, the pool gauges, the outbox and audit-chain watchers —
+  # was scraped in the twenty-nine container shape and in Kubernetes, and not
+  # here. The modulith served /metrics into nothing.
+  #
+  # Which is this repository's own rule about the modulith, pointed at
+  # monitoring rather than at defences: a thing present only in the deployment
+  # nobody runs is not a weaker version of it, it is none.
+  #
+  # Its own configuration file, because prometheus.yml is a static list of
+  # twenty-nine container names that do not exist here. The alert rules are
+  # shared: they key on labels rather than on which process published a number.
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    ports:
+      # Loopback only, like the database. A metrics endpoint carries procedure
+      # names and counts, which is a map of the platform to anybody who asks.
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./deploy/monitoring/prometheus.modulith.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+    depends_on:
+      - gavya
+    restart: unless-stopped
+
+  # Where the spans above land.
+  #
+  # all-in-one: a collector, a store and a viewer in one container, which is the
+  # right shape for a single-host install and the wrong one for anything holding
+  # traces somebody will need next week. Point GAVYA_TRACE_ENDPOINT at a real
+  # collector and delete this.
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    ports:
+      - "127.0.0.1:16686:16686"
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    restart: unless-stopped
+
 volumes:
   postgres_data:
+  prometheus_data:

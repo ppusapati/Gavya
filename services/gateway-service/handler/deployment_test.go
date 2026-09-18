@@ -1811,3 +1811,129 @@ func gaugesServicesPublish(t *testing.T, root string) map[string]bool {
 	}
 	return out
 }
+
+// And the third shape, which had nothing at all.
+//
+// TestEveryServiceIsScrapedInBothShapes means compose and Kubernetes. The
+// modulith is neither: its compose file had two services, `postgres` and
+// `gavya`, and no Prometheus — so every alert rule, the request histogram, the
+// pool gauges and the two quiet-failure watchers existed for the twenty-nine
+// container shape and not for the one that ships. The modulith served /metrics
+// into nothing.
+//
+// That is this repository's own rule about the modulith, pointed at monitoring
+// rather than at defences: a thing present only in the deployment nobody runs is
+// not a weaker version of it, it is none.
+//
+// RUN WITH -count=1, as with everything in this file: the compose files and the
+// scrape configurations sit outside this module and Go's test cache does not
+// track them.
+func TestTheModulithIsScrapedAndItsAlertsApply(t *testing.T) {
+	root := repoRoot(t)
+
+	var prom struct {
+		RuleFiles     []string `yaml:"rule_files"`
+		ScrapeConfigs []struct {
+			JobName       string `yaml:"job_name"`
+			StaticConfigs []struct {
+				Targets []string `yaml:"targets"`
+			} `yaml:"static_configs"`
+		} `yaml:"scrape_configs"`
+	}
+	b, err := os.ReadFile(filepath.Join(root, "deploy", "monitoring", "prometheus.modulith.yml"))
+	if err != nil {
+		t.Fatalf("read the modulith's scrape configuration: %v\n"+
+			"Without it the shape that ships publishes metrics that nothing reads.", err)
+	}
+	if err := yaml.Unmarshal(b, &prom); err != nil {
+		t.Fatalf("it is not valid YAML, so Prometheus would not start: %v", err)
+	}
+	if len(prom.ScrapeConfigs) != 1 {
+		t.Fatalf("%d scrape jobs; the modulith is one process and wants one",
+			len(prom.ScrapeConfigs))
+	}
+	job := prom.ScrapeConfigs[0]
+
+	// The job name is load-bearing. ServiceDown selects up{job=~"gavya-.*"}, so
+	// a job called anything else is a target Prometheus scrapes and no alert
+	// watches — scraped and unwatched, which looks exactly like watched.
+	if !strings.HasPrefix(job.JobName, "gavya-") {
+		t.Errorf("the job is called %q. The alert rules select job=~\"gavya-.*\", so "+
+			"nothing in alerts.yml would ever fire for it.", job.JobName)
+	}
+
+	// The rules are shared rather than copied, or the two shapes drift and the
+	// one that ships is the one that drifts unnoticed.
+	sharedRules := false
+	for _, f := range prom.RuleFiles {
+		if strings.HasSuffix(f, "alerts.yml") {
+			sharedRules = true
+		}
+	}
+	if !sharedRules {
+		t.Error("the modulith's Prometheus loads no alerts.yml, so it collects numbers " +
+			"and warns nobody")
+	}
+
+	// The target is the container and the port it listens on, read out of the
+	// compose file — the same comparison, and for the same reason, as the one
+	// the twenty-nine-container shape gets above.
+	compose, err := os.ReadFile(filepath.Join(root, "docker-compose.modulith.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var modulith struct {
+		Services map[string]struct {
+			Environment map[string]string `yaml:"environment"`
+			Volumes     []string          `yaml:"volumes"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(compose, &modulith); err != nil {
+		t.Fatalf("the modulith compose file is not valid YAML: %v", err)
+	}
+
+	app, ok := modulith.Services["gavya"]
+	if !ok {
+		t.Fatal("no service called gavya in docker-compose.modulith.yaml")
+	}
+	addr := app.Environment["SERVER_ADDR"]
+	want := "gavya:" + strings.TrimPrefix(addr, ":")
+	var targets []string
+	for _, sc := range job.StaticConfigs {
+		targets = append(targets, sc.Targets...)
+	}
+	if len(targets) != 1 || targets[0] != want {
+		t.Errorf("the scrape targets %v and gavya listens on %s inside the compose "+
+			"network; a scrape of the wrong port fails quietly and reads as down",
+			targets, want)
+	}
+
+	// Prometheus has to be in the file, with both configurations mounted.
+	scraper, ok := modulith.Services["prometheus"]
+	if !ok {
+		t.Fatal("docker-compose.modulith.yaml defines no prometheus, so nothing reads " +
+			"what the modulith publishes")
+	}
+	for _, needed := range []string{"prometheus.modulith.yml", "alerts.yml"} {
+		mounted := false
+		for _, v := range scraper.Volumes {
+			if strings.Contains(v, needed) {
+				mounted = true
+			}
+		}
+		if !mounted {
+			t.Errorf("prometheus does not mount %s, so it starts without it", needed)
+		}
+	}
+
+	// And spans have somewhere to go. Unset until this was written, which made
+	// the shape that ships the one shape with tracing switched off — in the
+	// shape where a trace is worth most, because every internal call is a
+	// loopback hop and a trace is the only thing that shows it.
+	if endpoint := app.Environment["GAVYA_TRACE_ENDPOINT"]; endpoint == "" {
+		t.Error("gavya has no GAVYA_TRACE_ENDPOINT, so the modulith records no spans")
+	} else if _, ok := modulith.Services["jaeger"]; !ok && strings.Contains(endpoint, "jaeger") {
+		t.Errorf("GAVYA_TRACE_ENDPOINT is %q and this file defines no jaeger, so every "+
+			"span is exported to nothing", endpoint)
+	}
+}

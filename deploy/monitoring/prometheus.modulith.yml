@@ -1,0 +1,52 @@
+# What scrapes the platform when it is one process.
+#
+# A second file rather than a second job in prometheus.yml, and the reason is
+# what that file is: a static list of twenty-nine container names. A job naming
+# `gavya` would be permanently down in the separate shape, and the twenty-nine
+# jobs would be permanently down in this one. Two files, each true about the
+# deployment it belongs to, is better than one file that is wrong about
+# whichever shape is running.
+#
+# The rules are shared. deploy/monitoring/alerts.yml is mounted by both, and
+# every rule in it keys on the `job` and `procedure` labels rather than on which
+# service published a number — so "this procedure is failing for one call in
+# twenty" means the same thing whether the procedure is served by one of
+# twenty-nine processes or by one of twenty-eight modules in a single one.
+#
+# THE JOB NAME MATTERS
+#
+# ServiceDown selects `up{job=~"gavya-.*"}`. A job called anything else is a
+# target Prometheus scrapes and no alert watches — which is the shape of failure
+# this whole directory exists to prevent, and the test in
+# services/gateway-service/handler checks it.
+#
+# THE PORT IS THE CONTAINER PORT
+#
+# 8080, the same as every service in the other file, and for the same reason
+# written out at length there: Prometheus runs inside the compose network and
+# reaches a container by its name on the port it listens on, not on whatever is
+# published to the host. The modulith publishes 8080 to the host as well, which
+# makes the two happen to agree here — and agreeing by coincidence is exactly how
+# the other file was wrong the first time.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    platform: gavya
+    shape: modulith
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  # One target, and it is the whole platform.
+  #
+  # Every module's numbers come out of this one endpoint, because they share a
+  # process: the request counters carry the procedure that was called, and the
+  # pool gauges are summed over the twenty-eight pools the process holds. That
+  # summing is deliberate and is documented in libs/integrity/tenantdb/watch.go —
+  # observe.Publish is keyed by name, so a gauge per pool would silently report
+  # only the last module to register one.
+  - job_name: gavya-modulith
+    static_configs:
+      - targets: ['gavya:8080']
