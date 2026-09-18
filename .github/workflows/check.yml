@@ -159,3 +159,50 @@ jobs:
             ( cd "$dir" && govulncheck ./... ) || fail=1
           done
           exit $fail
+
+  images:
+    name: docker build
+    runs-on: ubuntu-24.04
+    # The Rust images compile the ML workspace with link-time optimisation and
+    # one codegen unit, and thirty Go images compile a thirty-five module
+    # workspace. Generous for the same reason the gate's is.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build every image the deployments reference
+        # Nothing had ever built one of these. `go build` in the gate stood in
+        # for it, and the two are not the same claim: the gate compiles a
+        # package, an image also has to say which files it needs and where they
+        # sit. services/modulith/Dockerfile — the shape that ships — copied
+        # go.work and none of the three modules go.work lists, so it stopped at
+        # the first instruction. It had been that way since it was written.
+        #
+        # A glob rather than a list, because a list is a thing to forget: a
+        # thirty-first service with a Dockerfile is built here the day it
+        # appears.
+        run: |
+          fail=0
+          for f in services/*/Dockerfile; do
+            svc="$(basename "$(dirname "$f")")"
+            echo "::group::$svc"
+            docker build -f "$f" -t "gavya/$svc:ci" . || fail=1
+            echo "::endgroup::"
+          done
+          for d in ml/*/; do
+            crate="$(basename "$d")"
+            grep -q '^\[\[bin\]\]' "$d/Cargo.toml" 2>/dev/null || continue
+            echo "::group::$crate"
+            docker build -f ml/Dockerfile --build-arg "SERVICE=$crate" \
+              -t "gavya/$crate:ci" ml || fail=1
+            echo "::endgroup::"
+          done
+          exit $fail
+
+      - name: Say what each image listens on and what it weighs
+        # Not a check — the checks are in Go, beside the rest of the deployment
+        # ones. This is so that a person reading a failed run can see whether
+        # the image they are looking at is the size they expect, which is the
+        # first thing anybody asks of a distroless build.
+        if: always()
+        run: docker images --filter 'reference=gavya/*:ci' --format 'table {{.Repository}}\t{{.Size}}'

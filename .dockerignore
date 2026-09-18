@@ -1,0 +1,26 @@
+# What does not go into an image build.
+#
+# Thirty Dockerfiles build from this directory as their context, and a context is
+# sent to the daemon in full before the first COPY is read. Without this file
+# that meant .git — half a gigabyte, and the gate clones it in full because the
+# schema upgrade test needs the history — and ml/target, a gigabyte of Rust
+# build output, thirty times over.
+#
+# It lists what is not in any image rather than what is, because the failure of
+# the other arrangement is silent: a new directory nobody adds to the allow list
+# is one the build cannot see, and the error arrives as a missing package.
+.git
+.github
+backups
+secrets
+
+# The ML tier is its own language and its own image. It builds from ./ml with
+# its own .dockerignore, so excluding it here costs those images nothing and
+# keeps it out of the thirty that do not use it.
+ml
+
+# Left behind by a test run or a build in a service directory. Neither is copied
+# by any Dockerfile, and both are large.
+e2e/provision
+services/*/server
+services/*/cmd/server/server

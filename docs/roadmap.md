@@ -2390,6 +2390,73 @@ failure cannot happen.
 
 ---
 
+## Thirty images, none of which had been built
+
+`go build` had stood in for building an image for as long as there had been
+images. Nothing on a developer's machine has a Docker daemon, nothing in CI ran
+`docker build`, and the two compose files and the Kubernetes manifests all named
+images nobody had ever produced. That is a claim about the deployment resting on
+a check of something else.
+
+The workflow builds them now — every `services/*/Dockerfile` by glob, and the
+four Rust images, on every push. A glob rather than a list of thirty names,
+because the name forgotten in a list is the one added last.
+
+Three things fell out of it, in ascending order of seriousness.
+
+**The one that could not build was the one that ships.**
+`services/modulith/Dockerfile` copies `go.work`, which lists `./e2e`,
+`./tools/amcu` and `./tools/dbadmin`, and copied none of them. Its first
+instruction stopped at *cannot load module ../../e2e listed in go.work file*. It
+had been that way since the file was written. Twenty-nine images built and the
+thirtieth did not, and the thirtieth is the single deployable — which had by then
+been started, load-tested, scraped and traced, all from `go run`.
+
+**The other twenty-nine built the wrong thing.** Each copied `pkg`, `libs` and
+its own directory and built the module on its own, with no workspace. A binary
+comes out. It is not the binary anybody tested. Minimal version selection
+resolves across every module in a workspace together, so a module resolved alone
+takes only what its own `go.mod` requires, and on `gateway-service` that was:
+
+| | module alone | workspace, which is what the gate tests |
+|---|---|---|
+| `github.com/jackc/pgx/v5` | v5.7.6 | v5.10.0 |
+| `golang.org/x/crypto` | v0.38.0 | v0.56.0 |
+| `connectrpc.com/connect` | v1.19.1 | v1.20.0 |
+| `golang.org/x/net` | v0.40.0 | v0.58.0 |
+
+The database driver, the library that hashes every password, the transport every
+procedure is served over, and the HTTP/2 stack. Both graphs are valid; one of
+them had never had a test run against it, and it was the one in the images. Every
+Dockerfile now copies `go.work`, `go.work.sum`, and enough of every module the
+workspace lists for the graph to load — sources for what it compiles, a bare
+`go.mod` for `e2e` and the two tools, which are the test suite and the operator
+tools and have no business in a release image.
+
+**Four images published a port nothing was listening on.** `EXPOSE` is
+documentation, except to `docker run -P`, which publishes what the image
+declares. `laboratory`, `material` and `settlement` all said 8103 because they
+were copied from `procurement-service`; the modulith said 8080 while its binary
+defaults to the gateway's 8000, because it reads the gateway's configuration.
+`libs/integrity/ports` already existed as the one place these numbers live, for
+exactly this reason, and the Dockerfiles were not reading it. Now a test does.
+
+There is also a `.dockerignore`, which there was not. Thirty builds from the
+repository root, and a context goes to the daemon in full before the first `COPY`
+is read: half a gigabyte of `.git` — cloned in full, because the schema upgrade
+test needs the history — and a gigabyte of Rust build output, thirty times over.
+
+None of this is visible from a passing gate, and that is the point of it. The
+gate compiles a package; an image also has to say which files it needs and where
+they sit, and nothing had ever asked. Four checks now hold it: that every
+Dockerfile carries the workspace it was tested with, that `EXPOSE` agrees with
+`ports`, that the ignore file excludes nothing an image copies, and that CI
+builds all of them. The first three run anywhere. The fourth is the only one that
+can answer the question that started this, and it can only run where there is a
+daemon.
+
+---
+
 ## Blocked, and has been since early on
 
 None of these can be worked around by writing more code, and each has been
@@ -2470,3 +2537,7 @@ diff.
 | The scrape checked against the running process, not only the file | A configuration pointing at the right port proves nothing about whether the endpoint carries anything. The second check was impossible until the modulith was started at all. |
 | A performance regression attributed by measurement, not by reasoning | The per-query span was the obvious suspect and was innocent. Disabling it changed nothing, which is the only way to know — and the alternative was a plausible story that would have sent somebody to optimise the wrong thing. |
 | Both deployment shapes measured in the same hour | Two figures taken weeks apart on different machines compare the machines. The cost of the one door is only meaningful beside a number taken the same afternoon. |
+| The image built from the workspace, not from the module | A module resolved alone links pgx v5.7.6 and x/crypto v0.38.0 while the gate tests v5.10.0 and v0.56.0. Both graphs are valid. Only one of them has ever had a test run against it. |
+| A bare go.mod for the test suite and the operator tools | They are listed in go.work, so the build will not start without them, and their code has no business in a release image. The module graph needs the go.mod and nothing else. |
+| Images built by a glob, on every push | The gate compiles a package; an image also has to say which files it needs. A list of thirty names in YAML is a list to forget, and what gets forgotten is the image added last. |
+| EXPOSE read from libs/integrity/ports | It is documentation except to `docker run -P`, which publishes it. Three said 8103 because they were copied from procurement-service, and the one place those numbers live already existed. |
