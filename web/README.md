@@ -39,10 +39,21 @@ npm install
 npm run dev          # http://localhost:5173
 ```
 
-Open the workspace and set the gateway, the tenant and your name — Phase-1 has no
-sign-in, so the tenant decides what is visible and your name is what is written
-into the audit trail of every resolution you record. They are remembered per
-browser.
+Open the workspace, set the gateway and sign in. The tenant you act for, what you
+may do, and the name written into the audit trail of every resolution all come
+from the session — none of them is something the browser states. The gateway
+decides the tenant from the session and strips any tenant arriving with a
+request, so a console that claimed one would be ignored at best.
+
+The gateway and the session are remembered per browser; the password is not.
+
+> This used to read "Phase-1 has no sign-in, so the tenant decides what is
+> visible". That was true when the console was written and stopped being true
+> when authorisation was added, and nobody came back here. In between, the
+> console sent a tenant header the gateway does not read and no credential at
+> all, so every screen in it answered 401. The check that now fails if either
+> client stops sending a credential is in
+> `services/gateway-service/handler/clients_auth_test.go`.
 
 If the workspace is served from an origin other than the gateway's, the gateway
 must be told to accept it:

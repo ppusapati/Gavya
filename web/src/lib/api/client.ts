@@ -81,7 +81,13 @@ const STATUS_TO_CODE: Record<number, ConnectCode> = {
 };
 
 export interface CallOptions {
-	tenantId: string;
+	/**
+	 * The session this call is made under, as returned by SignIn.
+	 *
+	 * Sent as `Authorization: Bearer`, which is the only thing the gateway reads
+	 * to decide who is calling. Optional because sign-in itself cannot have one.
+	 */
+	session?: string;
 	/** Correlates this call with the server's logs. */
 	requestId?: string;
 	signal?: AbortSignal;
@@ -122,14 +128,24 @@ export class ApiClient {
 
 		let response: Response;
 		try {
+			// The gateway decides the tenant from the session and asserts it
+			// downstream itself; it strips the header it asserts from anything
+			// arriving. So a tenant sent from here is not a routing fact, it is an
+			// attempted claim, and it used to be the only thing this client sent.
+			//
+			// What it did not send was a credential, so every call the console made
+			// came back 401 from the day authorisation was added. The header it did
+			// send was inert: the gateway reads X-Gavya-Tenant, not X-Tenant-ID.
+			const headers: Record<string, string> = {
+				'Content-Type': 'application/json',
+				Accept: 'application/json',
+				'X-Request-ID': opts.requestId ?? newRequestId()
+			};
+			if (opts.session) headers.Authorization = `Bearer ${opts.session}`;
+
 			response = await doFetch(url, {
 				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-					Accept: 'application/json',
-					'X-Tenant-ID': opts.tenantId,
-					'X-Request-ID': opts.requestId ?? newRequestId()
-				},
+				headers,
 				body: JSON.stringify(body),
 				signal
 			});

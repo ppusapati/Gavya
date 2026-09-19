@@ -81,6 +81,48 @@ done
 
 step "vet e2e (build-tagged)" bash -c "cd '$ROOT/e2e' && go vet -tags e2e ./..."
 
+# The supervisor's console, which nothing compiled.
+#
+# The gate ran thirty-five Go modules and the Rust workspace, and never once
+# built or typechecked either client. The two are compared against the platform
+# by clients_test.go — procedure names, package prefixes, field names — and that
+# comparison reads them as text, so it would go on passing against a console
+# that does not compile.
+#
+# What it cost: the console sent a tenant header the gateway does not read and
+# no credential at all, so every screen in it answered 401 from the day
+# authorisation was added. Nothing here would have caught that either, and
+# clients_auth_test.go is what does; this is the other half, so that the console
+# is at least known to build.
+#
+# Skipped by name rather than silently, the way cargo and golangci-lint are: a
+# check that is absent and says nothing is a gate step that passes because it
+# did not run. npm ci is not run here — an install is not the gate's job, and a
+# gate that reaches the network mid-run fails for reasons that have nothing to
+# do with the change.
+if command -v npm >/dev/null 2>&1 && [ -d "$ROOT/web/node_modules" ]; then
+  step "web typecheck" bash -c "cd '$ROOT/web' && npm run --silent check"
+elif command -v npm >/dev/null 2>&1; then
+  echo; echo "==> web: node_modules is absent, skipping the console's typecheck"
+  echo "    run 'npm install' in web/ to include it"
+else
+  echo; echo "==> web: npm not found, skipping the console's typecheck"
+fi
+
+# The collection bench is not checked here at all.
+#
+# flutter analyze and flutter test exist and have never run in this
+# environment, because there is no Dart toolchain in it. Said out loud rather
+# than left as an absence: the bench carries the same class of defect the
+# console did, and the only thing standing over it is clients_auth_test.go,
+# which reads its source as text.
+if command -v flutter >/dev/null 2>&1; then
+  step "mobile analyze" bash -c "cd '$ROOT/mobile' && flutter analyze"
+  step "mobile test" bash -c "cd '$ROOT/mobile' && flutter test"
+else
+  echo; echo "==> mobile: flutter not found, skipping the bench's analyze and tests"
+fi
+
 if command -v cargo >/dev/null 2>&1; then
   step "rust build" bash -c "cd '$ROOT/ml' && cargo build --workspace --offline"
   step "rust test"  bash -c "cd '$ROOT/ml' && cargo test --workspace --offline"

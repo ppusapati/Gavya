@@ -76,9 +76,29 @@ flutter run              # against a device or emulator
 ```
 
 Point it at a gateway, give it a tenant and an operator name, provision the
-bench with a serial, and open a session. Phase-1 has no sign-in: the tenant
-decides which records this bench belongs to, and the operator name is recorded
-against every collection it sends.
+bench with a serial, and open a session. The operator name is recorded against
+every collection it sends.
+
+The bench authenticates as a **service identity** rather than as a person —
+nobody types a password into a tablet on a bench at half past five in the
+morning. `ConnectClient.signInService(name, secret)` exchanges the bench's
+credentials for a session, and every call after that carries it as a bearer
+token.
+
+> This used to read "Phase-1 has no sign-in: the tenant decides which records
+> this bench belongs to". That was true when the bench was written and stopped
+> being true when authorisation was added. In between the bench sent a tenant
+> header the gateway does not read and no credential, so every delivery came
+> back 401 — and, correctly by its own design, the outbox kept every record
+> rather than treating it as sent. Nothing lost, nothing delivered.
+>
+> **Not finished.** The transport can hold a session and sign in; what is not
+> wired is where the bench keeps its service credentials and when it signs in
+> again after a refusal. That needs the Flutter toolchain to write and to check,
+> and there is none in the environment this was done in — `flutter analyze` and
+> `flutter test` have never run here, which is the same reason the defect above
+> survived. `services/gateway-service/handler/clients_auth_test.go` is what now
+> fails if the bench stops carrying a credential at all.
 
 ## Checks
 

@@ -12,6 +12,31 @@ export const CANONICAL = 'canonical.v1.CanonicalService';
 export const INGESTION = 'ingestion.v1.IngestionService';
 export const BALANCE = 'balance.v1.BalanceService';
 
+/**
+ * The one service every other call depends on.
+ *
+ * Sign-in is how the console gets the session the gateway asks for. Without it
+ * every procedure below returns 401, which is what the console did until this
+ * was added.
+ */
+export const IDENTITY = 'gavya.identity.v1.IdentityService';
+
+export interface SignInRequest {
+	email: string;
+	password: string;
+	/** Which of the person's tenants to sign in to. Omitted when they have one. */
+	tenant_id?: string;
+}
+
+export interface SignInResponse {
+	session_id: string;
+	tenant_id: string;
+	user_id: string;
+	role_id?: string;
+	role_name?: string;
+	expires_at: string;
+}
+
 /** The deterministic classifier's closed vocabulary. */
 export type Classification =
 	| 'MATCH'

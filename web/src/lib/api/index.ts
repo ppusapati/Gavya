@@ -13,14 +13,43 @@ export * from './types';
 export class Gavya {
 	readonly #client: ApiClient;
 	readonly #tenantId: string;
+	readonly #session: string;
 
-	constructor(client: ApiClient, tenantId: string) {
+	/**
+	 * @param session the session id from SignIn. Every call carries it as a
+	 * bearer token, because the gateway refuses anything that does not.
+	 * @param tenantId the tenant that session belongs to. It goes in request
+	 * bodies, where the services read it; it is not sent as a header, because
+	 * the gateway asserts the tenant itself from the session and strips any
+	 * claim arriving with the request.
+	 */
+	constructor(client: ApiClient, session: string, tenantId: string) {
 		this.#client = client;
+		this.#session = session;
 		this.#tenantId = tenantId;
 	}
 
 	#opts(extra?: Partial<CallOptions>): CallOptions {
-		return { tenantId: this.#tenantId, ...extra };
+		return { session: this.#session, ...extra };
+	}
+
+	/**
+	 * Exchange an email and password for a session.
+	 *
+	 * Static because it is the one call made before there is a session to make
+	 * calls with, and it is one of the three procedures the gateway lets through
+	 * unauthenticated.
+	 */
+	static signIn(
+		client: ApiClient,
+		req: T.SignInRequest,
+		extra?: Partial<CallOptions>
+	): Promise<T.SignInResponse> {
+		return client.call<T.SignInRequest, T.SignInResponse>(
+			`${T.IDENTITY}/SignIn`,
+			req,
+			{ ...extra }
+		);
 	}
 
 	listDivergences(req: Omit<T.ListDivergencesRequest, 'tenant_id'>, extra?: Partial<CallOptions>) {

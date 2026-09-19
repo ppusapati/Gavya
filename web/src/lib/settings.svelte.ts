@@ -1,12 +1,18 @@
-import { ApiClient, Gavya } from './api';
+import { ApiClient, Gavya, type SignInResponse } from './api';
 
 /**
- * Where the gateway is, which tenant is being reviewed, and who is reviewing.
+ * Where the gateway is, and the session the console is calling under.
  *
- * Phase-1 has no authentication, so none of this is a credential — the tenant
- * id is a routing fact and the actor is the name written into the audit trail
- * of any resolution. They are kept together because a workspace is useless
- * without all three, and a reviewer should have to state them once.
+ * This used to hold a gateway, a tenant id and a name the reviewer typed, and
+ * the comment here said Phase-1 had no authentication so none of it was a
+ * credential. That stopped being true when authorisation was added and nobody
+ * came back to this file: the gateway now refuses every procedure without a
+ * bearer token, and the tenant it acts for is the session's, not one a browser
+ * can claim. The console went on sending a tenant header the gateway does not
+ * read and no credential at all, so every screen in it got 401.
+ *
+ * So the tenant and the actor are no longer typed. They are what the session
+ * says they are, which is the only version of them the platform will honour.
  */
 
 const KEY = 'gavya.settings.v1';
@@ -15,26 +21,40 @@ const DEFAULT_GATEWAY = 'http://localhost:8000';
 
 interface Stored {
 	gatewayUrl: string;
+	session: string;
 	tenantId: string;
-	actor: string;
+	userId: string;
+	roleName: string;
+	expiresAt: string;
 }
 
+const empty: Stored = {
+	gatewayUrl: DEFAULT_GATEWAY,
+	session: '',
+	tenantId: '',
+	userId: '',
+	roleName: '',
+	expiresAt: ''
+};
+
 function read(): Stored {
-	const empty = { gatewayUrl: DEFAULT_GATEWAY, tenantId: '', actor: '' };
-	if (typeof localStorage === 'undefined') return empty;
+	if (typeof localStorage === 'undefined') return { ...empty };
 	try {
 		const raw = localStorage.getItem(KEY);
-		if (!raw) return empty;
+		if (!raw) return { ...empty };
 		const parsed = JSON.parse(raw) as Partial<Stored>;
 		return {
 			gatewayUrl: parsed.gatewayUrl || DEFAULT_GATEWAY,
+			session: parsed.session || '',
 			tenantId: parsed.tenantId || '',
-			actor: parsed.actor || ''
+			userId: parsed.userId || '',
+			roleName: parsed.roleName || '',
+			expiresAt: parsed.expiresAt || ''
 		};
 	} catch {
 		// A browser that refuses site data, or a value left behind by an older
 		// shape, must not stop the workspace from opening.
-		return empty;
+		return { ...empty };
 	}
 }
 
@@ -42,12 +62,58 @@ class Settings {
 	#stored = read();
 
 	gatewayUrl = $state(this.#stored.gatewayUrl);
+	session = $state(this.#stored.session);
 	tenantId = $state(this.#stored.tenantId);
-	actor = $state(this.#stored.actor);
+	userId = $state(this.#stored.userId);
+	roleName = $state(this.#stored.roleName);
+	expiresAt = $state(this.#stored.expiresAt);
 
-	/** A workspace can only call anything once it knows which tenant to ask about. */
+	/**
+	 * A workspace can call something once it is signed in.
+	 *
+	 * The expiry is checked here rather than waited for, so a console left open
+	 * overnight asks for a password instead of showing a screen of 401s.
+	 */
 	get ready(): boolean {
-		return this.gatewayUrl.trim() !== '' && this.tenantId.trim() !== '';
+		if (this.gatewayUrl.trim() === '' || this.session === '') return false;
+		return !this.expired;
+	}
+
+	get expired(): boolean {
+		if (!this.expiresAt) return false;
+		const at = Date.parse(this.expiresAt);
+		return Number.isFinite(at) && at <= Date.now();
+	}
+
+	/** Exchange an email and password for a session, and remember it. */
+	async signIn(email: string, password: string, tenantId?: string): Promise<void> {
+		const res: SignInResponse = await Gavya.signIn(
+			new ApiClient({ baseUrl: this.gatewayUrl.trim() }),
+			{ email, password, ...(tenantId ? { tenant_id: tenantId } : {}) }
+		);
+		this.session = res.session_id;
+		this.tenantId = res.tenant_id;
+		this.userId = res.user_id;
+		this.roleName = res.role_name ?? '';
+		this.expiresAt = res.expires_at;
+		this.save();
+	}
+
+	/**
+	 * Forget the session.
+	 *
+	 * Local only: it does not tell the platform, so the session stays valid until
+	 * it expires or somebody revokes it. Saying so rather than calling this a
+	 * sign-out, because a person who signs out of a shared machine is entitled to
+	 * know which of those two they got.
+	 */
+	forget() {
+		this.session = '';
+		this.tenantId = '';
+		this.userId = '';
+		this.roleName = '';
+		this.expiresAt = '';
+		this.save();
 	}
 
 	save() {
@@ -57,24 +123,36 @@ class Settings {
 				KEY,
 				JSON.stringify({
 					gatewayUrl: this.gatewayUrl.trim(),
-					tenantId: this.tenantId.trim(),
-					actor: this.actor.trim()
-				})
+					session: this.session,
+					tenantId: this.tenantId,
+					userId: this.userId,
+					roleName: this.roleName,
+					expiresAt: this.expiresAt
+				} satisfies Stored)
 			);
 		} catch {
-			// Storage being unavailable costs the reviewer a retype next visit;
+			// Storage being unavailable costs the reviewer a sign-in next visit;
 			// it must not cost them the change they just made.
 		}
 	}
 
-	/** A client bound to the current gateway and tenant. */
+	/** A client bound to the current gateway and session. */
 	api(): Gavya {
-		return new Gavya(new ApiClient({ baseUrl: this.gatewayUrl.trim() }), this.tenantId.trim());
+		return new Gavya(
+			new ApiClient({ baseUrl: this.gatewayUrl.trim() }),
+			this.session,
+			this.tenantId
+		);
 	}
 
-	/** The name recorded against a resolution, falling back to something honest. */
+	/**
+	 * The name recorded against a resolution.
+	 *
+	 * The signed-in user, not a typed name. A resolution attributed to whatever
+	 * somebody put in a box is not an attribution.
+	 */
 	get actorOrUnknown(): string {
-		return this.actor.trim() || 'unattributed';
+		return this.userId || 'unattributed';
 	}
 }
 

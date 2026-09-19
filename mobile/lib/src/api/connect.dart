@@ -134,19 +134,67 @@ class ApiException implements Exception {
   String toString() => 'ApiException(${code.name}: $message)';
 }
 
-/// A Connect client for one gateway and one tenant.
+/// The identity service, which is where a session comes from.
+///
+/// Its package carries an extra segment — gavya.identity.v1, where every other
+/// service is <name>.v1 — and that is worth knowing rather than worth changing:
+/// the comparison in gateway-service/handler/clients_test.go could not see a
+/// package of that shape until it was widened for this.
+const identityService = 'gavya.identity.v1.IdentityService';
+
+/// A Connect client for one gateway, signed in as one service identity.
+///
+/// The session is what the gateway reads to decide who is calling and which
+/// tenant they act for. This client used to send a tenant header and no
+/// credential at all, which the gateway answered with 401 on everything except
+/// sign-in — so the bench delivered nothing from the day authorisation was
+/// added, and, correctly by its own design, kept every record in its outbox
+/// rather than treating it as sent. Nothing lost, nothing delivered, until
+/// somebody telephoned.
 class ConnectClient {
   ConnectClient({
     required this.baseUrl,
     required this.tenantId,
+    this.session,
     http.Client? httpClient,
     this.timeout = const Duration(seconds: 20),
   }) : _http = httpClient ?? http.Client();
 
   final String baseUrl;
+
+  /// The tenant this bench belongs to, for request bodies.
+  ///
+  /// Not sent as a header: the gateway asserts the tenant from the session and
+  /// strips any arriving claim, so a header here would be ignored at best.
   final String tenantId;
+
+  /// The session id from SignInService, or null before the bench has signed in.
+  String? session;
+
   final http.Client _http;
   final Duration timeout;
+
+  /// Exchange the bench's service credentials for a session.
+  ///
+  /// The booth authenticates as a service identity rather than as a person: the
+  /// tablet is left on a bench and nobody types a password into it at half past
+  /// five in the morning.
+  Future<Map<String, dynamic>> signInService(String name, String secret) async {
+    final res = await call(
+      '$identityService/SignInService',
+      {'name': name, 'secret': secret},
+    );
+    final id = res['session_id'];
+    if (id is! String || id.isEmpty) {
+      throw ApiException(
+        ConnectCode.internal,
+        'sign-in returned no session',
+        procedure: '$identityService/SignInService',
+      );
+    }
+    session = id;
+    return res;
+  }
 
   Future<Map<String, dynamic>> call(String procedure, Map<String, dynamic> body) async {
     final url = Uri.parse('${baseUrl.replaceAll(RegExp(r'/+$'), '')}/$procedure');
@@ -159,7 +207,7 @@ class ConnectClient {
             headers: {
               'Content-Type': 'application/json',
               'Accept': 'application/json',
-              'X-Tenant-ID': tenantId,
+              if (session != null) 'Authorization': 'Bearer $session',
             },
             body: jsonEncode(body),
           )

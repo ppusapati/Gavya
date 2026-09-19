@@ -2467,6 +2467,90 @@ daemon.
 
 ---
 
+## Neither client could get through the front door
+
+The console and the bench are the two things a person actually touches, and
+`clients_test.go` compares them against the platform on every run: every
+procedure they call is served, every package is routed by the gateway, every
+field name matches a json tag. All three true. All three about what happens
+*after* a request is let in.
+
+Neither client was sending a credential.
+
+The gateway reads the session from `Authorization` or a cookie and refuses
+everything outside its five-entry unauthenticated list. What the clients sent was
+`X-Tenant-ID` — a header the gateway does not read, since it asserts the tenant
+itself from what the session proves and strips the header it asserts. So every
+procedure either client called came back 401 from the day authorisation was
+added. Every screen in the console. Every delivery from the bench — which then,
+correctly by its own design, kept each record in its outbox rather than treating
+it as sent. Nothing lost, nothing delivered, until somebody telephones.
+
+It had been written down and then overtaken. `web/README.md` said "Phase-1 has
+no sign-in, so the tenant decides what is visible", which was true when the
+console was built. Authorisation arrived later — reversing an earlier decision to
+defer it, and recorded in this document as such — and nothing came back to the
+clients. Both READMEs now carry what they used to say and why it stopped being
+true.
+
+**Why three checks saw nothing.** They compare names against names, and a
+missing credential is not a name. A check is only as good as the thing it
+compares against, and the thing these compared against was the shape of a
+request rather than whether one would be answered.
+
+**And nothing compiled either client.** The gate ran thirty-five Go modules and
+the Rust workspace and never built the console or the bench. `npm run check` and
+`flutter analyze` both exist; neither had run here. The console's typecheck is in
+the gate now — 123 steps — and the bench's is named as absent rather than left as
+a silence, because there is no Dart toolchain in this environment.
+
+**What is fixed.** The console signs in with an email and a password, keeps the
+session, sends it as a bearer token, and no longer types a tenant or a reviewer's
+name — both come from the session, which is the only version of them the platform
+will honour. The bench's transport can hold a session and sign in as a service
+identity, because nobody types a password into a tablet on a bench at half past
+five in the morning.
+
+**What is not.** Where the bench keeps its service credentials, and when it signs
+in again after a refusal. That is Dart, and Dart cannot be compiled or tested
+here — which is the same reason the defect survived in the first place. Said out
+loud in `mobile/README.md` rather than left to look finished.
+
+Six mutants. The first one survived: deleting the line that sets the header left
+the check passing, because the comment above it explains what the header is for
+and says the word. A check satisfied by a sentence about the thing it checks is
+the oldest defect in this document, and it had walked straight into the test
+written to catch it. The check reads code now, not comments.
+
+---
+
+## The rest of the platform has no client at all
+
+Beside that, the smaller and much larger fact. Twenty-five procedures have a
+client. Two hundred and sixty-one exist.
+
+| | routes | called by a client |
+|---|---|---|
+| `ingestion` | 13 | 10 |
+| `balance` | 10 | 6 |
+| `canonical` | 13 | 5 |
+| `shadowsettlement` | 7 | 4 |
+| **the other twenty-four services** | **218** | **0** |
+
+The console covers the integrity spine and the bench covers collection. Nothing
+reaches cattle, milk, breeding, health, feed, orders, billing, inventory, the
+catalogue, the market, reporting, files, tenants, identity administration,
+procurement, pooling, production, laboratory, material, notifications, audit or
+settlement. Settlement is eighteen procedures and is the money path; identity is
+fifteen and is how anything proves who it is.
+
+This is not a defect — an API may be wider than its clients, and every one of
+those routes is served, permissioned and exercised end to end. It is written
+down here because "the platform works" and "a person can use the platform" are
+different sentences, and only the first one is currently true of most of it.
+
+---
+
 ## The one piece of load-bearing code with no tests
 
 `pkg/ulid` is where every identifier in this platform comes from.
@@ -2712,3 +2796,6 @@ diff.
 | A decode table checked across the whole byte range | The defect was an entry nobody put there on purpose. Checking the characters that should work would not have found it; checking that nothing else works did. |
 | A range bound clamped, an identifier's own timestamp refused | Both are a time outside what a ULID can carry, and the right answer differs. A bound means "from the beginning"; a stamp invented for a row misdates it. |
 | A measured figure in the documentation, pinned by the test it came from | The Pool caveat states that about half of consecutive identifiers are unordered. Written in prose alone it would drift; the test fails if the pool ever becomes ordered, and the prose and the behaviour go together. |
+| A client checked for a credential, not only for names | Three checks compared the clients' procedure names, package prefixes and field names against the platform and all passed while neither client could authenticate. A missing credential is not a name. |
+| The console's typecheck in the gate; the bench's absence said out loud | Nothing compiled either client. The comparison that stood over them reads them as text, so it would pass against a console that does not build. |
+| A check that reads code and not comments | The first version was satisfied by the sentence explaining the header it was looking for. Found by mutation, in the test written to catch exactly that class. |

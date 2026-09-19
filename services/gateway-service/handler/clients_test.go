@@ -41,13 +41,21 @@ import (
 var webCall = regexp.MustCompile(`\$\{T\.([A-Z_]+)\}/([A-Za-z][A-Za-z0-9]*)`)
 
 // webConst matches the service-name constants those refer to.
-var webConst = regexp.MustCompile(`export const ([A-Z_]+) = '([a-z]+\.v[0-9]+\.[A-Za-z]+)'`)
+//
+// The package part is one or more dotted segments, not one: every service in
+// this platform is <name>.v1 except identity, which is gavya.identity.v1. A
+// single-segment pattern silently skipped it, so a client calling SignIn would
+// have been reported as calling a constant that does not exist — and the one
+// procedure without which no other call works would have been the one procedure
+// this comparison could not see.
+var webConst = regexp.MustCompile(`export const ([A-Z_]+) = '((?:[a-z][a-z0-9]*\.)+v[0-9]+\.[A-Za-z]+)'`)
 
 // dartCall matches a procedure in the Dart client: '$ingestionService/OpenSession'.
 var dartCall = regexp.MustCompile(`\$([a-zA-Z][a-zA-Z0-9]*)/([A-Za-z][A-Za-z0-9]*)`)
 
-// dartConst matches the service-name constants those refer to.
-var dartConst = regexp.MustCompile(`const ([a-zA-Z][a-zA-Z0-9]*) = '([a-z]+\.v[0-9]+\.[A-Za-z]+)'`)
+// dartConst matches the service-name constants those refer to. Dotted package
+// prefixes for the reason given above webConst.
+var dartConst = regexp.MustCompile(`const ([a-zA-Z][a-zA-Z0-9]*) = '((?:[a-z][a-z0-9]*\.)+v[0-9]+\.[A-Za-z]+)'`)
 
 // clientCall is one procedure a client calls, and where it calls it from.
 type clientCall struct {
