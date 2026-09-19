@@ -63,10 +63,26 @@ func init() {
 		decodeTable[i] = 0xFF
 	}
 
-	// Map valid characters
+	// Map valid characters, upper and lower case.
+	//
+	// c|0x20 rather than c+32, which is the same thing for a letter and is not
+	// the same thing for a digit. Adding 32 to '5' gives 'U', so the old line
+	// wrote decodeTable['U'] = 5 — and 'U' is one of the four letters Crockford
+	// leaves out. The loop then overwrote nine of those ten accidents when it
+	// reached the letter concerned, and 'U' was the one it never reached,
+	// because 'U' is not in the alphabet.
+	//
+	// What that cost: Parse accepted 'U' and decoded it as 5, so two different
+	// strings produced the same ID and the one with 'U' in it did not survive a
+	// round trip. IsValid said yes to both. 'u' was rejected the whole time,
+	// which is what gives the accident away — nobody decides that a letter is
+	// valid in upper case only.
+	//
+	// ORing 0x20 leaves a digit alone and lowercases a letter, so each character
+	// maps only to itself.
 	for i, c := range alphabet {
 		decodeTable[c] = byte(i)
-		decodeTable[c+32] = byte(i) // lowercase
+		decodeTable[c|0x20] = byte(i)
 	}
 
 	// Error-tolerant mappings
@@ -530,6 +546,24 @@ func IsValid(s string) bool {
 
 // Pool provides high-throughput ULID generation using multiple generators.
 // Use when generating millions of ULIDs per second.
+//
+// # MONOTONIC MEANS PER GENERATOR, NOT PER POOL
+//
+// NewPool takes a monotonic flag and passes it to each generator it builds. Each
+// generator then keeps its own last timestamp and last randomness, and the pool
+// hands out work round-robin, so two identifiers taken one after another come
+// from two different generators with independent random parts and are in no
+// particular order.
+//
+// Measured: from a four-generator pool built with monotonic true, about half of
+// two thousand consecutive identifiers were not greater than the one before
+// them. That is the arithmetic rather than a defect — a pool exists to avoid a
+// shared lock, and ordering across generators is exactly what a shared lock
+// would be for.
+//
+// So the flag buys ordering within whichever generator serves a call, which is
+// not a property a caller can observe or rely on. If identifiers have to sort in
+// the order they were issued, use NewMonotonic and accept the one lock.
 type Pool struct {
 	generators []*generator
 	counter    uint64
@@ -575,11 +609,39 @@ func (p *Pool) NewString() string {
 // Utility Functions
 // -----------------------------------------------------------------------------
 
+// clampTimestamp is the 48-bit timestamp of a time, held inside the range a
+// ULID can carry.
+//
+// The two range helpers below used uint64(t.UnixMilli()) directly. A time before
+// 1970 has a negative UnixMilli, and converting that to uint64 wraps it to an
+// enormous number, which the helpers then truncated to 48 bits and returned
+// without complaint: FromTime(time.Time{}) produced an identifier dated the year
+// 8920. As the lower bound of a range query that silently matches nothing.
+//
+// Clamped rather than refused, because these are bounds. A caller asking for
+// everything since a time before the epoch means "from the beginning", and that
+// is an answer; a panic in a query path is not. generate() refuses the same
+// input, and is right to — there the timestamp is the identifier's own, and
+// inventing one would misdate the row.
+func clampTimestamp(t time.Time) uint64 {
+	ms := t.UnixMilli()
+	if ms < 0 {
+		return 0
+	}
+	if uint64(ms) > maxTimestamp {
+		return maxTimestamp
+	}
+	return uint64(ms)
+}
+
 // FromTime creates a ULID with minimum randomness for a given time.
 // Useful for range queries: WHERE id >= ulid.FromTime(startTime).String()
+//
+// A time outside the range a ULID can carry is clamped to the nearest end; see
+// clampTimestamp.
 func FromTime(t time.Time) ID {
 	var id ID
-	ms := uint64(t.UnixMilli())
+	ms := clampTimestamp(t)
 
 	id[0] = byte(ms >> 40)
 	id[1] = byte(ms >> 32)
@@ -594,9 +656,12 @@ func FromTime(t time.Time) ID {
 
 // MaxForTime creates a ULID with maximum randomness for a given time.
 // Useful for range queries: WHERE id <= ulid.MaxForTime(endTime).String()
+//
+// A time outside the range a ULID can carry is clamped to the nearest end; see
+// clampTimestamp.
 func MaxForTime(t time.Time) ID {
 	var id ID
-	ms := uint64(t.UnixMilli())
+	ms := clampTimestamp(t)
 
 	id[0] = byte(ms >> 40)
 	id[1] = byte(ms >> 32)

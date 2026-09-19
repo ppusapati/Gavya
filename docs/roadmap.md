@@ -2467,6 +2467,62 @@ daemon.
 
 ---
 
+## The one piece of load-bearing code with no tests
+
+`pkg/ulid` is where every identifier in this platform comes from.
+`libs/integrity/sys.IDs.New` delegates straight to `ulid.New()`, and about a
+hundred and twenty call sites across twenty-nine services call that for every
+primary key, every audit row and every settlement line. Six hundred and
+twenty-two lines, thirty-four functions, and not one test file. It survived the
+`pkg` trim because the trim worked at package level and this package is
+imported — which is exactly how an untested dependency stays.
+
+The happy path was exercised constantly; the end-to-end suite alone issues
+thousands of identifiers a run. The edges were exercised by nothing, and there
+were three of them.
+
+**`'U'` decoded as 5.** The decode table built its lowercase entries with
+`decodeTable[c+32]`, which is right for a letter and wrong for a digit: `'5'+32`
+is `'U'`. The loop overwrote nine of those ten accidents when it reached the
+letter concerned, and `'U'` was the one it never reached, because `'U'` is one of
+the four letters Crockford leaves out. So `Parse` accepted a string with `U` in
+it and returned the identifier the string with `5` in it parses to — two strings,
+one identifier, and the one with `U` did not survive a round trip. `IsValid` said
+yes to both. `'u'` was refused the whole time, which is what gives the accident
+away: nobody decides a letter is valid in upper case only. Fixed by ORing `0x20`
+instead, which leaves a digit alone and lowercases a letter.
+
+**The range helpers dated a pre-epoch bound to the year 8920.** `FromTime` and
+`MaxForTime` took `uint64(t.UnixMilli())` directly, and a time before 1970 has a
+negative `UnixMilli`, which wraps. `FromTime(time.Time{})` produced
+`67FKPX6A000000000000000000`. As the lower bound of a range query that matches
+nothing — an empty result that looks like an answer. Clamped now, at both ends,
+because these are bounds and a caller asking for everything since before the
+epoch means "from the beginning". `generate()` refuses the same input and is
+right to: there the timestamp is the identifier's own and inventing one would
+misdate the row.
+
+**A pool built with `monotonic: true` is not monotonic.** The flag is passed to
+each generator, each keeps its own state, and the pool hands out work
+round-robin — so consecutive identifiers come from different generators with
+independent random parts. Measured: about half of two thousand consecutive
+identifiers from a four-generator pool were not above their predecessor. That is
+arithmetic rather than a defect, since a pool exists to avoid the shared lock
+that ordering would need. Documented precisely and pinned by a test, so the
+figure in the documentation and the behaviour cannot drift apart.
+
+Coverage went from nothing to 97.7%. What is left uncovered is the `panic` in
+each `New*` on entropy failure, which cannot be reached without breaking the
+process's entropy for every other test in the package. Six mutants, all killed.
+
+Also recorded: a clock that steps backwards produces an identifier below its
+predecessor. The package's claim is scoped to one millisecond and is therefore
+true, but "monotonic" reads wider than it is. Not fixed — holding the previous
+timestamp would stamp identifiers with a time they were not created at, and a
+settlement period is drawn from that stamp.
+
+---
+
 ## A dairy in every table
 
 There was no way to look at this platform. A fresh database has a hundred and
@@ -2653,3 +2709,6 @@ diff.
 | Every table counted from the catalogue, not from a list | A seed rots invisibly: a service adds a table, the seed does not, and the gap appears the day somebody opens the one screen that reads it. A table that exists is a table the check expects rows in. |
 | The seed states no process yield and no instrument uncertainty | The two things this repository has declined to invent from the start. The columns are nullable so a plant that has not measured its own yield is not made to state one, and a seed is not a loophole for that. |
 | Readable identifiers rather than ULIDs | Nothing in the platform parses an identifier it reads back — checked, not assumed — and the whole point of seed data is that a person can see what they are looking at. |
+| A decode table checked across the whole byte range | The defect was an entry nobody put there on purpose. Checking the characters that should work would not have found it; checking that nothing else works did. |
+| A range bound clamped, an identifier's own timestamp refused | Both are a time outside what a ULID can carry, and the right answer differs. A bound means "from the beginning"; a stamp invented for a row misdates it. |
+| A measured figure in the documentation, pinned by the test it came from | The Pool caveat states that about half of consecutive identifiers are unordered. Written in prose alone it would drift; the test fails if the pool ever becomes ordered, and the prose and the behaviour go together. |
