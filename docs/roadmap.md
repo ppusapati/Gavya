@@ -2467,6 +2467,71 @@ daemon.
 
 ---
 
+## A dairy in every table
+
+There was no way to look at this platform. A fresh database has a hundred and
+twelve tables and nothing in any of them, so every demonstration, every screen
+somebody wanted to see, and every question of the form "what does a settlement
+look like" began with inventing a co-operative by hand.
+
+`deploy/seed/seed.sql` is one: Valley Dairy Co-operative, six animals, a
+fortnight of collections, a rate card, a pool, a settlement that was paid and an
+adjustment raised after it, a lab sample with its chain of custody, a quarantined
+record from a tablet that was reinstalled, and the shadow computation sitting
+beside what the old system asserted. Plus Hill Creamery, which exists so that a
+query which forgets its tenant returns a visibly wrong answer instead of a
+plausible one.
+
+**It is not in the migration path and it never will be.** `schema.Plan()` and
+`deploy/postgres-init` both reach production, and the way test data gets into a
+production database is not a careless operator — it is a seed step added to a
+pipeline "for staging" and run against whatever `DATABASE_URL` is set. So it is
+applied by a command that refuses twice: once unless somebody writes
+`-i-am-not-in-production`, which is a sentence rather than a `-force`, and again
+— whatever the flag says — if the database holds a tenant the seed does not own.
+A database with real tenants in it does not need seeding; it has data.
+
+**The check is that every table has rows, counted from the catalogue.** A seed
+is exactly the kind of artefact that rots invisibly: a service adds a table, the
+seed does not, and the gap surfaces the day somebody clicks the one screen that
+reads it. Counting from `pg_class` rather than from a list means a new table
+fails the check the day it is created.
+
+**What the database refused.** The seed was written against the schema and the
+schema kept rejecting it, which is the useful part:
+
+- an `adjustment` stock movement is not a delta. It states the count after a
+  stocktake and *replaces* the running total, so writing the four missing packs
+  there would have set the depot's stock to four;
+- an observation names exactly one subject — an animal, or a tanker, or a batch —
+  and the first draft named an animal and a producer both;
+- `priced_collections_one_per_shift` is a unique index over the live rows only,
+  so a correction cannot be written until the row it supersedes is closed. The
+  order is enforced, not documented;
+- `order_service`'s trigger functions resolve `orders` through the caller's
+  `search_path`. A session writing across services has to set it per service, and
+  a single shared path would make `invoices` ambiguous between `order_service`
+  and `billing_service` — which is the collision the schema split was about.
+
+**Where it refuses to invent.** `expected_yield_ppm` is null on every
+formulation and `uncertainty_missing` is true on every observation. Process
+yields and instrument uncertainties are the two things this repository has
+declined to make up since the beginning, and a seed is not a loophole for that —
+the columns are nullable precisely so a plant that has not measured its own yield
+is not forced to state one. Where a constraint forces a figure, as
+`material_instruments` does, the comment says it is illustrative.
+
+The money arithmetic is the part a member would check, so it is written out in
+the file: four collections at 793.60, one feed-credit instalment of 100.00, net
+693.60. Three separate constraints enforce it — `producer_payables_adds_up`,
+`fund_is_the_residual`, `allocation_total_is_its_parts` — so a seed that got it
+wrong would be refused rather than quietly shown to somebody.
+
+Six mutants, all killed, including the one that matters most: a coverage function
+that reports no empty tables whatever the database holds.
+
+---
+
 ## The pipeline has never run
 
 Written immediately after the section above, on looking at what the push
@@ -2584,3 +2649,7 @@ diff.
 | Images built by a glob, on every push | The gate compiles a package; an image also has to say which files it needs. A list of thirty names in YAML is a list to forget, and what gets forgotten is the image added last. |
 | EXPOSE read from libs/integrity/ports | It is documentation except to `docker run -P`, which publishes it. Three said 8103 because they were copied from procurement-service, and the one place those numbers live already existed. |
 | A CI result looked at, not assumed | Fifteen runs, all failed, none allocated a runner, over four days in which the pipeline was described here as running the gate. A check nobody reads is worth what a check nobody wrote is worth. |
+| Seed data kept out of the migration path, and refused twice | The way it reaches production is not a careless operator but a pipeline step added "for staging" with DATABASE_URL set. The flag is a sentence somebody has to write, and the command looks at the database as well, because a flag is a claim and claims can be wrong. |
+| Every table counted from the catalogue, not from a list | A seed rots invisibly: a service adds a table, the seed does not, and the gap appears the day somebody opens the one screen that reads it. A table that exists is a table the check expects rows in. |
+| The seed states no process yield and no instrument uncertainty | The two things this repository has declined to invent from the start. The columns are nullable so a plant that has not measured its own yield is not made to state one, and a seed is not a loophole for that. |
+| Readable identifiers rather than ULIDs | Nothing in the platform parses an identifier it reads back — checked, not assumed — and the whole point of seed data is that a person can see what they are looking at. |
