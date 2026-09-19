@@ -205,17 +205,27 @@ honestly, in the order it would hurt:
 
 - **It has never been deployed.** Not to a cluster, not to a single host. No
   image has been built, because no Docker daemon runs in the environment this was
-  developed in; the build lines were run directly instead, which is weaker.
+  developed in; the build lines were run directly instead, which is weaker. The
+  job that would build them is written and has never been allocated a runner —
+  see *The pipeline has never run*.
+- **The pipeline has never run.** Sixteen runs since 14 September, every one of
+  them failed in seconds with no runner assigned. So every claim in this document
+  about what CI checks describes a file, not a thing that has happened.
+- **The modulith has no Kubernetes manifests.** Twenty-nine services have a
+  Deployment, a Service and two network policies each; the shape meant to be
+  deployed has a compose file and nothing else. Deferred deliberately, and named
+  here so the deferral is visible.
 - **No real user has ever touched it**, and no real data has ever passed through
   it. See *Blocked* below, which is the same point from the other end.
 
 The operational gaps that were open alongside these are closed, and how is in
 *What it takes to run this*: backups with a restore that is tested rather than
 believed, a migration path for a database that already exists, the secrets the
-deployments always referenced and nothing produced, a pipeline that runs the gate
-so it no longer depends on being remembered, and — in *The morning, measured* —
-the first figures anybody has for what this platform does under load, and
-something that reads the metrics it has always published.
+deployments always referenced and nothing produced, a pipeline that is written to
+run the gate so it no longer depends on being remembered — and does not run, see
+above — and, in *The morning, measured*, the first figures anybody has for what
+this platform does under load, and something that reads the metrics it has always
+published.
 
 The blind spots that were named here are closed. The two quiet failures are in
 *The two quiet failures*, and the database — which was the last one — is in *Two
