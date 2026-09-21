@@ -98,3 +98,49 @@ export function formatQuantity(value: number, unit: string, locale?: string): st
 	const n = new Intl.NumberFormat(locale, { maximumFractionDigits: 3 }).format(value);
 	return unit ? `${n} ${unit}` : n;
 }
+
+/**
+ * An amount the service sent as an exact decimal string, grouped for a reader
+ * and never parsed.
+ *
+ * The functions above take a number, which is what the integrity screens had to
+ * hand and is safe for the magnitudes involved. The money path does not have to
+ * settle for that: settlement, pooling and procurement all send the amount as a
+ * decimal string beside its currency, and that string is the figure a member can
+ * be shown and can check.
+ *
+ * So this groups the integer part itself and appends the fraction verbatim.
+ * Nothing here calls Number, which means nothing here can round — and the one
+ * screen where a rounded figure would matter most is a producer's statement.
+ *
+ * The grouping is the reader's, via Intl on the integer part alone, because an
+ * Indian accountant reading lakhs written in thousands has to count digits to
+ * check a total.
+ */
+export function formatExact(value: string | undefined, currency: string, locale?: string): string {
+	const raw = (value ?? '').trim();
+	if (raw === '') return '—';
+
+	const negative = raw.startsWith('-');
+	const unsigned = negative ? raw.slice(1) : raw;
+	const [whole = '0', fraction = ''] = unsigned.split('.');
+
+	// Only digits get grouped. Anything else is handed back as it arrived rather
+	// than mangled into something that looks like a number and is not.
+	if (!/^\d+$/.test(whole) || (fraction !== '' && !/^\d+$/.test(fraction))) {
+		return currency ? `${currency} ${raw}` : raw;
+	}
+
+	let grouped = whole;
+	try {
+		// BigInt, so a whole part beyond Number's safe range groups correctly
+		// rather than silently losing its last digits.
+		grouped = new Intl.NumberFormat(locale, { useGrouping: true }).format(BigInt(whole));
+	} catch {
+		grouped = whole;
+	}
+
+	const body = fraction === '' ? grouped : `${grouped}.${fraction}`;
+	const signed = negative ? `-${body}` : body;
+	return currency ? `${currency} ${signed}` : signed;
+}

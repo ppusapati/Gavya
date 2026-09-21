@@ -84,6 +84,14 @@
 			<a href="/herd/vaccinations" aria-current={current('/herd/vaccinations')}>Vaccinations due</a>
 			<a href="/farms" aria-current={current('/farms')}>Farms &amp; feed</a>
 
+			<span class="group">Money</span>
+			<a href="/money/cycles" aria-current={current('/money/cycles')}>Payment cycles</a>
+			<a href="/money/collections" aria-current={current('/money/collections')}>Priced collections</a>
+			<a href="/money/rate-cards" aria-current={current('/money/rate-cards')}>Rate cards</a>
+			<a href="/money/pools" aria-current={current('/money/pools')}>Pools</a>
+			<a href="/money/recoveries" aria-current={current('/money/recoveries')}>Recoveries</a>
+			<a href="/money/billing" aria-current={current('/money/billing')}>Billing</a>
+
 			<span class="group">Data mapping</span>
 			<a href="/mapping" aria-current={current('/mapping')}>External identities</a>
 			<a href="/mapping/conflicts" aria-current={current('/mapping/conflicts')}>Slot conflicts</a>

@@ -1,8 +1,9 @@
 import { ApiClient, ApiError, type CallOptions } from './client';
 import { HerdApi } from './herd';
+import { MoneyApi } from './money';
 import * as T from './types';
 
-export { ApiClient, ApiError, HerdApi };
+export { ApiClient, ApiError, HerdApi, MoneyApi };
 export * from './types';
 
 /**
@@ -35,11 +36,15 @@ export class Gavya {
 	 */
 	readonly herd: HerdApi;
 
+	/** Rate cards, priced collections, pools, settlement and billing. */
+	readonly money: MoneyApi;
+
 	constructor(client: ApiClient, session: string, tenantId: string) {
 		this.#client = client;
 		this.#session = session;
 		this.#tenantId = tenantId;
 		this.herd = new HerdApi(client, session, tenantId);
+		this.money = new MoneyApi(client, session, tenantId);
 	}
 
 	#opts(extra?: Partial<CallOptions>): CallOptions {

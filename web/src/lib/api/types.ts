@@ -36,10 +36,20 @@ export const HEALTH = 'health.v1.HealthService';
 export const FEED = 'feed.v1.FeedService';
 export const FARM = 'farm.v1.FarmService';
 
+/**
+ * The money path. What milk is worth, what a pool came to, what a member is
+ * paid, and what the society bills.
+ */
+export const PROCUREMENT = 'procurement.v1.ProcurementService';
+export const POOLING = 'pooling.v1.PoolingService';
+export const SETTLEMENT = 'settlement.v1.SettlementService';
+export const BILLING = 'billing.v1.BillingService';
+
 // The wire types for those six. Re-exported rather than written here, because
 // this file was already four hundred lines about the integrity spine and one
 // file holding every type the platform has is one nobody reads.
 export * from './types.herd';
+export * from './types.money';
 
 export interface SignInRequest {
 	email: string;
