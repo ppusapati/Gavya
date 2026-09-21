@@ -1,0 +1,103 @@
+# What the modulith may reach, and nothing else.
+#
+# gateway-service's equivalent is thirty rules: DNS, the database, and one per
+# service it calls. This is four, and the difference is the whole argument for
+# the shape rather than a shortcut taken here.
+#
+# Every call between modules in this deployment goes to 127.0.0.1 in this same
+# pod. NetworkPolicy does not govern loopback, so twenty-eight rules that exist
+# in the other shape — each one a chance to name a port wrong and produce a
+# timeout somebody spends an afternoon on — do not exist here at all.
+#
+# What is left is what genuinely leaves the pod.
+#
+# # WHAT THIS ASSUMES, AND WHERE IT BREAKS
+#
+# That the database is a Service named postgres in this namespace. Every
+# DATABASE_URL in this repository says postgres:5432, so that is the topology
+# this repository describes rather than a guess about yours.
+#
+# If the database is a managed PostgreSQL, an RDS instance or anything else
+# outside the cluster, the rule below matches nothing and every query fails the
+# moment this is applied. Replace it with an ipBlock for the address it actually
+# lives at. This is the reason egress is a separate file from ingress: applying
+# it is a decision about your own topology, and getting it wrong is an outage
+# rather than a hole.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: modulith-egress
+  namespace: gavya
+spec:
+  podSelector:
+    matchLabels:
+      app: modulith
+  policyTypes:
+    - Egress
+  egress:
+    # DNS. Every other rule here names a Service, and a Service name is resolved
+    # before it is dialled — so a policy that forgets this denies everything it
+    # was carefully written to allow, and does it as a timeout rather than as a
+    # refusal anybody can read.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+    # The database.
+    #
+    # THE ONE RULE TO CHECK BEFORE APPLYING THIS. See the note above.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+
+    # Spans, to whatever collector GAVYA_TRACE_ENDPOINT names. The ConfigMap
+    # beside this says otel-collector; if yours is Jaeger's own OTLP port or a
+    # vendor's agent, change both together. An endpoint set and unreachable is
+    # not an outage — tracing drops rather than blocks, and counts what it
+    # dropped — but it is a count somebody has to notice.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: otel-collector
+      ports:
+        - protocol: TCP
+          port: 4318
+
+    # The ML tier, when it is running.
+    #
+    # Left here rather than deleted, because the tier is opt-in and turning it on
+    # should not also mean discovering that egress denies it. With the four
+    # ANOMALY_ML_URL-style settings empty — which is how the ConfigMap ships —
+    # nothing dials these and the rule matches nothing.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: anomaly-service
+        - podSelector:
+            matchLabels:
+              app: uncertainty-service
+        - podSelector:
+            matchLabels:
+              app: reconciliation-service
+        - podSelector:
+            matchLabels:
+              app: divergence-service
+      ports:
+        - protocol: TCP
+          port: 9101
+        - protocol: TCP
+          port: 9102
+        - protocol: TCP
+          port: 9103
+        - protocol: TCP
+          port: 9104

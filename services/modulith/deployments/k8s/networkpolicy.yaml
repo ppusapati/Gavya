@@ -1,0 +1,45 @@
+# Who may reach the modulith.
+#
+# The ingress controller, and nothing else in the cluster — the same rule
+# gateway-service has, for the same reason: a debug container in this namespace
+# has no business calling the front door directly, and allowing it would mean the
+# default-deny stops at the one pod worth protecting most.
+#
+# The controller is named by its namespace rather than by a pod label, because
+# the label differs between ingress-nginx, Traefik and a cloud controller, and a
+# selector that matches none of them denies everything with no error anywhere.
+# Label whichever namespace yours runs in:
+#
+#   kubectl label namespace ingress-nginx gavya-ingress=true
+#
+# NO RULE FOR THE PROBES, and no rule for the modulith's calls to itself.
+#
+# The first is gateway-service's note, which applies unchanged: kubelet probes
+# from the node, which is not a pod and matches no podSelector, and both Calico
+# and Cilium let that through regardless of policy. An ipBlock wide enough to fix
+# it on a CNI that does not is an ipBlock wide enough to let in everything.
+#
+# The second is particular to this shape and is the happier half. Every internal
+# call here is to 127.0.0.1 in the same pod, and NetworkPolicy does not govern
+# loopback — so the twenty-eight services that need ingress rules in the other
+# shape need none at all in this one. There is less to get wrong, which is most
+# of the argument for the shape.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: modulith
+  namespace: gavya
+spec:
+  podSelector:
+    matchLabels:
+      app: modulith
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              gavya-ingress: "true"
+      ports:
+        - protocol: TCP
+          port: 8000

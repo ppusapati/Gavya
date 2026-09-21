@@ -2467,6 +2467,76 @@ daemon.
 
 ---
 
+## The shape that ships can now run the ML tier, and be deployed
+
+Two gaps with the same shape, both of them the asymmetry this document already
+has a rule about: a thing present only in the deployment nobody runs is not a
+weaker version of it, it is none.
+
+**The ML tier existed in one shape.** `docker-compose.yaml` ran all four Rust
+services and wired all four addresses. `docker-compose.modulith.yaml` defined
+none of them and left every address empty — so the advisory tier was unavailable
+in the shape meant to be deployed, and nothing said that was a choice.
+
+It is an overlay rather than a profile, and that is the whole design:
+`docker-compose.modulith.ml.yaml` runs the four services *and* sets the four
+addresses, together.
+
+```
+docker compose -f docker-compose.modulith.yaml \
+               -f docker-compose.modulith.ml.yaml up
+```
+
+Together because the half-on state is the expensive one. An address that is set
+and unreachable costs a two-second dial and three attempts on every observation,
+on the collection path, at six in the morning; an unset one costs nothing,
+because each service checks for empty and skips the estimate. A compose profile
+gives the services without the addresses, which is exactly that half.
+
+**The modulith could not be deployed to a cluster at all.** Twenty-nine services
+have four manifests each and it had none, so the one deployment meant to ship was
+the only one that could not be applied the way the rest are. It has them now — a
+Deployment, a Service, a NetworkPolicy, an egress policy and its own Ingress —
+and two of them are interesting.
+
+Its **egress policy is four rules where gateway-service's is thirty**. Every call
+between modules goes to `127.0.0.1` in the same pod, and NetworkPolicy does not
+govern loopback, so twenty-eight rules — each one a chance to name a port wrong
+and produce a timeout somebody spends an afternoon on — do not exist. That is
+most of the argument for the shape, in a form you can count.
+
+And it runs **one replica, with no autoscaler**, which every other service has.
+The arithmetic is the one already on the page in `pools_test.go`: twenty-eight
+pools of `tenantdb.MaxConns` is 224 connections in one pod, against a declared
+300 with 40 of headroom. A second replica asks for 448. Nothing refuses at
+startup — the pods start, the probes pass, and the connections are taken lazily
+as load arrives — so it would surface on the first busy morning as *sorry, too
+many clients already* at whichever booth asked last. An autoscaler would add a
+pod at precisely the moment the database has least room. Both facts are now
+checked against the manifest.
+
+**Three existing checks had to learn something.** The ML-tier comparison globbed
+every service's ConfigMap into one map and compared it against
+`docker-compose.yaml`; the modulith's settings overwrote a service's — last glob
+wins — and it reported a disagreement between two files that were each correct.
+It compares per shape now. It also read `${ANOMALY_ML_URL:-}` as an address,
+because as a string it is eleven characters long; that is how a compose file says
+*off, and overridable*, and it means empty.
+
+And once more, in the test written for this: the autoscaler check searched the
+manifest for the word `HorizontalPodAutoscaler`, and the manifest explains in a
+comment why there is no autoscaler. It tripped on the sentence saying the thing
+was absent. It parses the documents now and looks at `kind`. That is the second
+time in three days the same trap has caught a check of mine, which is worth
+writing down rather than quietly fixing.
+
+**One thing found and not fixed:** the four Rust services serve `/healthz` and
+their procedures and **no `/metrics`**, so nothing scrapes them in either shape.
+The Go tier's monitoring does not reach the ML tier at all. Not expanded into
+here; recorded so it is a known gap rather than an assumption.
+
+---
+
 ## Neither client could get through the front door
 
 The console and the bench are the two things a person actually touches, and
@@ -2799,3 +2869,6 @@ diff.
 | A client checked for a credential, not only for names | Three checks compared the clients' procedure names, package prefixes and field names against the platform and all passed while neither client could authenticate. A missing credential is not a name. |
 | The console's typecheck in the gate; the bench's absence said out loud | Nothing compiled either client. The comparison that stood over them reads them as text, so it would pass against a console that does not build. |
 | A check that reads code and not comments | The first version was satisfied by the sentence explaining the header it was looking for. Found by mutation, in the test written to catch exactly that class. |
+| The ML tier turned on by an overlay, not a profile | The services and the addresses have to arrive together. A profile gives the first without the second, and an address that is set and unreachable costs six seconds an observation where an unset one costs nothing. |
+| The modulith at one replica, with no autoscaler | Twenty-eight pools in one pod is 224 connections against a declared 300. A second replica asks for 448 and nothing refuses at startup — it arrives as "too many clients already" on the first busy morning. |
+| A deployment check per shape, not per platform | Globbing every ConfigMap into one map made the modulith's settings overwrite a service's, and reported a disagreement between two files that were each right. |

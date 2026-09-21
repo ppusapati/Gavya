@@ -1,12 +1,15 @@
 package handler
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
 )
@@ -148,4 +151,89 @@ func maxConnectionsIn(t *testing.T, root, file string) int {
 		t.Fatalf("%s: max_connections=%s is not a number", file, m[1])
 	}
 	return n
+}
+
+// The modulith's replica count and the connection limit are one arithmetic.
+//
+// This is the same page as TestThePoolsFitTheDatabase, for the shape where it
+// bites hardest. The modulith does not merge the databases and so does not merge
+// the pools: one pod holds twenty-eight of them, 224 connections, against a
+// declared limit of 300 with forty left as headroom.
+//
+// So a second replica asks for 448 and there are 300. What makes it worth a
+// check rather than a comment is the shape of the failure: nothing refuses at
+// startup. The pods start, both sets of probes pass, and the connections are
+// taken lazily as load arrives — so it surfaces on the first busy morning as
+// "sorry, too many clients already" at whichever booth asked last.
+//
+// Every other service in this repository has a HorizontalPodAutoscaler. This one
+// deliberately does not, and that is also checked: an autoscaler here would
+// raise the replica count on exactly the morning the database has least room.
+//
+// The limit compared against is the compose file's, which is the only
+// max_connections this repository controls. The note at the top of this file
+// explains why the cluster's own PostgreSQL is not checked — but the replica
+// count is ours, so the half of the arithmetic that lives here is checked here.
+func TestTheModulithsReplicaCountFitsTheDatabase(t *testing.T) {
+	root := repoRoot(t)
+	pools := servicesThatOpenAPool(t, root)
+	if pools < 20 {
+		t.Fatalf("found only %d services opening a pool; the scan is not reading "+
+			"what it should", pools)
+	}
+
+	manifest := filepath.Join("services", "modulith", "deployments", "k8s", "deployment.yaml")
+	b, err := os.ReadFile(filepath.Join(root, manifest))
+	if err != nil {
+		t.Fatalf("read %s: %v\n\nThe shape meant to be deployed had no manifests at "+
+			"all while twenty-nine services had four each.", manifest, err)
+	}
+	src := string(b)
+
+	m := regexp.MustCompile(`(?m)^\s*replicas:\s*(\d+)`).FindStringSubmatch(src)
+	if m == nil {
+		t.Fatalf("%s sets no replica count. Kubernetes then runs one, which happens "+
+			"to be right, and nothing says it was meant to be.", manifest)
+	}
+	replicas, err := strconv.Atoi(m[1])
+	if err != nil {
+		t.Fatalf("%s: replicas: %s is not a number", manifest, m[1])
+	}
+
+	want := replicas*pools*int(tenantdb.MaxConns) + tenantdb.Headroom
+	limit := maxConnectionsIn(t, root, "docker-compose.modulith.yaml")
+	if want > limit {
+		t.Errorf("%s runs %d replicas, each holding %d pools of %d, which is %d "+
+			"connections plus %d headroom — and the database this repository "+
+			"declares allows %d.\n\n"+
+			"Nothing refuses at startup: the pods start, the probes pass, and the "+
+			"connections are taken as load arrives. Raise max_connections to at "+
+			"least %d first, or put a pooler in front of PostgreSQL.",
+			manifest, replicas, pools, tenantdb.MaxConns,
+			replicas*pools*int(tenantdb.MaxConns), tenantdb.Headroom, limit, want)
+	}
+
+	// The kinds the manifest declares, read from the parsed documents rather
+	// than from the text.
+	//
+	// The first version of this searched the file for the word, and the file
+	// explains in a comment why there is no autoscaler — so the check tripped on
+	// the sentence saying the thing it was looking for is absent. The same shape
+	// as the client check next door, found the same way.
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	for {
+		var doc struct {
+			Kind string `yaml:"kind"`
+		}
+		if err := dec.Decode(&doc); err != nil {
+			break
+		}
+		if doc.Kind == "HorizontalPodAutoscaler" {
+			t.Errorf("%s declares a HorizontalPodAutoscaler. Every other service has "+
+				"one and this one must not: it would raise the replica count under "+
+				"load, which is the moment the database has least room, and each new "+
+				"pod asks for another %d connections.",
+				manifest, pools*int(tenantdb.MaxConns))
+		}
+	}
 }

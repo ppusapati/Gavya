@@ -1,0 +1,55 @@
+# The one way in, for the shape that ships.
+#
+# ingress.yaml beside this points at gateway-service, which is the front door of
+# the twenty-nine-service deployment. This points at the modulith, which is the
+# front door of the other one. They are two files rather than one with a variable
+# in it, for the same reason there are two Prometheus configurations: each is
+# true about its own shape, and a single file with the wrong backend name is an
+# ingress that applies cleanly and routes to nothing.
+#
+# APPLY ONE OF THEM, NOT BOTH.
+#
+# Both declare an Ingress named `gavya` on the same host, so applying the second
+# replaces the first. That is deliberate — it is the same door — and it means
+# switching shapes is one apply rather than a delete and an apply with an outage
+# in between. It also means `kubectl apply -f deployments/k8s/` applies whichever
+# sorts last, so do not do that: name the file.
+#
+#   kubectl apply -f deployments/k8s/ingress-modulith.yaml
+#
+# Everything else in this file is ingress.yaml's, unchanged, and the notes there
+# about TLS, the body size and the timeouts apply here too.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gavya
+  namespace: gavya
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "16m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "120"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        # Replace with the host this platform is served on. Left as an example
+        # deliberately: a working default here would be somebody else's domain.
+        - gavya.example
+      secretName: gavya-tls
+  rules:
+    - host: gavya.example
+      http:
+        paths:
+          # Everything. The modulith routes by the Connect procedure in the path
+          # and refuses what it does not recognise, so splitting the routing
+          # across two places would mean two lists to keep in step.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: modulith
+                port:
+                  number: 80

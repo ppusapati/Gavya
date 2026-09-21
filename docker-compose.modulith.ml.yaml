@@ -1,0 +1,107 @@
+# The advisory ML tier, beside the modulith.
+#
+#   docker compose -f docker-compose.modulith.yaml \
+#                  -f docker-compose.modulith.ml.yaml up
+#
+# WHY THIS IS A SEPARATE FILE AND NOT A PROFILE
+#
+# Turning the tier on is two facts that have to be true together: the four Rust
+# services are running, and the modulith knows their addresses. A compose profile
+# gives the first and not the second, and the half-on state it leaves is the
+# expensive one — a URL that is set and unreachable costs a two-second dial and
+# three attempts on every observation, on the collection path, at six in the
+# morning. An unset URL costs nothing, because each service checks for empty and
+# skips the estimate.
+#
+# So the services and the addresses arrive in the same file. You cannot get one
+# without the other, which is the only arrangement where "the tier is off" and
+# "the tier is on" are the only two states.
+#
+# WHY THE MODULITH DOES NOT SWALLOW THEM
+#
+# The Go platform is one process here; the ML tier is four more, in both shapes.
+# That is the standing rule and not an omission: everything the models do is
+# reached over the network, so a model that hangs, leaks or panics degrades an
+# advisory signal and cannot touch the authoritative path. Putting them in the
+# same process would be the one change that makes that untrue.
+#
+# WHAT WAS WRONG BEFORE
+#
+# docker-compose.yaml ran all four and wired all four addresses.
+# docker-compose.modulith.yaml — the shape meant to be deployed — defined none of
+# them and left every address empty. So the tier existed in the deployment nobody
+# runs and not in the one that ships, which is the same asymmetry this repository
+# found in the monitoring and wrote a rule about: a thing present only in the
+# other shape is not a weaker version of it, it is none.
+#
+# It stays opt-in, because advisory means advisory. What it is not any more is
+# unavailable.
+
+version: "3.9"
+
+services:
+  gavya:
+    environment:
+      # The addresses of the four below. These are the only lines that turn the
+      # tier on; without them the services would run and nothing would call them.
+      ANOMALY_ML_URL: "http://anomaly-service:9101"
+      UNCERTAINTY_ML_URL: "http://uncertainty-service:9102"
+      RECONCILIATION_ML_URL: "http://reconciliation-service:9103"
+      DIVERGENCE_ML_URL: "http://divergence-service:9104"
+    depends_on:
+      anomaly-service:
+        condition: service_started
+      uncertainty-service:
+        condition: service_started
+      reconciliation-service:
+        condition: service_started
+      divergence-service:
+        condition: service_started
+
+  # No host ports. The other compose file publishes 9101 to 9104 because it
+  # publishes a port for everything; here nothing but the gateway is reachable
+  # from the host, and these are reached by name on the compose network — which
+  # is the whole argument of the file this one extends.
+  anomaly-service:
+    build:
+      context: ./ml
+      dockerfile: Dockerfile
+      args:
+        SERVICE: anomaly-service
+    environment:
+      LISTEN_ADDR: 0.0.0.0:9101
+      LOG_LEVEL: "${ML_LOG_LEVEL:-info}"
+    restart: unless-stopped
+
+  uncertainty-service:
+    build:
+      context: ./ml
+      dockerfile: Dockerfile
+      args:
+        SERVICE: uncertainty-service
+    environment:
+      LISTEN_ADDR: 0.0.0.0:9102
+      LOG_LEVEL: "${ML_LOG_LEVEL:-info}"
+    restart: unless-stopped
+
+  reconciliation-service:
+    build:
+      context: ./ml
+      dockerfile: Dockerfile
+      args:
+        SERVICE: reconciliation-service
+    environment:
+      LISTEN_ADDR: 0.0.0.0:9103
+      LOG_LEVEL: "${ML_LOG_LEVEL:-info}"
+    restart: unless-stopped
+
+  divergence-service:
+    build:
+      context: ./ml
+      dockerfile: Dockerfile
+      args:
+        SERVICE: divergence-service
+    environment:
+      LISTEN_ADDR: 0.0.0.0:9104
+      LOG_LEVEL: "${ML_LOG_LEVEL:-info}"
+    restart: unless-stopped

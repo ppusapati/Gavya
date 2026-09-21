@@ -1,0 +1,185 @@
+# The whole platform as one pod.
+#
+# The shape docker-compose.modulith.yaml deploys, in a cluster. Twenty-nine
+# services have four manifests each here and this one had none, so the deployment
+# meant to ship was the only one that could not be deployed by the same means as
+# the rest.
+#
+# # ONE REPLICA, AND THE ARITHMETIC THAT SAYS SO
+#
+# This is the line to read before changing anything.
+#
+# The modulith does not merge the databases and so it does not merge the pools:
+# each of its twenty-eight modules opens its own, exactly as it does when it runs
+# alone. That is 28 x tenantdb.MaxConns = 224 PostgreSQL connections held by one
+# pod, and both compose files declare max_connections = 300 for exactly that
+# reason, with tenantdb.Headroom = 40 left for everything else.
+#
+# So a second replica asks for 448 and the server has 300. The failure is not a
+# refusal at startup — the pods start, the probes pass, and the connections are
+# taken lazily as load arrives. It surfaces on the first busy morning as "sorry,
+# too many clients already" at whichever booth happened to be last.
+#
+# There is therefore no HorizontalPodAutoscaler beside this, which every other
+# service in this repository has. Scaling this shape horizontally is a decision
+# about the database first: raise max_connections to at least
+# replicas x 224 + 40 and change this number second. A connection pooler in front
+# of PostgreSQL is the other answer and this repository does not deploy one.
+#
+# services/gateway-service/handler/pools_test.go holds the same arithmetic and
+# fails the build if this replica count and that limit stop agreeing.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: modulith
+  namespace: gavya
+  labels:
+    app: modulith
+spec:
+  # See the arithmetic above. Not a placeholder.
+  replicas: 1
+  # One pod at a time, and the old one goes first. Two modulith pods overlapping
+  # during a rollout is the two-replica case above, arriving by accident for a
+  # minute rather than on purpose forever — and a minute is long enough to be a
+  # morning's collections.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: modulith
+  template:
+    metadata:
+      annotations:
+        # Discovered by a cluster Prometheus, the same way every other service
+        # is. deploy/monitoring/prometheus.modulith.yml is the compose shape's
+        # equivalent, and a test checks that what one scrapes the other does.
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "8000"
+      labels:
+        app: modulith
+    spec:
+      containers:
+        - name: modulith
+          image: modulith:latest
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: modulith-config
+            - secretRef:
+                name: modulith-secret
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              # Twenty-eight modules in one process, not one service's worth.
+              # The separate shape asks for 100m x 29 across the namespace; this
+              # asks for a fraction of that because the idle cost of a module is
+              # a few goroutines rather than a runtime.
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: modulith-config
+  namespace: gavya
+data:
+  # One name for the process. Every module publishes metrics and spans under it,
+  # which is the difference this shape makes to a dashboard: a procedure is still
+  # labelled by procedure, and the job is `gavya` rather than twenty-nine jobs.
+  SERVICE_NAME: gavya
+  SERVER_ADDR: ":8000"
+  LOG_LEVEL: info
+
+  # Every module reached at the loopback address of this same pod.
+  #
+  # Not a workaround. The gateway module's configuration names an address for
+  # each upstream, and in this shape every one of them is this process — so the
+  # call goes out of the mux, round the middleware and back in, which is what
+  # makes session verification have one implementation rather than two. The cost
+  # of that hop was measured; it is in docs/roadmap.md.
+  #
+  # NetworkPolicy does not govern loopback, so none of these needs an egress
+  # rule. The egress policy beside this file is four rules long for that reason,
+  # where gateway-service's is thirty.
+  IDENTITY_SERVICE_URL: http://127.0.0.1:8000
+  TENANT_SERVICE_URL: http://127.0.0.1:8000
+  CATTLE_SERVICE_URL: http://127.0.0.1:8000
+  MILK_SERVICE_URL: http://127.0.0.1:8000
+  BREEDING_SERVICE_URL: http://127.0.0.1:8000
+  HEALTH_SERVICE_URL: http://127.0.0.1:8000
+  FEED_SERVICE_URL: http://127.0.0.1:8000
+  FARM_SERVICE_URL: http://127.0.0.1:8000
+  CATTLE_MARKET_SERVICE_URL: http://127.0.0.1:8000
+  PRODUCT_CATALOG_SERVICE_URL: http://127.0.0.1:8000
+  INVENTORY_SERVICE_URL: http://127.0.0.1:8000
+  ORDER_SERVICE_URL: http://127.0.0.1:8000
+  BILLING_SERVICE_URL: http://127.0.0.1:8000
+  NOTIFICATION_SERVICE_URL: http://127.0.0.1:8000
+  REPORTING_SERVICE_URL: http://127.0.0.1:8000
+  AUDIT_SERVICE_URL: http://127.0.0.1:8000
+  FILE_SERVICE_URL: http://127.0.0.1:8000
+  INGESTION_SERVICE_URL: http://127.0.0.1:8000
+  CANONICAL_SERVICE_URL: http://127.0.0.1:8000
+  BALANCE_SERVICE_URL: http://127.0.0.1:8000
+  MATERIAL_SERVICE_URL: http://127.0.0.1:8000
+  LABORATORY_SERVICE_URL: http://127.0.0.1:8000
+  OBSERVATION_SERVICE_URL: http://127.0.0.1:8000
+  POOLING_SERVICE_URL: http://127.0.0.1:8000
+  PROCUREMENT_SERVICE_URL: http://127.0.0.1:8000
+  PRODUCTION_SERVICE_URL: http://127.0.0.1:8000
+  SETTLEMENT_SERVICE_URL: http://127.0.0.1:8000
+  SHADOW_SETTLEMENT_SERVICE_URL: http://127.0.0.1:8000
+  # settlement-service reads three of its upstreams under shorter names.
+  PROCUREMENT_URL: http://127.0.0.1:8000
+  CANONICAL_URL: http://127.0.0.1:8000
+  NOTIFICATION_URL: http://127.0.0.1:8000
+
+  # Who settlement-service says it is when it calls another module.
+  SERVICE_IDENTITY: SI_SETTLEMENT_00000000000
+
+  # Where file-service puts what it is given. A pod's filesystem is not a place
+  # to keep an upload: nothing here mounts a volume for it, so `local` means the
+  # files live until the pod is replaced. Point this at object storage before
+  # anybody uploads anything they expect to see again.
+  STORAGE_PROVIDER: local
+  STORAGE_BUCKET: /var/lib/gavya/files
+
+  # Where spans go. Empty turns tracing off and the platform is complete without
+  # it, the same way it is complete without the ML tier.
+  GAVYA_TRACE_ENDPOINT: "http://otel-collector:4318"
+
+  # The measurement-control regime whose law an eligibility verdict cites.
+  # observation-service refuses to start without it, because citing the wrong
+  # country's statute is worse than citing none. Replace this with yours.
+  MEASUREMENT_REGIME: "IN-LMA-2009"
+
+  # Browser origins allowed to call this. Empty means none, which is right until
+  # somebody names the console's origin.
+  CORS_ALLOWED_ORIGINS: ""
+
+  # The ML tier, off. Each of these is read with a default of empty and empty
+  # means the estimate is skipped, deterministically, by the Go tier — which is
+  # the answer that counts. Setting one to an address that is not running costs a
+  # two-second dial and three attempts on every observation, so these are set
+  # together with the services or not at all, the same way
+  # docker-compose.modulith.ml.yaml does it.
+  ANOMALY_ML_URL: ""
+  UNCERTAINTY_ML_URL: ""
+  RECONCILIATION_ML_URL: ""
+  DIVERGENCE_ML_URL: ""

@@ -1,0 +1,29 @@
+# The front door, and in this shape the only door there is.
+#
+# gateway-service's Service carries a note explaining that it must stay
+# ClusterIP, because every service behind it takes the tenant and the permissions
+# it acts on from headers the gateway sets — so a service reachable from outside
+# the cluster is a service anybody can impersonate any tenant against.
+#
+# That argument does not apply here, and it is worth saying why rather than
+# copying the line. In this shape there is nothing behind the door: the twenty-
+# eight modules are the same process, the permissions reach the authorisation
+# check on the request context rather than in a header, and there is no second
+# port to reach anything on. The headers cannot be forged because they are not
+# used.
+#
+# It is still ClusterIP, exposed by the Ingress. Not because the shape needs it
+# but because TLS is terminated there, and a LoadBalancer here would be a second
+# way in that nothing terminates TLS on.
+apiVersion: v1
+kind: Service
+metadata:
+  name: modulith
+  namespace: gavya
+spec:
+  type: ClusterIP
+  selector:
+    app: modulith
+  ports:
+    - port: 80
+      targetPort: 8000

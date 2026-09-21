@@ -418,9 +418,42 @@ func dirExists(p string) bool {
 // where an observation is scored in testing and unscored in production.
 //
 // This does not require them to be set. It requires them to say the same thing.
+//
+// # PER SHAPE, NOT PER PLATFORM
+//
+// There are two shapes and they are allowed to differ from each other. The
+// twenty-nine-service deployment runs the tier; the modulith ships with it off
+// and docker-compose.modulith.ml.yaml turns it on, which is a decision recorded
+// in both of those files. What is still not allowed is a shape disagreeing with
+// itself, and that is what this compares: each deployment descriptor against the
+// manifests of the same shape.
+//
+// The first version of this globbed every service's ConfigMap into one map and
+// compared it against docker-compose.yaml. That was right while there was one
+// shape. When the modulith's manifests arrived, its four empty settings
+// overwrote a service's in the map — last glob wins — and the test reported a
+// disagreement between two files that were each correct.
 func TestComposeAndKubernetesAgreeAboutTheMLTier(t *testing.T) {
+	for _, shape := range []struct {
+		name      string
+		compose   string
+		manifests string
+	}{
+		{"the twenty-nine services", "docker-compose.yaml",
+			filepath.Join("services", "*", "deployments", "k8s", "*.yaml")},
+		{"the modulith", "docker-compose.modulith.yaml",
+			filepath.Join("services", "modulith", "deployments", "k8s", "*.yaml")},
+	} {
+		t.Run(shape.name, func(t *testing.T) {
+			mlTierAgrees(t, shape.compose, shape.manifests)
+		})
+	}
+}
+
+func mlTierAgrees(t *testing.T, composeFile, manifestGlob string) {
+	t.Helper()
 	root := repoRoot(t)
-	compose := readRepoFile(t, "docker-compose.yaml")
+	compose := readRepoFile(t, composeFile)
 
 	// Every ML URL any service reads, taken from the configs rather than listed.
 	var vars []string
@@ -449,8 +482,14 @@ func TestComposeAndKubernetesAgreeAboutTheMLTier(t *testing.T) {
 	}
 
 	k8s := map[string]string{}
-	manifests, _ := filepath.Glob(filepath.Join(root, "services", "*", "deployments", "k8s", "*.yaml"))
+	manifests, _ := filepath.Glob(filepath.Join(root, manifestGlob))
 	for _, f := range manifests {
+		// The modulith is its own shape and is compared against its own compose
+		// file; leaving it in here would let its settings overwrite a service's.
+		if strings.Contains(filepath.ToSlash(f), "/modulith/") &&
+			!strings.Contains(filepath.ToSlash(manifestGlob), "/modulith/") {
+			continue
+		}
 		b, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
@@ -474,7 +513,7 @@ func TestComposeAndKubernetesAgreeAboutTheMLTier(t *testing.T) {
 	composeSet := regexp.MustCompile(`(?m)^\s+([A-Z_]+_ML_URL): "([^"]*)"`)
 	inCompose := map[string]string{}
 	for _, m := range composeSet.FindAllStringSubmatch(compose, -1) {
-		inCompose[m[1]] = m[2]
+		inCompose[m[1]] = composeValue(m[2])
 	}
 
 	for _, v := range vars {
@@ -485,16 +524,35 @@ func TestComposeAndKubernetesAgreeAboutTheMLTier(t *testing.T) {
 			// Neither names it. Both deployments then get the binary's default,
 			// which is empty, and they agree.
 		case !inK:
-			t.Errorf("compose sets %s to %q and no Kubernetes ConfigMap mentions it, so that "+
-				"tier runs under compose and silently does not under Kubernetes", v, cc)
+			t.Errorf("%s sets %s to %q and no Kubernetes ConfigMap of this shape mentions "+
+				"it, so that tier runs under compose and silently does not under "+
+				"Kubernetes", composeFile, v, cc)
 		case !inC:
-			t.Errorf("a Kubernetes ConfigMap sets %s to %q and compose never mentions it", v, ck)
+			t.Errorf("a Kubernetes ConfigMap of this shape sets %s to %q and %s never "+
+				"mentions it", v, ck, composeFile)
 		case (ck == "") != (cc == ""):
-			t.Errorf("%s is %q under Kubernetes and %q under compose; one deployment consults "+
-				"that tier and the other does not, and nothing says which was intended",
-				v, ck, cc)
+			t.Errorf("%s is %q under Kubernetes and %q in %s; one half of this shape "+
+				"consults that tier and the other does not, and nothing says which was "+
+				"intended", v, ck, cc, composeFile)
 		}
 	}
+}
+
+// composeValue resolves what a compose setting is worth when nobody overrides
+// it, so that "set" and "empty" mean the same thing in both descriptors.
+//
+// `${ANOMALY_ML_URL:-}` is how a compose file says "off, and overridable". As a
+// string it is eleven characters long, and comparing string emptiness made it
+// read as an address — so the modulith's ConfigMap, which says "" for the same
+// state, looked like a disagreement with its own compose file. Both were right.
+//
+// Only the empty-default form is resolved. `${VAR:-http://somewhere}` is a real
+// default and is left as it is, because it is one.
+func composeValue(raw string) string {
+	if strings.HasPrefix(raw, "${") && strings.HasSuffix(raw, ":-}") {
+		return ""
+	}
+	return raw
 }
 
 // configGlob finds every service's config, wherever it sits.

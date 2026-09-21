@@ -178,6 +178,17 @@ services:
       # unset, a reading is still recorded, a window is still reconciled and a
       # divergence is still classified — deterministically, by the Go tier, which
       # is the answer that counts. The Rust services add an estimate beside it.
+      #
+      # Empty here on purpose, and not because the tier is unavailable in this
+      # shape — it used to be. docker-compose.modulith.ml.yaml runs the four
+      # services and sets these four addresses together:
+      #
+      #   docker compose -f docker-compose.modulith.yaml \
+      #                  -f docker-compose.modulith.ml.yaml up
+      #
+      # Together, because an address that is set and unreachable costs a
+      # two-second dial and three attempts per observation, and an address that
+      # is unset costs nothing. Those are the two states worth having.
       ANOMALY_ML_URL: "${ANOMALY_ML_URL:-}"
       UNCERTAINTY_ML_URL: "${UNCERTAINTY_ML_URL:-}"
       RECONCILIATION_ML_URL: "${RECONCILIATION_ML_URL:-}"
