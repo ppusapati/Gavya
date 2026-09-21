@@ -1823,7 +1823,8 @@ func composeListeningPorts(t *testing.T, root string) map[string]int {
 }
 
 // gaugesServicesPublish is every metric name the platform registers with
-// observe.Publish or observe.PublishCounter, read out of the source.
+// observe.Publish, observe.PublishCounter or observe.PublishLabelledCounter,
+// read out of the source.
 //
 // It walks libs as well as services, and that was not always true. The first
 // version looked only under services/, because the only two things publishing a
@@ -1839,8 +1840,13 @@ func gaugesServicesPublish(t *testing.T, root string) map[string]bool {
 	// and the call is always written this way, which the check below enforces by
 	// failing when it finds none. Counters are registered the same way and count
 	// the same: what matters here is whether a scrape would contain the name.
+	//
+	// LabelledCounter is included for the same reason libs/ was: it is a third
+	// way to put a name in a scrape, added when the per-table query metrics
+	// needed labels, and a scanner that did not know about it would let an alert
+	// name one of those and report nothing.
 	published := regexp.MustCompile(
-		`observe\.Publish(?:Counter)?\(observe\.(?:Gauge|Counter)\{\s*\n?\s*Name:\s*"([a-zA-Z_][a-zA-Z0-9_]*)"`)
+		`observe\.Publish(?:Counter|LabelledCounter)?\(observe\.(?:Gauge|Counter|LabelledCounter)\{\s*\n?\s*Name:\s*"([a-zA-Z_][a-zA-Z0-9_]*)"`)
 
 	out := map[string]bool{}
 	for _, tree := range []string{"services", "libs"} {

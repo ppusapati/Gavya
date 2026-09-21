@@ -2467,6 +2467,53 @@ daemon.
 
 ---
 
+## Which table the morning went into
+
+The last requirement owed from the inherited library's list, and the reason it
+stayed owed is written in the cross-check: the per-table breakdown already
+existed in the traces — a span is named `db SELECT collections` — and as a metric
+it needed labels, which `observe` did not have.
+
+`gavya_db_table_queries_total{table,operation}`, with its seconds and its
+failures. The three totals beside them answer "the database is where the time
+goes", which is where they stop; the next question is always *which table*, and
+a trace answers that for one request somebody has in front of them rather than
+for the morning.
+
+**One parser, two readers.** The span name and the label have to agree about
+which table a query touched, or a trace and a graph opened to explain the same
+slow morning point at two different tables. `operationOf` was a single function
+returning `"db SELECT collections"`; it is now composed from `verbAndTable`, and
+the counts use the same split. Both still refuse rather than guess — a statement
+whose target is a subquery or a function call gets the verb and no table, because
+a label that is confidently wrong sends somebody to look at the wrong place.
+
+**Labels come with a ceiling, because labels are the danger.** `procedureOf` in
+the same package exists entirely to stop one label per identifier turning a
+metrics endpoint into an outage of its own, and a breakdown by table is exactly
+the shape that goes wrong. So `LabelledCounter` emits at most `MaxSeries` in
+sorted order and publishes `<name>_series_dropped` — always, including as zero,
+because a line that appears only when something is wrong is a line nobody has a
+graph of at the moment it appears. A series whose labels do not match its names
+is dropped rather than rendered short: Prometheus rejects the whole document on
+one malformed line, and rejecting it loses every other metric in the scrape.
+
+The accumulating map is bounded too, at `MaxTableSeries`. The set is bounded by
+the schema already, so that is a ceiling on a mistake. Reaching it stops new
+combinations being tracked and lets the existing ones go on counting — preferred
+to evicting, because a counter that forgets is a counter whose `rate()` is wrong
+in a way nobody can see.
+
+A statement the parser does not recognise is counted in the three totals and not
+here. A row labelled `unknown` on a metric whose whole purpose is to say which
+table is slow answers the question wrongly rather than not at all.
+
+Five mutants, all killed. And the scanner that checks every alert names a metric
+something actually emits had to learn about the third way of publishing one —
+which is the same lesson it learned when `libs/` started publishing gauges.
+
+---
+
 ## The shape that ships can now run the ML tier, and be deployed
 
 Two gaps with the same shape, both of them the asymmetry this document already
@@ -2872,3 +2919,6 @@ diff.
 | The ML tier turned on by an overlay, not a profile | The services and the addresses have to arrive together. A profile gives the first without the second, and an address that is set and unreachable costs six seconds an observation where an unset one costs nothing. |
 | The modulith at one replica, with no autoscaler | Twenty-eight pools in one pod is 224 connections against a declared 300. A second replica asks for 448 and nothing refuses at startup — it arrives as "too many clients already" on the first busy morning. |
 | A deployment check per shape, not per platform | Globbing every ConfigMap into one map made the modulith's settings overwrite a service's, and reported a disagreement between two files that were each right. |
+| Labels with a ceiling, and the count of what was left out | Labels are how a metrics endpoint becomes an outage of its own. Truncating quietly would be the same defect in a smaller font; a truncated metric that does not say so is a number somebody reads as the whole picture. |
+| One parser for the span name and the table label | They have to agree about which table a query touched, or a trace and a graph opened on the same slow morning point at two different tables. |
+| A bounded map that stops taking new keys rather than evicting old ones | A counter that forgets is a counter whose rate() is wrong in a way nobody can see. |

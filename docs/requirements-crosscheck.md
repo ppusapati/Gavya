@@ -91,7 +91,7 @@ than a dependency-injection framework.
 | FR3.2 Database operation metrics | **Held** — `gavya_db_queries_total`, `gavya_db_query_seconds_total`, `gavya_db_query_failures_total`, counted in the pgx tracer so they cover sweeps and boot checks as well as requests |
 | FR3.4 Connection pool statistics | **Held** — seven numbers off `pgxpool.Stat()`, summed across the pools a process holds so the modulith reads correctly |
 | FR3.5 Configurable backend | Divergence, as FR3.1 |
-| FR3.6 Per-table, per-operation query metrics | **Owed**, and the least urgent. The per-table breakdown exists in the traces (a span is named `db SELECT collections`); as a metric it would need labels, which `observe` does not have |
+| FR3.6 Per-table, per-operation query metrics | **Held**, and it was the last one owed. `gavya_db_table_queries_total{table,operation}` and its seconds and failures, counted by the same parser that names the span. `observe` grew a `LabelledCounter` for it, with a ceiling — labels are how a metrics endpoint becomes an outage of its own, so it emits at most `MaxSeries` and publishes how many it left out |
 | FR4.1 OpenTelemetry-based tracing | **Held in protocol, not in library** — W3C trace context and OTLP/HTTP JSON export, written directly rather than through the OTel SDK |
 | FR4.2 Jaeger, Zipkin and OTLP exporters | **Partly** — OTLP only. Both of the others accept OTLP |
 | FR4.3 Automatic spans for database operations | **Held** — a span per query via pgx's `QueryTracer`, named from a bounded vocabulary rather than the SQL text |

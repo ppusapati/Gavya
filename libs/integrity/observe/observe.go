@@ -182,10 +182,57 @@ type Counter struct {
 	Read func() float64
 }
 
+// A Series is one labelled sample: the label values, in the order the
+// LabelledCounter that produced it names them, and the number.
+type Series struct {
+	Labels []string
+	Value  float64
+}
+
+// A LabelledCounter is a counter broken down by something.
+//
+// Until now this package had one shape for a published number: a name and a
+// value. That was enough for everything a service knows about itself as a single
+// figure — a queue depth, a chain that still verifies — and not enough for the
+// one requirement left owed from the inherited library's list: per-table,
+// per-operation query metrics. A breakdown needs labels.
+//
+// # THE REASON THIS DID NOT EXIST SOONER
+//
+// Labels are how a metrics endpoint becomes an outage of its own. One label per
+// identifier and a scrape returns a million lines, the scraper falls behind, and
+// the first thing anybody loses is the monitoring they were relying on to notice.
+// procedureOf in this same file exists entirely to prevent that for request
+// counts, and it counts anything it does not recognise as "other".
+//
+// So this type carries a ceiling rather than trusting its callers. Read returns
+// whatever it has; the handler emits MaxSeries of them in sorted order and says
+// plainly how many it left out, under <name>_series_dropped. Truncating quietly
+// would be the same defect in a smaller font.
+//
+// Same rule as Gauge and Counter about the function: it runs inside the scrape,
+// so it reads a variable and does not go to the database.
+type LabelledCounter struct {
+	Name string
+	Help string
+	// Labels are the label names, in the order each Series gives its values.
+	Labels []string
+	Read   func() []Series
+}
+
+// MaxSeries is how many lines one LabelledCounter may contribute to a scrape.
+//
+// Five hundred, which is above anything this platform should produce — the
+// database has a hundred and twelve tables and the statements against them use
+// five verbs — and far below the point at which a scrape becomes a problem. It
+// is a ceiling on a mistake, not a budget to spend.
+const MaxSeries = 500
+
 var (
 	gaugesMu sync.RWMutex
 	gauges   []Gauge
 	counters []Counter
+	labelled []LabelledCounter
 )
 
 // Publish registers a gauge. Meant to be called at boot, once per name.
@@ -225,6 +272,35 @@ func PublishCounter(c Counter) {
 	counters = append(counters, c)
 }
 
+// PublishLabelledCounter registers a labelled counter, on the same terms as
+// Publish.
+//
+// A counter naming no labels is refused rather than published: it is a Counter
+// written in the wrong shape, and publishing it would produce lines with an
+// empty label set that read as the plain counter it should have been.
+func PublishLabelledCounter(c LabelledCounter) {
+	if c.Name == "" || c.Read == nil || len(c.Labels) == 0 {
+		return
+	}
+	gaugesMu.Lock()
+	defer gaugesMu.Unlock()
+	for i := range labelled {
+		if labelled[i].Name == c.Name {
+			labelled[i] = c
+			return
+		}
+	}
+	labelled = append(labelled, c)
+}
+
+func publishedLabelled() []LabelledCounter {
+	gaugesMu.RLock()
+	defer gaugesMu.RUnlock()
+	out := make([]LabelledCounter, len(labelled))
+	copy(out, labelled)
+	return out
+}
+
 // publishedGauges is a copy, so the handler is not holding the lock while it
 // calls somebody else's function.
 func publishedGauges() []Gauge {
@@ -247,6 +323,7 @@ func publishedCounters() []Counter {
 func forgetGauges() {
 	gaugesMu.Lock()
 	defer gaugesMu.Unlock()
+	labelled = nil
 	gauges = nil
 	counters = nil
 }
@@ -398,9 +475,73 @@ func (m *Metrics) Handler() http.HandlerFunc {
 			fmt.Fprintf(&b, "%s %s\n", c.Name, strconv.FormatFloat(c.Read(), 'f', -1, 64))
 		}
 
+		for _, c := range publishedLabelled() {
+			writeLabelled(&b, c)
+		}
+
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 		_, _ = w.Write([]byte(b.String()))
 	}
+}
+
+// writeLabelled renders one labelled counter, bounded and sorted.
+//
+// Sorted so two scrapes of an unchanged process produce identical bytes, which
+// is the property every other block in this handler has. Bounded because the
+// alternative is the failure described on LabelledCounter, and the count of what
+// was left out is emitted rather than implied — a truncated metric that does not
+// say it was truncated is a number somebody will read as the whole picture.
+func writeLabelled(b *strings.Builder, c LabelledCounter) {
+	series := c.Read()
+
+	// A series whose label count does not match the names is dropped rather than
+	// rendered short: Prometheus rejects the whole document on a malformed line,
+	// and rejecting it loses every other metric in the same scrape.
+	kept := make([]Series, 0, len(series))
+	malformed := 0
+	for _, s := range series {
+		if len(s.Labels) != len(c.Labels) {
+			malformed++
+			continue
+		}
+		kept = append(kept, s)
+	}
+
+	sort.Slice(kept, func(i, j int) bool {
+		for n := range kept[i].Labels {
+			if kept[i].Labels[n] != kept[j].Labels[n] {
+				return kept[i].Labels[n] < kept[j].Labels[n]
+			}
+		}
+		return false
+	})
+
+	dropped := malformed
+	if len(kept) > MaxSeries {
+		dropped += len(kept) - MaxSeries
+		kept = kept[:MaxSeries]
+	}
+
+	fmt.Fprintf(b, "# HELP %s %s\n", c.Name, c.Help)
+	fmt.Fprintf(b, "# TYPE %s counter\n", c.Name)
+	for _, s := range kept {
+		b.WriteString(c.Name)
+		b.WriteString("{")
+		for i, name := range c.Labels {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			fmt.Fprintf(b, "%s=%q", name, s.Labels[i])
+		}
+		fmt.Fprintf(b, "} %s\n", strconv.FormatFloat(s.Value, 'f', -1, 64))
+	}
+
+	// Always emitted, including as zero. A line that appears only when something
+	// is wrong is a line nobody has a graph of when it does.
+	fmt.Fprintf(b, "# HELP %s_series_dropped Series left out of %s: above %d, or malformed.\n",
+		c.Name, c.Name, MaxSeries)
+	fmt.Fprintf(b, "# TYPE %s_series_dropped gauge\n", c.Name)
+	fmt.Fprintf(b, "%s_series_dropped %d\n", c.Name, dropped)
 }
 
 // procedureOf is the label a request is counted under.
