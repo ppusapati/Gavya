@@ -1,7 +1,8 @@
 import { ApiClient, ApiError, type CallOptions } from './client';
+import { HerdApi } from './herd';
 import * as T from './types';
 
-export { ApiClient, ApiError };
+export { ApiClient, ApiError, HerdApi };
 export * from './types';
 
 /**
@@ -23,10 +24,22 @@ export class Gavya {
 	 * the gateway asserts the tenant itself from the session and strips any
 	 * claim arriving with the request.
 	 */
+	/**
+	 * The herd and the morning's work: cattle, milk, breeding, health, feed and
+	 * farms.
+	 *
+	 * A sub-facade rather than three dozen more methods here. This class covers
+	 * the integrity spine — the four services the console was built for — and the
+	 * platform has twenty-eight; one class with every procedure on it is one
+	 * nobody can read.
+	 */
+	readonly herd: HerdApi;
+
 	constructor(client: ApiClient, session: string, tenantId: string) {
 		this.#client = client;
 		this.#session = session;
 		this.#tenantId = tenantId;
+		this.herd = new HerdApi(client, session, tenantId);
 	}
 
 	#opts(extra?: Partial<CallOptions>): CallOptions {

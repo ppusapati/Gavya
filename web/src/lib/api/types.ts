@@ -21,6 +21,26 @@ export const BALANCE = 'balance.v1.BalanceService';
  */
 export const IDENTITY = 'gavya.identity.v1.IdentityService';
 
+/**
+ * The herd and the morning's work.
+ *
+ * These six services had no client at all: twenty-nine services are served,
+ * permissioned and exercised end to end, and until now a person could reach four
+ * of them. "The platform works" and "a person can use the platform" are
+ * different sentences.
+ */
+export const CATTLE = 'cattle.v1.CattleService';
+export const MILK = 'milk.v1.MilkService';
+export const BREEDING = 'breeding.v1.BreedingService';
+export const HEALTH = 'health.v1.HealthService';
+export const FEED = 'feed.v1.FeedService';
+export const FARM = 'farm.v1.FarmService';
+
+// The wire types for those six. Re-exported rather than written here, because
+// this file was already four hundred lines about the integrity spine and one
+// file holding every type the platform has is one nobody reads.
+export * from './types.herd';
+
 export interface SignInRequest {
 	email: string;
 	password: string;

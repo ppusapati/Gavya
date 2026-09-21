@@ -19,9 +19,14 @@
 		if (!settings.ready) panelOpen = true;
 	});
 
+	// Links whose path is a prefix of another link's. Without this, /herd reads as
+	// the current page while somebody is on /herd/pregnancies, and two entries in
+	// the rail are highlighted at once.
+	const EXACT = new Set(['/herd']);
+
 	function current(href: string): 'page' | undefined {
 		const path = page.url.pathname;
-		if (href === '/') return path === '/' ? 'page' : undefined;
+		if (href === '/' || EXACT.has(href)) return path === href ? 'page' : undefined;
 		return path === href || path.startsWith(href + '/') ? 'page' : undefined;
 	}
 
@@ -71,6 +76,13 @@
 
 			<span class="group">Mass balance</span>
 			<a href="/balance" aria-current={current('/balance')}>Balance windows</a>
+
+			<span class="group">The herd</span>
+			<a href="/herd" aria-current={current('/herd')}>Cattle</a>
+			<a href="/milk" aria-current={current('/milk')}>Collection</a>
+			<a href="/herd/pregnancies" aria-current={current('/herd/pregnancies')}>Pregnancies</a>
+			<a href="/herd/vaccinations" aria-current={current('/herd/vaccinations')}>Vaccinations due</a>
+			<a href="/farms" aria-current={current('/farms')}>Farms &amp; feed</a>
 
 			<span class="group">Data mapping</span>
 			<a href="/mapping" aria-current={current('/mapping')}>External identities</a>

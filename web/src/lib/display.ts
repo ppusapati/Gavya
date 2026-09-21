@@ -108,3 +108,30 @@ export function isOpenEnded(validTo: string): boolean {
 	const year = new Date(validTo).getUTCFullYear();
 	return Number.isNaN(year) || year >= 9999;
 }
+
+/**
+ * An exact decimal, as the platform sent it, with its unit.
+ *
+ * The services send quantities as decimal strings — "6.250", not 6.25 — because
+ * the platform holds them as exact decimals and a double cannot carry 0.1. So
+ * this does not parse: it pads and appends. Anything that ran the string through
+ * Number to format it would round at the last step of a system built to avoid
+ * exactly that, and would do it invisibly.
+ */
+export function quantity(value: string | undefined, unit = ''): string {
+	const v = (value ?? '').trim();
+	if (v === '') return '—';
+	return unit ? `${v} ${unit}` : v;
+}
+
+/** A date for a date-only input, from an ISO instant. */
+export function toDateInput(iso: string | undefined): string {
+	if (!iso) return '';
+	const d = new Date(iso);
+	return Number.isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 10);
+}
+
+/** Today, as a date-only input wants it. */
+export function today(): string {
+	return new Date().toISOString().slice(0, 10);
+}

@@ -26,6 +26,25 @@ interface Stored {
 	userId: string;
 	roleName: string;
 	expiresAt: string;
+	timezone: string;
+}
+
+/**
+ * The browser's own zone, as a starting point and not as an answer.
+ *
+ * Which day a collection falls on is a local fact, and milk-service refuses to
+ * guess it — a collection at one in the morning Indian time falls on the 11th in
+ * Kolkata and the 10th in UTC, and the fortnight a member is paid for is drawn
+ * from that. The tenant's zone is the one that counts and the platform holds it;
+ * until the tenant screens read it back, this is the reviewer's own, shown in
+ * the panel so a mismatch is visible rather than silent.
+ */
+function browserZone(): string {
+	try {
+		return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+	} catch {
+		return 'UTC';
+	}
 }
 
 const empty: Stored = {
@@ -34,7 +53,8 @@ const empty: Stored = {
 	tenantId: '',
 	userId: '',
 	roleName: '',
-	expiresAt: ''
+	expiresAt: '',
+	timezone: browserZone()
 };
 
 function read(): Stored {
@@ -49,7 +69,8 @@ function read(): Stored {
 			tenantId: parsed.tenantId || '',
 			userId: parsed.userId || '',
 			roleName: parsed.roleName || '',
-			expiresAt: parsed.expiresAt || ''
+			expiresAt: parsed.expiresAt || '',
+			timezone: parsed.timezone || browserZone()
 		};
 	} catch {
 		// A browser that refuses site data, or a value left behind by an older
@@ -67,6 +88,7 @@ class Settings {
 	userId = $state(this.#stored.userId);
 	roleName = $state(this.#stored.roleName);
 	expiresAt = $state(this.#stored.expiresAt);
+	timezone = $state(this.#stored.timezone);
 
 	/**
 	 * A workspace can call something once it is signed in.
@@ -127,7 +149,8 @@ class Settings {
 					tenantId: this.tenantId,
 					userId: this.userId,
 					roleName: this.roleName,
-					expiresAt: this.expiresAt
+					expiresAt: this.expiresAt,
+					timezone: this.timezone
 				} satisfies Stored)
 			);
 		} catch {
