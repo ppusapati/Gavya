@@ -271,6 +271,42 @@ func TestEveryPackageTheClientsCallIsRoutedByTheGateway(t *testing.T) {
 	}
 }
 
+// The other direction: a procedure the platform serves and no client calls.
+//
+// That is a screen nobody can open. It is a quieter failure than the one above
+// — nothing errors, nothing logs, the end-to-end suite passes — and the platform
+// spent most of its life in it: twenty-nine services served, permissioned and
+// exercised, and a person could reach four of them. "The platform works" and "a
+// person can use the platform" are different sentences, and only the first of
+// them had a test.
+//
+// Now that every route has a caller, this holds the line. A procedure added to
+// authz.Table without a client fails here, at the moment somebody adds it,
+// rather than at the moment somebody wants to use it.
+//
+// It compares against the clients as a pair. The bench is the only thing that
+// calls DeliverRecord and the console is the only thing that administers a
+// tenant; neither needs every route, and demanding that of either would be a
+// worse test than none.
+func TestEveryProcedureThePlatformServesHasAClient(t *testing.T) {
+	called := map[string]bool{}
+	for _, c := range clientProcedures(t) {
+		called[c.procedure] = true
+	}
+
+	var orphans []string
+	for procedure := range authz.Table() {
+		if !called[procedure] {
+			orphans = append(orphans, procedure)
+		}
+	}
+	sort.Strings(orphans)
+
+	for _, p := range orphans {
+		t.Errorf("%s is served and permissioned and no client calls it, so nobody can reach it", p)
+	}
+}
+
 // The procedure names are gated above. The payloads were not.
 //
 // A renamed json tag is invisible to everything: the Go side moves together,

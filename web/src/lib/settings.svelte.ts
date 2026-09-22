@@ -167,12 +167,41 @@ class Settings {
 	}
 
 	/**
-	 * Forget the session.
+	 * Sign out: end the session on the platform, then forget it here.
 	 *
-	 * Local only: it does not tell the platform, so the session stays valid until
-	 * it expires or somebody revokes it. Saying so rather than calling this a
-	 * sign-out, because a person who signs out of a shared machine is entitled to
-	 * know which of those two they got.
+	 * This used to be forget() alone, and forget() alone was all the console
+	 * could do — identity-service has served SignOut all along and nothing
+	 * called it. Somebody pressing sign-out on a shared machine got their
+	 * browser cleaned and left a live session behind, valid until it expired.
+	 *
+	 * The local state is cleared whichever way the call goes, because a person
+	 * who asked to sign out must not stay signed in because the network was
+	 * down. The return value says which of the two happened, so a caller can
+	 * tell them.
+	 */
+	async signOut(reason = 'signed out from the console'): Promise<'ended' | 'local-only'> {
+		const had = this.session;
+		let outcome: 'ended' | 'local-only' = 'local-only';
+		if (had) {
+			try {
+				await this.api().identity.signOut(reason);
+				outcome = 'ended';
+			} catch {
+				// Reported to the caller rather than swallowed: the session is
+				// still live on the platform and somebody should know.
+			}
+		}
+		this.forget();
+		return outcome;
+	}
+
+	/**
+	 * Forget the session locally.
+	 *
+	 * Local only: it does not tell the platform, so the session stays valid
+	 * until it expires or somebody revokes it. signOut above is what a person
+	 * pressing sign-out should get; this is what is left when that call cannot
+	 * be made.
 	 */
 	forget() {
 		this.session = '';

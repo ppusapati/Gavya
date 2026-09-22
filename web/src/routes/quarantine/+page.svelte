@@ -1,6 +1,9 @@
 <script lang="ts">
 	import {
 		ApiError,
+		type GetQuarantinedResponse,
+		type ListDeviceSessionsResponse,
+		type ListGenerationsResponse,
 		type ListQuarantinedResponse,
 		type QuarantinedRecord,
 		type QuarantineReason
@@ -37,12 +40,38 @@
 
 	const records = $derived(task.data?.records ?? []);
 
+	/* ---- the device a held record names ---- */
+
+	let deviceId = $state('');
+	const generations = new Task<ListGenerationsResponse>();
+	const sessions = new Task<ListDeviceSessionsResponse>();
+
+	function loadDevice() {
+		const id = deviceId.trim();
+		if (!id) return;
+		generations.run((s) => settings.api().listGenerations(id, { signal: s }));
+		sessions.run((s) =>
+			settings.api().listSessions({ device_id: id, limit: 50, offset: 0 }, { signal: s })
+		);
+	}
+
 	let open = $state<string | undefined>(undefined);
 	let why = $state('');
 	let saving = $state(false);
 	let saveError = $state<ApiError | undefined>(undefined);
 
+	/**
+	 * The held record in full, payload included.
+	 *
+	 * The listing carries a hash of the payload and not the payload, which is
+	 * right for a list and useless for the decision: what a reviewer is actually
+	 * doing is comparing what the device sent against the record it collided
+	 * with, and a hash does not let them.
+	 */
+	const full = new Task<GetQuarantinedResponse>();
+
 	function expand(r: QuarantinedRecord) {
+		if (open !== r.id) full.run((s) => settings.api().getQuarantined(r.id, { signal: s }));
 		open = open === r.id ? undefined : r.id;
 		why = '';
 		saveError = undefined;
@@ -159,6 +188,15 @@
 										{/if}
 									</dl>
 
+									{#if open === r.id && full.settled}
+										<Await task={full} isEmpty={(d) => !d.record} empty="This record could not be read in full.">
+											{#snippet children(d)}
+												<h3>What the device sent</h3>
+												<pre class="payload">{JSON.stringify(d.payload, null, 2)}</pre>
+											{/snippet}
+										</Await>
+									{/if}
+
 									{#if !r.resolved}
 										<form onsubmit={(e) => resolve(e, r)}>
 											<ErrorNote error={saveError} />
@@ -190,6 +228,81 @@
 	{/snippet}
 </Await>
 
+<section>
+	<h2>The devices behind these</h2>
+	<p class="muted note">
+		A held record names a device, a generation and a session. These are the three it names: a
+		generation is a sequence space the device has since closed, and a session is one shift's worth
+		of records within it. A record quarantined for a stale generation or an unknown session is
+		asking a question about the rows below.
+	</p>
+	<div class="controls">
+		<div class="field"><label for="dv">Device</label><input id="dv" bind:value={deviceId} size="24" /></div>
+		<button class="ghost" disabled={!deviceId.trim() || generations.pending} onclick={loadDevice}>
+			Look up
+		</button>
+	</div>
+
+	{#if generations.settled}
+		<Await task={generations} isEmpty={(d) => (d.generations ?? []).length === 0} empty="That device has no generations.">
+			{#snippet children(d)}
+				<h3>Generations</h3>
+				<div class="tablewrap">
+					<table>
+						<thead><tr><th class="num">Generation</th><th>Opened</th><th>Closed</th><th>Why it rolled</th></tr></thead>
+						<tbody>
+							{#each d.generations as g (g.id)}
+								<tr>
+									<td class="num">{g.generation}</td>
+									<td>{instant(g.opened_at)}</td>
+									<td>
+										{#if g.closed_at}
+											{instant(g.closed_at)}
+										{:else}
+											<Chip tone="calm">open</Chip>
+										{/if}
+									</td>
+									<td class="muted">{g.reason || '—'}</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+			{/snippet}
+		</Await>
+	{/if}
+
+	{#if sessions.settled}
+		<Await task={sessions} isEmpty={(d) => (d.sessions ?? []).length === 0} empty="That device has no sessions.">
+			{#snippet children(d)}
+				<h3>Sessions</h3>
+				<div class="tablewrap">
+					<table>
+						<thead>
+							<tr><th>Session</th><th class="num">Gen</th><th>Operator</th><th>Status</th><th class="num">Last sequence</th><th class="num">Records</th><th>Opened</th></tr>
+						</thead>
+						<tbody>
+							{#each d.sessions as sess (sess.id)}
+								<tr>
+									<td class="mono">{sess.external_session_id}</td>
+									<td class="num">{sess.generation}</td>
+									<td class="mono">{sess.operator_ref || '—'}</td>
+									<td>
+										<Chip tone={sess.closed_at ? 'neutral' : 'calm'}>{label(sess.status)}</Chip>
+									</td>
+									<td class="num">{sess.last_sequence}</td>
+									<td class="num">{sess.record_count}</td>
+									<td>{instant(sess.opened_at)}</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+			{/snippet}
+		</Await>
+	{/if}
+</section>
+
 <div class="pager">
 	<button class="ghost" disabled={offset === 0 || task.pending} onclick={() => (offset = Math.max(0, offset - PAGE))}>
 		← Previous
@@ -201,6 +314,18 @@
 </div>
 
 <style>
+	section { margin-top: 2.2rem; }
+	h3 { margin: 1.2rem 0 0.4rem; font-size: 0.85rem; font-weight: 600; }
+	.payload {
+		background: var(--surface-2);
+		padding: 0.8rem;
+		overflow-x: auto;
+		font-family: var(--mono);
+		font-size: 0.75rem;
+		line-height: 1.4;
+		max-height: 22rem;
+	}
+
 	.done {
 		opacity: 0.6;
 	}

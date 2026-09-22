@@ -4,7 +4,9 @@
 		type EntityKind,
 		type ListIdentitiesResponse,
 		type MappingMethod,
-		type ResolveIdentityResponse
+		type GetIdentityHistoryResponse,
+		type ResolveIdentityResponse,
+		type ReverseResolveResponse
 	} from '$lib/api';
 	import { fromLocalInput, instant, isOpenEnded, label, toLocalInput } from '$lib/display';
 	import { settings } from '$lib/settings.svelte';
@@ -67,6 +69,71 @@
 				{ signal }
 			)
 		);
+	}
+
+	/* ---- everything one identifier has ever meant ---- */
+
+	// resolveIdentity above answers for one instant, because that is what
+	// pricing a collection needs. This answers for all of them, which is what
+	// somebody asked "why was AMCU-0417 paid to that person in January" needs.
+	const history = new Task<GetIdentityHistoryResponse>();
+
+	function doHistory(event: SubmitEvent) {
+		event.preventDefault();
+		history.run((signal) =>
+			settings.api().getIdentityHistory(
+				{
+					source_system_id: rSource.trim(),
+					entity_kind: rKind,
+					external_id: rExternal.trim()
+				},
+				{ signal }
+			)
+		);
+	}
+
+	/* ---- what has ever pointed at one of ours ---- */
+
+	let vKind = $state<EntityKind>('PRODUCER');
+	let vEntity = $state('');
+	const reverse = new Task<ReverseResolveResponse>();
+
+	function doReverse(event: SubmitEvent) {
+		event.preventDefault();
+		reverse.run((signal) =>
+			settings
+				.api()
+				.reverseResolve({ entity_kind: vKind, entity_id: vEntity.trim() }, { signal })
+		);
+	}
+
+	/* ---- retiring one ---- */
+
+	let retiring = $state(false);
+	let retireError = $state<ApiError | undefined>(undefined);
+
+	async function retire(id: string) {
+		if (retiring) return;
+		retiring = true;
+		retireError = undefined;
+		try {
+			await settings.api().retireIdentity(id, settings.actorOrUnknown);
+			loadList();
+			if (history.settled) history.run((signal) =>
+				settings.api().getIdentityHistory(
+					{
+						source_system_id: rSource.trim(),
+						entity_kind: rKind,
+						external_id: rExternal.trim()
+					},
+					{ signal }
+				)
+			);
+		} catch (cause) {
+			retireError = asError(cause);
+		} finally {
+			retiring = false;
+		}
 	}
 
 	/* ---- recording a new mapping ---- */
@@ -185,6 +252,91 @@
 		</dl>
 	{:else if resolved.settled && !resolved.error}
 		<p class="muted">No mapping held at that instant.</p>
+	{/if}
+</form>
+
+<form class="panel" onsubmit={doHistory}>
+	<h2>Everything it has ever meant</h2>
+	<p class="muted note">
+		The same identifier as above and no instant, because the point is every instant rather than one
+		of them. A mapping is never edited — it is closed and a new one opened — so this is the whole
+		record, and it is what makes a January settlement explainable after somebody corrects who
+		AMCU-0417 is.
+	</p>
+	<div class="controls">
+		<button type="submit" disabled={history.pending || !rSource.trim() || !rExternal.trim()}>
+			Show every version
+		</button>
+	</div>
+	{#if history.settled}
+		<Await task={history} isEmpty={(d) => (d.identities ?? []).length === 0} empty="That identifier has never been mapped.">
+			{#snippet children(d)}
+				<div class="tablewrap">
+					<table>
+						<thead><tr><th>Meant</th><th>Method</th><th>Holds</th><th>Recorded</th><th></th></tr></thead>
+						<tbody>
+							{#each d.identities as i (i.id)}
+								<tr class:superseded={!!i.superseded_at}>
+									<td class="mono">{i.entity_id}</td>
+									<td>{label(i.method)}</td>
+									<td>{instant(i.valid_from)} → {isOpenEnded(i.valid_to) ? 'open' : instant(i.valid_to)}</td>
+									<td>{instant(i.recorded_at)}</td>
+									<td>
+										{#if i.superseded_at}
+											<Chip tone="neutral" title="Corrected on {instant(i.superseded_at)}. Kept, not deleted.">
+												superseded
+											</Chip>
+										{:else}
+											<button class="ghost" disabled={retiring} onclick={() => retire(i.id)}>Retire</button>
+										{/if}
+									</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+			{/snippet}
+		</Await>
+	{/if}
+	<ErrorNote error={retireError} />
+</form>
+
+<form class="panel" onsubmit={doReverse}>
+	<h2>What has ever pointed at one of ours?</h2>
+	<p class="muted note">
+		The other direction. Given a producer this platform knows, which external systems have called
+		them what — the question asked when two societies' figures for the same person disagree.
+	</p>
+	<div class="controls">
+		<div class="field">
+			<label for="vk">Entity</label>
+			<select id="vk" bind:value={vKind}>
+				{#each KINDS as k (k)}<option value={k}>{label(k)}</option>{/each}
+			</select>
+		</div>
+		<div class="field grow"><label for="ve">Our identifier</label><input id="ve" bind:value={vEntity} /></div>
+		<button type="submit" disabled={reverse.pending || !vEntity.trim()}>Look up</button>
+	</div>
+	{#if reverse.settled}
+		<Await task={reverse} isEmpty={(d) => (d.identities ?? []).length === 0} empty="No external system has ever named that.">
+			{#snippet children(d)}
+				<div class="tablewrap">
+					<table>
+						<thead><tr><th>Source</th><th>Called</th><th>Method</th><th>Holds</th></tr></thead>
+						<tbody>
+							{#each d.identities as i (i.id)}
+								<tr class:superseded={!!i.superseded_at}>
+									<td class="mono">{i.source_system_id}</td>
+									<td class="mono">{i.external_id}</td>
+									<td>{label(i.method)}</td>
+									<td>{instant(i.valid_from)} → {isOpenEnded(i.valid_to) ? 'open' : instant(i.valid_to)}</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+			{/snippet}
+		</Await>
 	{/if}
 </form>
 
@@ -318,6 +470,9 @@
 </div>
 
 <style>
+	.note { max-width: var(--measure); margin: 0.4rem 0 0.8rem; font-size: 0.82rem; }
+	.field.grow { flex: 1 1 12rem; }
+
 	.result {
 		margin-top: 1rem;
 		border-top: 1px solid var(--rule);

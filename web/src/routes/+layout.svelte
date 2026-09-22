@@ -50,9 +50,32 @@
 		}
 	}
 
-	function signOut() {
-		settings.forget();
-		panelOpen = true;
+	let signingOut = $state(false);
+	let signOutNote = $state('');
+
+	/**
+	 * End the session, and say which kind of ending it was.
+	 *
+	 * This used to clear the browser and nothing else, leaving a live session on
+	 * the platform. It now calls SignOut; when that call cannot be made the
+	 * local state is still cleared — a person who asked to sign out must not
+	 * stay signed in because the network was down — and the note below says so,
+	 * because on a shared machine the difference matters.
+	 */
+	async function signOut() {
+		if (signingOut) return;
+		signingOut = true;
+		signOutNote = '';
+		try {
+			const outcome = await settings.signOut();
+			signOutNote =
+				outcome === 'ended'
+					? ''
+					: 'Signed out of this browser. The platform could not be reached, so the session is still valid there until it expires — revoke it from another machine if this one is shared.';
+		} finally {
+			signingOut = false;
+			panelOpen = true;
+		}
 	}
 </script>
 
@@ -93,6 +116,7 @@
 			<a href="/money/billing" aria-current={current('/money/billing')}>Billing</a>
 
 			<span class="group">Administration</span>
+			<a href="/admin/people" aria-current={current('/admin/people')}>People &amp; access</a>
 			<a href="/admin/tenants" aria-current={current('/admin/tenants')}>Tenants</a>
 			<a href="/admin/audit" aria-current={current('/admin/audit')}>Audit</a>
 			<a href="/admin/inbox" aria-current={current('/admin/inbox')}>Inbox</a>
@@ -134,13 +158,27 @@
 					{/if}
 				</dl>
 				{#if settings.session}
-					<button class="ghost" onclick={signOut}>Forget this session</button>
+					<button class="ghost" onclick={signOut} disabled={signingOut}>
+						{signingOut ? 'Signing out…' : 'Sign out'}
+					</button>
 				{/if}
+				<dl class="who">
+					<dt>Dates in</dt>
+					<dd>
+						<span class="mono">{settings.timezone}</span>
+						{#if settings.zoneSource === 'browser'}
+							<span class="zonewarn">this browser's, not the tenant's</span>
+						{/if}
+					</dd>
+				</dl>
 			{/if}
 		</div>
 	</nav>
 
 	<main class="main">
+		{#if signOutNote}
+			<p class="signoutnote">{signOutNote}</p>
+		{/if}
 		{#if panelOpen}
 			<form class="panel context-form" onsubmit={signIn}>
 				<h2>Sign in</h2>
@@ -223,5 +261,20 @@
 		margin: 0.9rem 0 0;
 		color: var(--bad, #b3261e);
 		font-size: 0.85rem;
+	}
+
+	.zonewarn {
+		display: block;
+		font-size: 0.72rem;
+		color: var(--bad, #b3261e);
+	}
+
+	.signoutnote {
+		max-width: var(--measure);
+		margin: 0 0 1rem;
+		padding: 0.7rem 1rem;
+		font-size: 0.85rem;
+		background: color-mix(in srgb, var(--bad, #b3261e) 8%, transparent);
+		border-left: 3px solid var(--bad, #b3261e);
 	}
 </style>

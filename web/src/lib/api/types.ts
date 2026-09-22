@@ -78,6 +78,7 @@ export * from './types.money';
 export * from './types.commerce';
 export * from './types.plant';
 export * from './types.admin';
+export * from './types.identity';
 
 export interface SignInRequest {
 	email: string;
@@ -477,4 +478,360 @@ export interface AcceptRunRequest {
 }
 export interface AcceptRunResponse {
 	run: ReconciliationRun;
+}
+
+/* ------------------------------------------------------------------------- *
+ * The rest of the spine.
+ *
+ * Eighteen procedures the console never called. They were not the reviewing
+ * screens' work — these are the ones that put data in, ask a window what its
+ * instruments can establish, and read a mapping's whole history rather than one
+ * instant of it.
+ * ------------------------------------------------------------------------- */
+
+/* ---- canonical: policies, slots, identity history ---- */
+
+export interface SlotPolicy {
+	id: string;
+	tenant_id: string;
+	name: string;
+	/** What makes a slot: the fields whose values together identify one. */
+	dimensions: string[];
+	/** How a second claim on an occupied slot is settled. */
+	resolution: string;
+	version: number;
+	effective_from: string;
+	effective_to?: string;
+}
+
+export interface DeclarePolicyRequest {
+	tenant_id: string;
+	name: string;
+	dimensions: string[];
+	resolution: string;
+	version: number;
+	effective_from: string;
+	effective_to?: string;
+	actor: string;
+}
+export interface DeclarePolicyResponse {
+	policy: SlotPolicy;
+}
+
+export interface GetEffectivePolicyRequest {
+	tenant_id: string;
+	/** Empty means now. A collection from March wants March's policy. */
+	at?: string;
+}
+export interface GetEffectivePolicyResponse {
+	policy: SlotPolicy;
+}
+
+export interface ListPoliciesRequest {
+	tenant_id: string;
+}
+export interface ListPoliciesResponse {
+	policies: SlotPolicy[];
+}
+
+export interface ClaimSlotRequest {
+	tenant_id: string;
+	source_ref: string;
+	values: Record<string, string>;
+	origin: string;
+	/** Orders claims under the first- and last-wins policies. */
+	recorded_at: string;
+	quality?: number;
+	/** Selects the policy version in force when the milk was collected. */
+	collected_at?: string;
+	actor: string;
+}
+export interface ClaimSlotResponse {
+	outcome: string;
+	reason: string;
+	slot: CollectionSlot;
+}
+
+export interface GetSlotRequest {
+	tenant_id: string;
+	slot_key: string;
+	origin_kind: string;
+}
+export interface GetSlotResponse {
+	slot: CollectionSlot;
+}
+
+export interface ReverseResolveRequest {
+	tenant_id: string;
+	entity_kind: EntityKind;
+	entity_id: string;
+}
+export interface ReverseResolveResponse {
+	identities: ExternalIdentity[];
+}
+
+/**
+ * What one external identifier has ever meant.
+ *
+ * The same four fields that identify a mapping and no as_of, because the point
+ * is every instant rather than one of them.
+ */
+export interface GetIdentityHistoryRequest {
+	tenant_id: string;
+	source_system_id: string;
+	entity_kind: EntityKind;
+	external_id: string;
+}
+export interface GetIdentityHistoryResponse {
+	identities: ExternalIdentity[];
+}
+
+export interface RetireIdentityRequest {
+	tenant_id: string;
+	id: string;
+	actor: string;
+}
+export interface RetireIdentityResponse {
+	retired: boolean;
+}
+
+/* ---- ingestion: devices, sessions, one quarantined record ---- */
+
+export interface DeviceGeneration {
+	id: string;
+	device_id: string;
+	generation: number;
+	reason: string;
+	opened_at: string;
+	closed_at?: string;
+}
+
+export interface ListGenerationsRequest {
+	tenant_id: string;
+	device_id: string;
+}
+export interface ListGenerationsResponse {
+	generations: DeviceGeneration[];
+}
+
+export interface DeviceSession {
+	id: string;
+	tenant_id: string;
+	device_id: string;
+	generation: number;
+	external_session_id: string;
+	operator_ref: string;
+	status: string;
+	opened_at: string;
+	closed_at?: string;
+	last_sequence: number;
+	record_count: number;
+}
+
+export interface ListDeviceSessionsRequest {
+	tenant_id: string;
+	device_id: string;
+	limit: number;
+	offset: number;
+}
+export interface ListDeviceSessionsResponse {
+	sessions: DeviceSession[];
+}
+
+export interface GetQuarantinedRequest {
+	id: string;
+	tenant_id: string;
+}
+export interface GetQuarantinedResponse {
+	record: QuarantinedRecord;
+	/**
+	 * The payload in full, so a reviewer can compare it against the record it
+	 * collided with. Typed unknown rather than a shape: it is whatever the
+	 * device sent, which is the whole reason it is quarantined.
+	 */
+	payload: unknown;
+}
+
+/* ---- balance: windows, flows, observability ---- */
+
+export interface CreateWindowRequest {
+	tenant_id: string;
+	route_ref: string;
+	period_start: string;
+	period_end: string;
+	/** LITRES or KILOGRAMS. Every flow in the window is in it. */
+	unit: string;
+	actor: string;
+}
+export interface CreateWindowResponse {
+	window: BalanceWindow;
+}
+
+export interface GetWindowRequest {
+	tenant_id: string;
+	id: string;
+}
+export interface GetWindowResponse {
+	window: BalanceWindow;
+}
+
+export interface AddFlowRequest {
+	tenant_id: string;
+	window_id: string;
+	flow_id: string;
+	/** Node ids; the empty string is the system boundary. */
+	from_node: string;
+	from_node_kind?: string;
+	to_node: string;
+	to_node_kind?: string;
+	/** Decimal literals, never numbers. */
+	measured: string;
+	standard_uncertainty?: string;
+	unmeasured?: boolean;
+	observation_ref?: string;
+	actor: string;
+}
+export interface AddFlowResponse {
+	flow: Flow;
+}
+
+export interface ObservabilityRequest {
+	tenant_id: string;
+	window_id: string;
+}
+
+/**
+ * What this window's instruments can and cannot establish, before any milk is
+ * compared.
+ *
+ * Asked before a route runs rather than after, which is the useful time to find
+ * out that the only leg anybody can verify is the tanker.
+ */
+export interface ObservabilityResponse {
+	/** Unmeasured legs the node balances determine uniquely. */
+	observable: string[];
+	/**
+	 * Unmeasured legs they do not. The reconciler still prints a figure for
+	 * these; it is one of infinitely many that fit.
+	 */
+	unobservable: string[];
+	/** Measured legs computable from the others, so a gross error is detectable. */
+	redundant: string[];
+	/**
+	 * Measured legs that are not. Nothing in this window disagrees with them
+	 * however wrong they are, which makes "the window reconciled" a much weaker
+	 * statement than it sounds.
+	 */
+	just_determined: string[];
+	fully_observable: boolean;
+	fully_redundant: boolean;
+}
+
+/* ---- shadow settlement: what goes in before anything is compared ---- */
+
+export interface SettlementComponent {
+	kind: string;
+	label?: string;
+	/** A decimal literal; the scale comes from the enclosing settlement. */
+	amount: string;
+	quantity?: string;
+	rate?: string;
+}
+
+export interface Assertion {
+	id: string;
+	tenant_id: string;
+	source_system_id: string;
+	external_settlement_id: string;
+	producer_ref: string;
+	period_start: string;
+	period_end: string;
+	currency: string;
+	amount_scale: number;
+	total: string;
+	components: SettlementComponent[];
+	asserted_at: string;
+	origin_kind: string;
+	import_batch_id: string;
+	source_record_id: string;
+	source_payload_hash: string;
+	valid_from: string;
+	valid_to: string;
+	recorded_at: string;
+	superseded_at?: string;
+}
+
+export interface IngestAssertionRequest {
+	tenant_id: string;
+	source_system_id: string;
+	external_settlement_id: string;
+	producer_ref: string;
+	period_start: string;
+	period_end: string;
+	currency: string;
+	amount_scale: number;
+	total: string;
+	components: SettlementComponent[];
+	asserted_at: string;
+	import_batch_id: string;
+	source_record_id: string;
+	/** The source record verbatim. Hashed for replay detection, never persisted. */
+	raw_payload: unknown;
+	created_by: string;
+}
+export interface IngestAssertionResponse {
+	assertion: Assertion;
+	/**
+	 * False when the payload had already been ingested, which makes a replayed
+	 * import batch observably idempotent to the caller.
+	 */
+	created: boolean;
+}
+
+export interface Computation {
+	id: string;
+	tenant_id: string;
+	assertion_id?: string;
+	producer_ref: string;
+	period_start: string;
+	period_end: string;
+	currency: string;
+	amount_scale: number;
+	total: string;
+	components: SettlementComponent[];
+	policy_version: string;
+	rate_card_id: string;
+	input_digest: string;
+	as_of: string;
+	created_at: string;
+}
+
+export interface RecordComputationRequest {
+	tenant_id: string;
+	assertion_id: string;
+	producer_ref: string;
+	period_start: string;
+	period_end: string;
+	currency: string;
+	amount_scale: number;
+	total: string;
+	components: SettlementComponent[];
+	policy_version: string;
+	rate_card_id: string;
+	input_digest: string;
+	as_of: string;
+	created_by: string;
+}
+export interface RecordComputationResponse {
+	computation: Computation;
+}
+
+export interface AdjudicateRequest {
+	tenant_id: string;
+	assertion_id: string;
+	computation_id: string;
+	actor: string;
+}
+export interface AdjudicateResponse {
+	divergence: Divergence;
 }

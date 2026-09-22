@@ -1,6 +1,12 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { ApiError, type Flow, type ListFlowsResponse, type ReconciliationRun } from '$lib/api';
+	import {
+		ApiError,
+		type Flow,
+		type GetWindowResponse,
+		type ListFlowsResponse,
+		type ReconciliationRun
+	} from '$lib/api';
 	import { instant, label, shortId } from '$lib/display';
 	import { settings } from '$lib/settings.svelte';
 	import { Task } from '$lib/task.svelte';
@@ -10,10 +16,18 @@
 
 	const id = $derived(page.params.id ?? '');
 
+	// The window itself, so this page can say which one it is.
+	//
+	// It titled itself "Balance window" and named no route, no period and no
+	// unit — and the unit is what every figure below is in. A reconciliation
+	// read without knowing whether it is in litres or kilograms is a
+	// reconciliation read wrong by about three per cent.
+	const window_ = new Task<GetWindowResponse>();
 	const flows = new Task<ListFlowsResponse>();
 	const runs = new Task<{ runs: ReconciliationRun[] }>();
 
 	function load() {
+		window_.run((signal) => settings.api().getWindow(id, { signal }));
 		flows.run((signal) => settings.api().listFlows(id, { signal }));
 		runs.run((signal) => settings.api().listRuns({ window_id: id, limit: 20 }, { signal }));
 	}
@@ -94,7 +108,18 @@
 
 <div class="page-head">
 	<a class="rowlink" href="/balance">← Back to windows</a>
-	<h1>Balance window</h1>
+	{#if window_.data?.window}
+		<h1>{window_.data.window.route_ref}</h1>
+		<p>
+			{instant(window_.data.window.period_start)} — {instant(window_.data.window.period_end)},
+			in <strong>{label(window_.data.window.unit)}</strong>.
+			<Chip tone={window_.data.window.status === 'ACCEPTED' ? 'calm' : window_.data.window.status === 'OPEN' ? 'attention' : 'neutral'}>
+				{label(window_.data.window.status)}
+			</Chip>
+		</p>
+	{:else}
+		<h1>Balance window</h1>
+	{/if}
 </div>
 
 <Await task={flows} retry={load}>

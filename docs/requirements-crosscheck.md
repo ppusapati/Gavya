@@ -328,6 +328,36 @@ sides glob now, and a test asserts every console file making a call is one the
 comparison read, because narrowing the glob again would simply stop those calls
 being compared rather than fail anything.
 
+## The last thirty-one
+
+The five services the console was originally built for were the last to be
+finished, which is not the order anybody would have chosen. Thirty-one
+procedures had no caller, and two of them mattered more than their size suggests.
+
+**`SignOut` had never been called.** The console's sign-out cleared the browser
+and told the platform nothing, so a session stayed valid until it expired —
+including one abandoned on a shared machine. It now calls SignOut, clears the
+local state either way (a person who asked to sign out must not stay signed in
+because the network was down), and says which of the two happened when the call
+could not be made.
+
+**Thirteen of identity-service's fifteen procedures had no client**, so a
+co-operative was authorised against roles nobody could be given: adding a
+person, setting a password, assigning a role and issuing a machine credential
+were all rows somebody typed into a database console.
+
+The rest were the write side of the integrity spine and the questions its
+reviewing screens never asked — what a window's instruments can establish before
+anything is reconciled, everything one external identifier has ever meant rather
+than what it meant at one instant, the payload of a quarantined record rather
+than its hash, and the three calls that put a settlement pair in front of the
+classifier at all.
+
+Coverage is now 261 of 261 procedures across 28 of 28 services, and
+`TestEveryProcedureThePlatformServesHasAClient` holds the line in the other
+direction: a route added to `authz.Table` without a client fails at the moment
+somebody adds it, rather than at the moment somebody wants to use it.
+
 ## Pending
 
 Three procedures above describe work that does not exist: a report runner, a
