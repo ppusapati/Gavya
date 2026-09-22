@@ -92,6 +92,13 @@
 			<a href="/money/recoveries" aria-current={current('/money/recoveries')}>Recoveries</a>
 			<a href="/money/billing" aria-current={current('/money/billing')}>Billing</a>
 
+			<span class="group">Plant</span>
+			<a href="/plant/movements" aria-current={current('/plant/movements')}>Movements</a>
+			<a href="/plant/batches" aria-current={current('/plant/batches')}>Batches</a>
+			<a href="/plant/recipes" aria-current={current('/plant/recipes')}>Recipes</a>
+			<a href="/plant/laboratory" aria-current={current('/plant/laboratory')}>Laboratory</a>
+			<a href="/plant/meters" aria-current={current('/plant/meters')}>Meters</a>
+
 			<span class="group">Commerce</span>
 			<a href="/commerce/catalogue" aria-current={current('/commerce/catalogue')}>Catalogue</a>
 			<a href="/commerce/stock" aria-current={current('/commerce/stock')}>Stock</a>

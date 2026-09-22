@@ -63,30 +63,101 @@ type clientCall struct {
 	where     string
 }
 
-// webProcedures reads the console's API facade.
+// webProcedures reads every TypeScript file under the console's api directory,
+// rather than index.ts alone.
+//
+// It used to read index.ts, and the comment above mobileProcedures says why that
+// was wrong before anybody wrote the files it missed: a second client file is a
+// thing somebody adds, and a list here goes on passing without it. Somebody then
+// added three — herd.ts, money.ts and commerce.ts, sub-facades holding about a
+// hundred and fifty procedures between them — and this comparison saw none of
+// them. A procedure renamed on the Go side of any of those services passed the
+// gate, which is precisely the silent failure this file exists to catch, running
+// green in the file that describes it.
 func webProcedures(t *testing.T) []clientCall {
 	t.Helper()
-	types := readRepoFile(t, filepath.Join("web", "src", "lib", "api", "types.ts"))
-	facade := readRepoFile(t, filepath.Join("web", "src", "lib", "api", "index.ts"))
+	dir := filepath.Join(repoRoot(t), "web", "src", "lib", "api")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read %s: %v", dir, err)
+	}
 
 	names := map[string]string{}
-	for _, m := range webConst.FindAllStringSubmatch(types, -1) {
-		names[m[1]] = m[2]
+	type source struct{ name, text string }
+	var sources []source
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".ts") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			t.Fatalf("read %s: %v", e.Name(), err)
+		}
+		src := string(b)
+		sources = append(sources, source{name: e.Name(), text: src})
+		for _, m := range webConst.FindAllStringSubmatch(src, -1) {
+			names[m[1]] = m[2]
+		}
 	}
 	if len(names) == 0 {
-		t.Fatal("web/src/lib/api/types.ts declared no service constants; the parser below is reading nothing")
+		t.Fatal("web/src/lib/api declared no service constants; the parser below is reading nothing")
 	}
 
 	var out []clientCall
-	for _, m := range webCall.FindAllStringSubmatch(facade, -1) {
-		service, ok := names[m[1]]
-		if !ok {
-			t.Errorf("web/src/lib/api/index.ts calls ${T.%s}/%s and types.ts declares no such constant", m[1], m[2])
-			continue
+	for _, s := range sources {
+		for _, m := range webCall.FindAllStringSubmatch(s.text, -1) {
+			service, ok := names[m[1]]
+			if !ok {
+				t.Errorf("web/src/lib/api/%s calls ${T.%s}/%s and no file there declares such a constant", s.name, m[1], m[2])
+				continue
+			}
+			out = append(out, clientCall{procedure: service + "/" + m[2], where: "web/" + s.name})
 		}
-		out = append(out, clientCall{procedure: service + "/" + m[2], where: "web"})
 	}
 	return out
+}
+
+// The widening above is only worth anything if it is still reading every file.
+//
+// Narrow it back to index.ts, or add a sub-facade under a name the glob misses,
+// and every other test in this file goes on passing — the calls it stops seeing
+// are simply calls it no longer compares. So this asserts the shape of what was
+// read rather than the result of reading it: every TypeScript file in the api
+// directory that calls a procedure at all has to appear among the callers.
+func TestTheConsoleComparisonReadsEverySubFacade(t *testing.T) {
+	dir := filepath.Join(repoRoot(t), "web", "src", "lib", "api")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read %s: %v", dir, err)
+	}
+
+	callers := map[string]bool{}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".ts") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			t.Fatalf("read %s: %v", e.Name(), err)
+		}
+		if webCall.Match(b) {
+			callers["web/"+e.Name()] = true
+		}
+	}
+	if len(callers) < 2 {
+		t.Fatalf("found %d console files making procedure calls; the console has index.ts and "+
+			"several sub-facades, so this is not reading what it should", len(callers))
+	}
+
+	read := map[string]bool{}
+	for _, c := range webProcedures(t) {
+		read[c.where] = true
+	}
+	for f := range callers {
+		if !read[f] {
+			t.Errorf("%s calls procedures and the comparison never read it", f)
+		}
+	}
 }
 
 // mobileProcedures reads every Dart file under the bench's api directory, rather

@@ -45,6 +45,15 @@ export const POOLING = 'pooling.v1.PoolingService';
 export const SETTLEMENT = 'settlement.v1.SettlementService';
 export const BILLING = 'billing.v1.BillingService';
 
+/**
+ * The plant. What moved between vessels, what was made from what, what the
+ * laboratory read, and what a meter measured.
+ */
+export const MATERIAL = 'material.v1.MaterialService';
+export const PRODUCTION = 'production.v1.ProductionService';
+export const LABORATORY = 'laboratory.v1.LaboratoryService';
+export const OBSERVATION = 'observation.v1.ObservationService';
+
 /** Commerce: the catalogue, the stock, the order book, the cattle market. */
 export const CATALOGUE = 'productcatalog.v1.ProductCatalogService';
 export const INVENTORY = 'inventory.v1.InventoryService';
@@ -57,6 +66,7 @@ export const MARKET = 'cattlemarket.v1.CattleMarketService';
 export * from './types.herd';
 export * from './types.money';
 export * from './types.commerce';
+export * from './types.plant';
 
 export interface SignInRequest {
 	email: string;

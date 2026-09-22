@@ -19,6 +19,28 @@ export class Task<T> {
 	/** True once a call has completed, so an empty table can be told from an unrun one. */
 	settled = $state(false);
 
+	/**
+	 * Forget the answer, and abandon any call still in flight.
+	 *
+	 * For when the question changes rather than the filters do — a screen that
+	 * opens a different batch, a different sample, a different cycle. Without it
+	 * the previous subject's answer stays on screen under the new subject's
+	 * heading, which for something like a recall trace is a list of the wrong
+	 * lots presented as the right ones.
+	 *
+	 * The issue counter moves so a reply already on its way is discarded rather
+	 * than painted over the cleared state.
+	 */
+	reset(): void {
+		this.#controller?.abort();
+		this.#controller = undefined;
+		this.#issued++;
+		this.data = undefined;
+		this.error = undefined;
+		this.pending = false;
+		this.settled = false;
+	}
+
 	async run(fn: (signal: AbortSignal) => Promise<T>): Promise<T | undefined> {
 		this.#controller?.abort();
 		const controller = new AbortController();

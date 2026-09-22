@@ -2,9 +2,10 @@ import { ApiClient, ApiError, type CallOptions } from './client';
 import { HerdApi } from './herd';
 import { CommerceApi } from './commerce';
 import { MoneyApi } from './money';
+import { PlantApi } from './plant';
 import * as T from './types';
 
-export { ApiClient, ApiError, CommerceApi, HerdApi, MoneyApi };
+export { ApiClient, ApiError, CommerceApi, HerdApi, MoneyApi, PlantApi };
 export * from './types';
 
 /**
@@ -43,6 +44,12 @@ export class Gavya {
 	/** The catalogue, the stock, the order book and the cattle market. */
 	readonly commerce: CommerceApi;
 
+	/**
+	 * The plant: movements between vessels, batches and their genealogy, the
+	 * laboratory's samples, and the meters a reading is taken with.
+	 */
+	readonly plant: PlantApi;
+
 	constructor(client: ApiClient, session: string, tenantId: string) {
 		this.#client = client;
 		this.#session = session;
@@ -50,6 +57,7 @@ export class Gavya {
 		this.herd = new HerdApi(client, session, tenantId);
 		this.money = new MoneyApi(client, session, tenantId);
 		this.commerce = new CommerceApi(client, session, tenantId);
+		this.plant = new PlantApi(client, session, tenantId);
 	}
 
 	#opts(extra?: Partial<CallOptions>): CallOptions {
