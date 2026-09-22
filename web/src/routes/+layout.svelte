@@ -92,6 +92,12 @@
 			<a href="/money/recoveries" aria-current={current('/money/recoveries')}>Recoveries</a>
 			<a href="/money/billing" aria-current={current('/money/billing')}>Billing</a>
 
+			<span class="group">Commerce</span>
+			<a href="/commerce/catalogue" aria-current={current('/commerce/catalogue')}>Catalogue</a>
+			<a href="/commerce/stock" aria-current={current('/commerce/stock')}>Stock</a>
+			<a href="/commerce/orders" aria-current={current('/commerce/orders')}>Orders</a>
+			<a href="/commerce/market" aria-current={current('/commerce/market')}>Cattle market</a>
+
 			<span class="group">Data mapping</span>
 			<a href="/mapping" aria-current={current('/mapping')}>External identities</a>
 			<a href="/mapping/conflicts" aria-current={current('/mapping/conflicts')}>Slot conflicts</a>

@@ -45,11 +45,18 @@ export const POOLING = 'pooling.v1.PoolingService';
 export const SETTLEMENT = 'settlement.v1.SettlementService';
 export const BILLING = 'billing.v1.BillingService';
 
+/** Commerce: the catalogue, the stock, the order book, the cattle market. */
+export const CATALOGUE = 'productcatalog.v1.ProductCatalogService';
+export const INVENTORY = 'inventory.v1.InventoryService';
+export const ORDER = 'order.v1.OrderService';
+export const MARKET = 'cattlemarket.v1.CattleMarketService';
+
 // The wire types for those six. Re-exported rather than written here, because
 // this file was already four hundred lines about the integrity spine and one
 // file holding every type the platform has is one nobody reads.
 export * from './types.herd';
 export * from './types.money';
+export * from './types.commerce';
 
 export interface SignInRequest {
 	email: string;
