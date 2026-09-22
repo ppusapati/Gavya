@@ -27,7 +27,18 @@ interface Stored {
 	roleName: string;
 	expiresAt: string;
 	timezone: string;
+	/** Where `timezone` came from. Persisted so a reload does not silently
+	 * relabel the tenant's zone as the browser's. */
+	zoneSource: ZoneSource;
 }
+
+/**
+ * Whose clock the console is reading dates in.
+ *
+ * 'browser' is a fallback and is shown as one. 'tenant' is the platform's own
+ * answer, read back from tenant-service.
+ */
+export type ZoneSource = 'browser' | 'tenant';
 
 /**
  * The browser's own zone, as a starting point and not as an answer.
@@ -54,7 +65,8 @@ const empty: Stored = {
 	userId: '',
 	roleName: '',
 	expiresAt: '',
-	timezone: browserZone()
+	timezone: browserZone(),
+	zoneSource: 'browser'
 };
 
 function read(): Stored {
@@ -70,7 +82,8 @@ function read(): Stored {
 			userId: parsed.userId || '',
 			roleName: parsed.roleName || '',
 			expiresAt: parsed.expiresAt || '',
-			timezone: parsed.timezone || browserZone()
+			timezone: parsed.timezone || browserZone(),
+			zoneSource: parsed.zoneSource === 'tenant' ? 'tenant' : 'browser'
 		};
 	} catch {
 		// A browser that refuses site data, or a value left behind by an older
@@ -89,6 +102,7 @@ class Settings {
 	roleName = $state(this.#stored.roleName);
 	expiresAt = $state(this.#stored.expiresAt);
 	timezone = $state(this.#stored.timezone);
+	zoneSource = $state<ZoneSource>(this.#stored.zoneSource);
 
 	/**
 	 * A workspace can call something once it is signed in.
@@ -118,7 +132,38 @@ class Settings {
 		this.userId = res.user_id;
 		this.roleName = res.role_name ?? '';
 		this.expiresAt = res.expires_at;
+		// The browser's zone until the platform's is read; adoptTenantZone marks
+		// it so that whichever is on screen says which it is.
+		this.zoneSource = 'browser';
+		this.timezone = browserZone();
 		this.save();
+		await this.adoptTenantZone();
+	}
+
+	/**
+	 * Read the tenant's own timezone and use it.
+	 *
+	 * Which day a collection falls on is a local fact drawn from this zone, and
+	 * the fortnight a member is paid for is drawn from that day. The browser's
+	 * zone is a guess about where the reviewer is sitting, which is a different
+	 * question from where the society is.
+	 *
+	 * A failure here is not a failed sign-in. Somebody may hold a session and no
+	 * permission to read the tenant record, and in that case the console keeps
+	 * the browser's zone and goes on saying so rather than refusing to open.
+	 */
+	async adoptTenantZone(): Promise<void> {
+		if (!this.session || !this.tenantId) return;
+		try {
+			const res = await this.api().admin.getOwnTenant();
+			const zone = res.tenant?.timezone?.trim();
+			if (!zone) return;
+			this.timezone = zone;
+			this.zoneSource = 'tenant';
+			this.save();
+		} catch {
+			// Left as the browser's, and labelled as the browser's.
+		}
 	}
 
 	/**
@@ -135,6 +180,8 @@ class Settings {
 		this.userId = '';
 		this.roleName = '';
 		this.expiresAt = '';
+		this.timezone = browserZone();
+		this.zoneSource = 'browser';
 		this.save();
 	}
 
@@ -150,7 +197,8 @@ class Settings {
 					userId: this.userId,
 					roleName: this.roleName,
 					expiresAt: this.expiresAt,
-					timezone: this.timezone
+					timezone: this.timezone,
+					zoneSource: this.zoneSource
 				} satisfies Stored)
 			);
 		} catch {

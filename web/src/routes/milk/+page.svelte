@@ -144,6 +144,13 @@
 				{saving ? 'Opening…' : 'Open'}
 			</button>
 		</div>
+		{#if settings.zoneSource === 'browser'}
+			<p class="warn">
+				That is this browser's timezone, not the society's. The console reads the tenant's own
+				zone at sign-in and could not this time — a session opened under the wrong zone can put a
+				collection on the wrong day, and the wrong day can put it in the wrong fortnight.
+			</p>
+		{/if}
 	</form>
 {/if}
 
@@ -352,5 +359,12 @@
 		gap: 1rem;
 		margin-top: 1rem;
 		font-size: 0.82rem;
+	}
+
+	.warn {
+		max-width: var(--measure);
+		margin: 0.7rem 0 0;
+		font-size: 0.82rem;
+		color: var(--bad, #b3261e);
 	}
 </style>

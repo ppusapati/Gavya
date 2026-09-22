@@ -288,9 +288,52 @@ seventy, of which about ten were real:
 The rest were the conventional discards, and they are named one by one in
 `.golangci.yml` rather than silenced in a block.
 
+## What building the console found
+
+Writing a client for every service is a different exercise from testing every
+service, because a client has to decide what to tell a person a button does.
+Three procedures turned out to promise more than they do. None of them is a bug
+in the sense of a wrong answer; each is a name that describes work nobody wrote.
+
+**`reporting.v1/RequestReport` requests nothing.** It writes a row with status
+`pending`, and there is no worker, queue consumer or runner anywhere in this
+platform that picks one up. `report_schedules.next_run_at` is a column that
+nothing computes and nothing fires on, and `is_active` is a flag nothing reads.
+A console with a Generate button and a spinner would be a control that reports
+success while doing nothing — somebody waits for a report that is never coming,
+and the platform never says so. The screen therefore says "record a request",
+shows `pending` with *waiting on nothing* beside it, and carries the whole
+explanation above the table rather than in a footnote.
+
+**`file.v1/GetDownloadURL` returns no URL.** It concatenates the configured
+bucket with the stored name and returns the result. Nothing signs it, nothing
+checks the object is there, and a browser cannot fetch it. The same is true of
+`reporting.v1/GetReportDownloadURL`, which returns `file_path` verbatim. Both are
+rendered as text on a line that says what they are; an anchor would produce a
+broken link and imply the platform had granted access to something.
+
+**file-service never sees a file.** Its five procedures are a register of records
+about files something else stored — there is no multipart route and no
+presigned-upload procedure. So the screen has no file picker. An upload box there
+would offer something the platform cannot do and would fail at the moment
+somebody relied on it.
+
+The fourth finding was in the gate rather than the platform.
+`clients_test.go`'s mobile side globs its whole api directory, with a comment
+saying why: a second client file is a thing somebody adds, and a list goes on
+passing without it. Its web side read `index.ts` alone. Three sub-facades had
+since been added — about a hundred and fifty procedures — and the comparison saw
+none of them, so renaming any of those procedures on the Go side passed. Both
+sides glob now, and a test asserts every console file making a call is one the
+comparison read, because narrowing the glob again would simply stop those calls
+being compared rather than fail anything.
+
 ## Pending
 
-Nothing in the code from this cross-check.
+Three procedures above describe work that does not exist: a report runner, a
+schedule runner, and signed download URLs from either service. The console states
+this where somebody would otherwise be misled, which is the honest thing to do
+about it and not the same as fixing it.
 
 Unchanged: the platform has never been deployed anywhere and has no real users or
 real data, and three things are blocked on somebody outside this repository — one

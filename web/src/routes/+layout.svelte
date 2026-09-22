@@ -92,6 +92,13 @@
 			<a href="/money/recoveries" aria-current={current('/money/recoveries')}>Recoveries</a>
 			<a href="/money/billing" aria-current={current('/money/billing')}>Billing</a>
 
+			<span class="group">Administration</span>
+			<a href="/admin/tenants" aria-current={current('/admin/tenants')}>Tenants</a>
+			<a href="/admin/audit" aria-current={current('/admin/audit')}>Audit</a>
+			<a href="/admin/inbox" aria-current={current('/admin/inbox')}>Inbox</a>
+			<a href="/admin/reports" aria-current={current('/admin/reports')}>Reports</a>
+			<a href="/admin/files" aria-current={current('/admin/files')}>Files</a>
+
 			<span class="group">Plant</span>
 			<a href="/plant/movements" aria-current={current('/plant/movements')}>Movements</a>
 			<a href="/plant/batches" aria-current={current('/plant/batches')}>Batches</a>

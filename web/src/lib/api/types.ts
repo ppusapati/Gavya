@@ -54,6 +54,16 @@ export const PRODUCTION = 'production.v1.ProductionService';
 export const LABORATORY = 'laboratory.v1.LaboratoryService';
 export const OBSERVATION = 'observation.v1.ObservationService';
 
+/**
+ * Administration. Tenants and their settings, the audit chain, the inbox,
+ * reports and the file register.
+ */
+export const TENANT = 'tenant.v1.TenantService';
+export const AUDIT = 'audit.v1.AuditService';
+export const NOTIFICATION = 'notification.v1.NotificationService';
+export const REPORTING = 'reporting.v1.ReportingService';
+export const FILE = 'file.v1.FileService';
+
 /** Commerce: the catalogue, the stock, the order book, the cattle market. */
 export const CATALOGUE = 'productcatalog.v1.ProductCatalogService';
 export const INVENTORY = 'inventory.v1.InventoryService';
@@ -67,6 +77,7 @@ export * from './types.herd';
 export * from './types.money';
 export * from './types.commerce';
 export * from './types.plant';
+export * from './types.admin';
 
 export interface SignInRequest {
 	email: string;
