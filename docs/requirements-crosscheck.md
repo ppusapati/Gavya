@@ -491,11 +491,58 @@ timing signal — so the check reads the file with its comments stripped, becaus
 a check searching the whole file would be satisfied by the paragraph explaining
 it.
 
+## Continuous integration has never run
+
+Worth writing down, because it is the kind of thing that gets rediscovered.
+
+`.github/workflows/check.yml` has been in this repository since 14 September
+2026 and has produced thirty runs. Every one failed within a few seconds and not
+one executed a step. The API is unambiguous about why:
+
+| | |
+|---|---|
+| `runner_id` | `0`, on every job of every run |
+| `runner_name`, `runner_group_name` | empty |
+| job logs | HTTP 404 — there are none |
+| check run output | empty |
+| billable time | `total_ms: 0` |
+
+Zero billable milliseconds is the one that settles it. The jobs were created,
+marked started, and failed without a machine ever being assigned. Nothing ran,
+so nothing was charged.
+
+**This is not a defect in the workflow.** The YAML is valid — an invalid one
+fails as `startup_failure` and says so — and `ubuntu-24.04` is a current
+GitHub-hosted label. The workflow is also not obviously wrong on any axis that
+could be checked statically, which is as much as anybody can say about a file
+that has never executed.
+
+It is an account-level refusal. This repository is private and on a personal
+account, so its Actions minutes bill against the account's allowance; spent,
+with no spending limit raised or a payment method declined, GitHub accepts the
+workflow, creates the jobs, and gives them no runner. The remedy is a spending
+limit, a payment method, making the repository public, or a self-hosted runner
+— a decision rather than a lookup, and the reasoning for each is in the header
+of the workflow file where somebody looking at a red tick will find it.
+
+Two consequences worth stating rather than leaving implied.
+
+**The gate's record is a local one.** Every "gate green" in this repository's
+history means the script passed on one machine — the same machine that wrote
+the change. That is a weaker claim than a green tick, and it is the claim being
+made.
+
+**No image has ever been built.** The `images` job exists because `go build` in
+the gate stood in for building an image and the two are not the same claim, and
+that job has never run either. `services/modulith/Dockerfile` was found broken
+by reading it rather than by building it. The rest are in the same position:
+read, and not run.
+
 ## Pending
 
 Nothing in the code from this cross-check.
 
 Unchanged: the platform has never been deployed anywhere and has no real users or
-real data, and three things are blocked on somebody outside this repository — one
-real AMCU export file, one analyser bench capture, and twenty conversations with
-people who would buy it.
+real data, and four things are blocked on somebody outside this repository — an
+Actions allowance this account will spend, one real AMCU export file, one
+analyser bench capture, and twenty conversations with people who would buy it.

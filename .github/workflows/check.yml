@@ -12,12 +12,60 @@
 # then "it passes locally" and "it passes in CI" are two different claims about
 # two different things. There is a test that fails the build if this workflow
 # stops calling that script.
+#
+# ---------------------------------------------------------------------------
+# THIS WORKFLOW HAS NEVER RUN, AND THE REASON IS NOT IN THIS FILE
+# ---------------------------------------------------------------------------
+#
+# Every run since the first one on 14 September 2026 has failed within a few
+# seconds. Not one of them has executed a step. What the API says about them:
+#
+#   runner_id: 0, runner_name: "", runner_group_id: 0, runner_group_name: ""
+#   job logs: HTTP 404 — there are none
+#   check run output: empty
+#   billable time: total_ms 0, on every job of every run
+#
+# Zero billable milliseconds is the decisive one. The jobs were created, marked
+# started and failed without a runner ever being assigned, so nothing ran and
+# nothing was charged. No edit to this file changes that: the YAML is valid —
+# an invalid one would be a startup_failure and would say so — and ubuntu-24.04
+# is a current GitHub-hosted label.
+#
+# This repository is private, on a personal account. Private repositories bill
+# Actions minutes against the account's allowance, and when that allowance is
+# spent with no spending limit raised, or a payment method has failed, GitHub
+# does exactly this: it accepts the workflow, creates the jobs, and refuses to
+# give them a machine.
+#
+# It is fixed in one of three places, all outside this repository, and which one
+# is a decision rather than a lookup:
+#
+#   - Billing and plans → Spending limit, on the account. Raising it past zero
+#     lets private-repository minutes be billed.
+#   - Billing and plans → Payment information, if a card has been declined.
+#   - Making this repository public. Public repositories get GitHub-hosted
+#     runners at no charge and no limit. It is the only free answer and it puts
+#     a co-operative's source, its schemas and its deployment manifests where
+#     anybody can read them — no credential, because none is committed, but the
+#     whole shape of the platform.
+#
+# A self-hosted runner is the fourth answer and needs a machine to run it on.
+#
+# Until one of those happens, scripts/check-all.sh is the gate and a person runs
+# it. That is the arrangement this workflow was written to replace, and saying
+# so here is better than a green tick that means nobody looked.
 name: check
 
 on:
   push:
     branches: ['**']
   pull_request:
+  # So the fix can be tested without inventing a commit to push.
+  #
+  # Whoever raises the spending limit wants to know within a minute whether it
+  # worked, and the alternative is an empty commit on a branch — which is a
+  # thing people do, and then leave behind.
+  workflow_dispatch:
 
 # A second push to the same branch makes the first one's answer irrelevant.
 concurrency:
