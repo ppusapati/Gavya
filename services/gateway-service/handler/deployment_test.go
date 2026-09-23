@@ -641,25 +641,29 @@ func TestReadinessAsksReadyzAndLivenessAsksHealthz(t *testing.T) {
 	t.Logf("checked %d deployments", len(files))
 }
 
-// Every compose file in the repository is valid YAML.
+// composeFiles returns every compose file in the repository.
 //
-// services/cattle-service/docker-compose.yaml was not, and had not been for as
-// long as it has existed: three healthcheck settings on one line separated by
-// semicolons, which is a shell habit and not YAML. `docker compose up` in that
-// directory fails at parse. Nothing said so, because nothing in this repository
-// had ever read the per-service compose files — they are deployment descriptors,
-// and deployment descriptors are the part that is never exercised until the day
-// somebody runs them.
+// It names the three rather than counting them. A floor — "at least ten" —
+// stood here while there were twenty: seventeen per-service descriptors and
+// these three. The floor was there because a glob that stops matching turns
+// every check built on it into one that passes by finding nothing, and a count
+// is the cheapest way to notice.
 //
-// RUN WITH -count=1. These files are outside this module.
-func TestEveryComposeFileParses(t *testing.T) {
-	root := repoRoot(t)
+// A count cannot tell that apart from a deliberate removal, which is what
+// happened to the seventeen: they were copies of one another, they carried a
+// password for a container that exists nowhere, nothing in the repository or
+// out of it ever ran them, and the one time anything read them one had not been
+// valid YAML since the day it was written. Deleting them would have dropped the
+// count through the floor and failed these checks for the wrong reason.
+//
+// So the three that ship are named. Renaming or deleting one fails here, which
+// is the thing the floor was protecting, and a fourth is picked up by the glob.
+func composeFiles(t *testing.T, root string) []string {
+	t.Helper()
 	var files []string
 	for _, pattern := range []string{
 		filepath.Join(root, "docker-compose*.yaml"),
 		filepath.Join(root, "docker-compose*.yml"),
-		filepath.Join(root, "services", "*", "docker-compose*.yaml"),
-		filepath.Join(root, "services", "*", "docker-compose*.yml"),
 	} {
 		found, err := filepath.Glob(pattern)
 		if err != nil {
@@ -667,10 +671,38 @@ func TestEveryComposeFileParses(t *testing.T) {
 		}
 		files = append(files, found...)
 	}
-	if len(files) < 10 {
-		t.Fatalf("found only %d compose files; the globs have probably stopped "+
-			"matching, and a check that finds nothing passes", len(files))
+	have := map[string]bool{}
+	for _, path := range files {
+		have[filepath.Base(path)] = true
 	}
+	for _, name := range []string{
+		"docker-compose.yaml",
+		"docker-compose.modulith.yaml",
+		"docker-compose.modulith.ml.yaml",
+	} {
+		if !have[name] {
+			t.Fatalf("%s is not there; every check that reads the compose files "+
+				"has just stopped reading that one", name)
+		}
+	}
+	return files
+}
+
+// Every compose file in the repository is valid YAML.
+//
+// services/cattle-service/docker-compose.yaml was not, and had not been for as
+// long as it existed: three healthcheck settings on one line separated by
+// semicolons, which is a shell habit and not YAML. `docker compose up` in that
+// directory failed at parse. Nothing said so, because nothing in this
+// repository had ever read the per-service compose files — they were deployment
+// descriptors, and deployment descriptors are the part that is never exercised
+// until the day somebody runs them. That file is gone now, with the other
+// sixteen; what this checks is the three that a person actually brings up.
+//
+// RUN WITH -count=1. These files are outside this module.
+func TestEveryComposeFileParses(t *testing.T) {
+	root := repoRoot(t)
+	files := composeFiles(t, root)
 
 	var broken []string
 	for _, path := range files {
@@ -713,17 +745,7 @@ func TestEveryComposeFileParses(t *testing.T) {
 // RUN WITH -count=1.
 func TestAComposeFileThatConnectsInTheClearSaysSo(t *testing.T) {
 	root := repoRoot(t)
-	var files []string
-	for _, pattern := range []string{
-		filepath.Join(root, "docker-compose*.yaml"),
-		filepath.Join(root, "services", "*", "docker-compose*.yaml"),
-	} {
-		found, _ := filepath.Glob(pattern)
-		files = append(files, found...)
-	}
-	if len(files) < 10 {
-		t.Fatalf("found only %d compose files; the globs have probably stopped matching", len(files))
-	}
+	files := composeFiles(t, root)
 
 	var silent []string
 	checked := 0
