@@ -395,7 +395,12 @@ type reportResp struct {
 
 type listReportsResp struct {
 	Reports []*struct {
-		ID string `json:"id"`
+		ID            string `json:"id"`
+		Status        string `json:"status"`
+		FailureReason string `json:"failure_reason"`
+		RowCount      *int64 `json:"row_count"`
+		Truncated     bool   `json:"truncated"`
+		Attempts      int32  `json:"attempts"`
 	} `json:"reports"`
 }
 
@@ -616,7 +621,8 @@ func erpCases() []isolationCase {
 					context.Background(), p.reporting(),
 					"reporting.v1.ReportingService/RequestReport",
 					requestReportReq{TenantID: p.tenant, Name: newID("rep"),
-						ReportType: "collections", Parameters: "{}", FileFormat: "csv",
+						ReportType: "collections",
+						Parameters: `{"from":"2026-02-01","to":"2026-02-02"}`, FileFormat: "csv",
 						RequestedBy: "e2e", CreatedBy: "e2e"}, p.opts())
 				if err != nil {
 					t.Fatalf("request report: %v", err)

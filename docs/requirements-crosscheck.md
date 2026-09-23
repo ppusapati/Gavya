@@ -295,15 +295,12 @@ service, because a client has to decide what to tell a person a button does.
 Three procedures turned out to promise more than they do. None of them is a bug
 in the sense of a wrong answer; each is a name that describes work nobody wrote.
 
-**`reporting.v1/RequestReport` requests nothing.** It writes a row with status
-`pending`, and there is no worker, queue consumer or runner anywhere in this
-platform that picks one up. `report_schedules.next_run_at` is a column that
-nothing computes and nothing fires on, and `is_active` is a flag nothing reads.
-A console with a Generate button and a spinner would be a control that reports
-success while doing nothing — somebody waits for a report that is never coming,
-and the platform never says so. The screen therefore says "record a request",
-shows `pending` with *waiting on nothing* beside it, and carries the whole
-explanation above the table rather than in a footnote.
+**`reporting.v1/RequestReport` requested nothing.** It wrote a row with status
+`pending`, and there was no worker, queue consumer or runner anywhere in this
+platform that picked one up. `report_schedules.next_run_at` was a column that
+nothing computed and `is_active` a flag nothing read. **Both runners are now
+built** — see the section below — so this paragraph describes what was found
+rather than what is true.
 
 **`file.v1/GetDownloadURL` returns no URL.** It concatenates the configured
 bucket with the stored name and returns the result. Nothing signs it, nothing
@@ -358,12 +355,92 @@ Coverage is now 261 of 261 procedures across 28 of 28 services, and
 direction: a route added to `authz.Table` without a client fails at the moment
 somebody adds it, rather than at the moment somebody wants to use it.
 
+## The report runner and the schedule runner
+
+Built, and the two procedures above now do what their names say.
+
+**Where a report goes.** Into the row, as bytes, rather than onto a disk. There
+is no object storage in this platform and no volume shared between replicas, so
+a file written by one pod is one the next request cannot read — and the
+procedure that was supposed to hand it over returns a path no browser can
+fetch. `GetReportContent` is the new procedure that actually delivers a report;
+`GetReportDownloadURL` still answers with a locator and is still not a URL.
+
+**What a report can be.** A declared catalogue, served by `ListReportKinds` so
+that the list a person chooses from is the list the runner reads. Three types,
+each drawn from a procedure another service already serves: `collections` from
+procurement, `settlement_summary` from settlement, `divergences` from shadow
+settlement. Nothing reimplements anybody's query — a collections report shows
+what procurement priced, as procurement priced it, because two implementations
+of the same rate card would eventually disagree and the disagreement would
+surface as a report differing from the slip a farmer was handed.
+
+A type nobody wrote is refused by name, with the catalogue in the refusal. A
+type whose source this deployment was never told how to reach fails with the
+setting named. Both alternatives — an empty file marked complete — are the
+defect this platform keeps finding in itself, and an empty collections report is
+indistinguishable on a screen from a period in which nobody delivered any milk.
+
+**There is no yield report**, and that absence is the point. A yield needs a
+density to convert between litres and kilograms, production-service refuses to
+assume one, and a runner working at seven in the morning has nobody to ask. The
+only unattended yield report this platform could produce is one resting on a
+figure nobody measured, so there is no such type rather than a type that quietly
+picks 1.03.
+
+**Timezones.** A schedule carries its own, required, with no default. Seven in
+the morning is seven where the society is; evaluated in UTC a schedule set in
+Maharashtra fires at half past twelve in the afternoon and its "yesterday" is a
+day that ended five and a half hours before the one everybody means. The cron
+parser was written here rather than taken from a library for exactly that: the
+answer has to be in a named zone, and `time/tzdata` is embedded because these
+images are distroless and carry no zoneinfo — without it every named zone fails
+inside the container and succeeds on every developer's machine.
+
+Two bugs found by writing tests against that parser. Cron's day rule ORs the two
+day fields when both are restricted, which is the opposite of what the
+expression looks like it says. And a walk that rebuilds a wall-clock time does
+not always move forward: in `America/New_York` — but not in `Europe/London`,
+because Go does not guarantee which of a repeated hour a rebuild resolves to —
+the walk alternated between two instants until its five-year bound gave up. The
+schedule would have fired correctly all year and reported, on one morning in
+November, that it does not fire at all, and only for societies in some zones.
+
+**A scheduled report's period moves with the firing.** A schedule carries a
+window — `yesterday`, `last_7_days`, `last_month` — rather than dates, because
+fixed dates would produce the same report for ever, which is wrong in a way
+nobody notices until they compare two of them. A type that needs something a
+schedule cannot supply is refused when the schedule is written rather than at
+two in the morning: `settlement_summary` names a cycle, and a sweep has no way
+to know which one is meant.
+
+**What happens when it goes wrong.** A failure that no retry can fix stops at
+once and records why; one that might pass next time is retried three times and
+then stops. A report left in `running` by a process that died is put back by a
+reaper — without it the queue quietly loses whatever a restart was holding, and
+the person who asked watches a report being worked on by a process that no
+longer exists. A schedule always moves on whether or not its report could be
+created, because leaving `next_run_at` where it is turns one missing report into
+a hundred failed ones an hour.
+
+Both sweeps publish staleness gauges. A runner that has stopped leaves every
+request correctly written down and nobody producing any of them, and nothing
+else in the platform looks wrong — which is the state reporting-service was in
+before this.
+
+The gate caught two things on the way. The egress policy check failed the moment
+reporting-service gained upstreams, which is what it is for. And the audit
+coverage check refused five new writes until each said why it needed no
+before-image; four are machine bookkeeping, and the fifth now writes a trail,
+because a schedule that stops producing its report is noticed weeks later.
+
 ## Pending
 
-Three procedures above describe work that does not exist: a report runner, a
-schedule runner, and signed download URLs from either service. The console states
-this where somebody would otherwise be misled, which is the honest thing to do
-about it and not the same as fixing it.
+Signed download URLs. `file.v1/GetDownloadURL` and
+`reporting.v1/GetReportDownloadURL` still answer with a stored path, because
+this platform has no object storage to sign against. Reports are reachable
+anyway, through `GetReportContent`; files registered by file-service are not,
+and that remains true.
 
 Unchanged: the platform has never been deployed anywhere and has no real users or
 real data, and three things are blocked on somebody outside this repository — one

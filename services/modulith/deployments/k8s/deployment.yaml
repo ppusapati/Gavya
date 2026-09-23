@@ -149,8 +149,14 @@ data:
   PROCUREMENT_URL: http://127.0.0.1:8000
   CANONICAL_URL: http://127.0.0.1:8000
   NOTIFICATION_URL: http://127.0.0.1:8000
+  # reporting-service reads two more the same way, for the data a report is made
+  # of. PROCUREMENT_URL above is the third. A report whose source is unset fails
+  # with the missing setting named rather than producing an empty file.
+  SETTLEMENT_URL: http://127.0.0.1:8000
+  SHADOW_SETTLEMENT_URL: http://127.0.0.1:8000
 
-  # Who settlement-service says it is when it calls another module.
+  # Who settlement-service and reporting-service say they are when they call
+  # another module. One value, because in this shape they are one process.
   SERVICE_IDENTITY: SI_SETTLEMENT_00000000000
 
   # Where file-service puts what it is given. A pod's filesystem is not a place

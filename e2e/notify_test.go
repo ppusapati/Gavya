@@ -15,7 +15,9 @@ package e2e
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/ppusapati/gavya/libs/integrity/svcclient"
 )
@@ -268,6 +270,7 @@ type createScheduleReq struct {
 	ReportType string `json:"report_type"`
 	Schedule   string `json:"schedule"`
 	Parameters string `json:"parameters"`
+	Timezone   string `json:"timezone"`
 	CreatedBy  string `json:"created_by"`
 }
 
@@ -276,7 +279,27 @@ type scheduleResp struct {
 		ID         string `json:"id"`
 		ReportType string `json:"report_type"`
 		IsActive   bool   `json:"is_active"`
+		Timezone   string `json:"timezone"`
+		NextRunAt  string `json:"next_run_at"`
 	} `json:"schedule"`
+}
+
+type reportKindsResp struct {
+	Kinds []struct {
+		Name        string   `json:"name"`
+		Summary     string   `json:"summary"`
+		Needs       []string `json:"needs"`
+		Schedulable bool     `json:"schedulable"`
+	} `json:"kinds"`
+}
+
+type reportContentResp struct {
+	Content     []byte `json:"content"`
+	ContentType string `json:"content_type"`
+	Filename    string `json:"filename"`
+	Rows        int64  `json:"row_count"`
+	Truncated   bool   `json:"truncated"`
+	Bytes       int64  `json:"bytes"`
 }
 
 type listSchedulesResp struct {
@@ -305,7 +328,7 @@ func TestAReportIsRequestedAndOnlyOfferedWhenItIsDone(t *testing.T) {
 	made, err := svcclient.Call[requestReportReq, reportResp](
 		context.Background(), p.reporting(), reportSvc+"/RequestReport",
 		requestReportReq{TenantID: p.tenant, Name: "fortnight collections",
-			ReportType: "collections", Parameters: `{"from":"2026-02-01"}`,
+			ReportType: "collections", Parameters: `{"from":"2026-02-01","to":"2026-02-15"}`,
 			FileFormat: "csv", RequestedBy: "e2e", CreatedBy: "e2e"}, p.opts())
 	if err != nil {
 		t.Fatalf("request report: %v", err)
@@ -346,13 +369,24 @@ func TestAReportScheduleIsCreatedSwitchedOffAndDeleted(t *testing.T) {
 	made, err := svcclient.Call[createScheduleReq, scheduleResp](
 		context.Background(), p.reporting(), reportSvc+"/CreateSchedule",
 		createScheduleReq{TenantID: p.tenant, ReportType: "collections",
-			Schedule: "0 6 * * *", Parameters: `{}`, CreatedBy: "e2e"}, p.opts())
+			Schedule: "0 6 * * *", Parameters: `{"window":"yesterday"}`,
+			Timezone: "Asia/Kolkata", CreatedBy: "e2e"}, p.opts())
 	if err != nil {
 		t.Fatalf("create schedule: %v", err)
 	}
 	if !made.Schedule.IsActive {
 		t.Error("a new schedule is inactive; one that never runs is one nobody notices " +
 			"is not running")
+	}
+	// The first firing is worked out when the schedule is written, not left for
+	// a sweep to adopt. A schedule whose next run is a blank is one nobody can
+	// check before the morning it does not arrive.
+	if made.Schedule.NextRunAt == "" {
+		t.Error("a new schedule has no next firing")
+	}
+	if made.Schedule.Timezone != "Asia/Kolkata" {
+		t.Errorf("the schedule's zone reads back as %q; six in the morning is six where the "+
+			"society is", made.Schedule.Timezone)
 	}
 
 	off, err := svcclient.Call[scheduleActionReq, scheduleResp](
@@ -383,5 +417,185 @@ func TestAReportScheduleIsCreatedSwitchedOffAndDeleted(t *testing.T) {
 		if s.ID == made.Schedule.ID {
 			t.Error("a deleted schedule is still listed, so it is still due to run")
 		}
+	}
+}
+
+// The catalogue is served, and it is what a request is checked against.
+//
+// A client holding its own list is one that offers a type the platform stopped
+// producing, or hides one it started. This is the list the runner reads.
+func TestTheReportCatalogueIsServedAndIsWhatRequestsAreCheckedAgainst(t *testing.T) {
+	p := startPlatform(t)
+
+	kinds, err := svcclient.Call[struct{}, reportKindsResp](
+		context.Background(), p.reporting(), reportSvc+"/ListReportKinds",
+		struct{}{}, p.opts())
+	if err != nil {
+		t.Fatalf("list report kinds: %v", err)
+	}
+	if len(kinds.Kinds) == 0 {
+		t.Fatal("the platform serves an empty catalogue, so nothing can be asked for")
+	}
+
+	var schedulable, oneAtATime int
+	for _, k := range kinds.Kinds {
+		if k.Summary == "" {
+			t.Errorf("%s has no summary, so nobody choosing between these can tell what it is",
+				k.Name)
+		}
+		if k.Schedulable {
+			schedulable++
+		} else {
+			oneAtATime++
+		}
+	}
+	if schedulable == 0 {
+		t.Error("nothing in the catalogue can be scheduled, so the schedule runner has " +
+			"nothing it could ever fire")
+	}
+	if oneAtATime == 0 {
+		t.Error("everything in the catalogue is schedulable; a type that names a cycle is " +
+			"not, and if none is, that distinction is not being enforced")
+	}
+
+	// A type nobody wrote is refused when it is asked for, and the refusal
+	// names what there is. An empty file marked complete is the failure this
+	// prevents: nothing errors, and a person reads a period in which nothing
+	// happened.
+	_, err = svcclient.Call[requestReportReq, reportResp](
+		context.Background(), p.reporting(), reportSvc+"/RequestReport",
+		requestReportReq{TenantID: p.tenant, Name: "made up", ReportType: "daily_yield",
+			Parameters: `{"from":"2026-02-01","to":"2026-02-02"}`, FileFormat: "csv",
+			RequestedBy: "e2e", CreatedBy: "e2e"}, p.opts())
+	if err == nil {
+		t.Fatal("a report type nobody wrote was accepted")
+	}
+	if !strings.Contains(err.Error(), "collections") {
+		t.Errorf("the refusal does not say what the platform does produce: %v", err)
+	}
+
+	// And a schedule cannot ask for a type that names a cycle. Refused when the
+	// schedule is written rather than at six in the morning, which is the
+	// difference between an error message and a report that never arrives.
+	_, err = svcclient.Call[createScheduleReq, scheduleResp](
+		context.Background(), p.reporting(), reportSvc+"/CreateSchedule",
+		createScheduleReq{TenantID: p.tenant, ReportType: "settlement_summary",
+			Schedule: "0 6 * * *", Parameters: `{"window":"yesterday"}`,
+			Timezone: "Asia/Kolkata", CreatedBy: "e2e"}, p.opts())
+	if err == nil {
+		t.Error("a schedule was written for a report that names a cycle, which a schedule " +
+			"firing at six in the morning has no way to choose")
+	}
+}
+
+// A requested report is actually produced, and the bytes come back.
+//
+// This is the whole point of the runner. Before it existed, RequestReport wrote
+// a row with status 'pending' and nothing in the platform ever moved it: the
+// console had to say so on the page, because a Generate button with a spinner
+// would have been a control that reports success while doing nothing.
+//
+// The report here is a collections report over a period this test's tenant has
+// no milk in, so it is empty — and that is the point worth being careful about.
+// An empty report and a report whose source could not be reached look identical
+// on a screen, so this asserts the status and the header rather than the row
+// count: completed with a header is "nobody delivered any milk", and failed
+// with a reason is everything else.
+func TestARequestedReportIsProducedAndHandedOver(t *testing.T) {
+	p := startPlatform(t)
+
+	made, err := svcclient.Call[requestReportReq, reportResp](
+		context.Background(), p.reporting(), reportSvc+"/RequestReport",
+		requestReportReq{TenantID: p.tenant, Name: "a fortnight",
+			ReportType: "collections", Parameters: `{"from":"2026-02-01","to":"2026-02-15"}`,
+			FileFormat: "csv", RequestedBy: "e2e", CreatedBy: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("request report: %v", err)
+	}
+
+	// The runner claims within its sweep interval and a request kicks a sweep,
+	// so this is normally immediate. Polled rather than slept on, because a
+	// fixed wait is either flaky or slow and this is neither.
+	var final string
+	var reason string
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		got, err := svcclient.Call[idTenantReq, reportResp](
+			context.Background(), p.reporting(), reportSvc+"/GetReport",
+			idTenantReq{ID: made.Report.ID, TenantID: p.tenant}, p.opts())
+		if err != nil {
+			t.Fatalf("get report: %v", err)
+		}
+		final = got.Report.Status
+		if final == "completed" || final == "failed" {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+
+	if final != "completed" {
+		// The reason is fetched from the listing, which carries it, so a
+		// failure here says what went wrong rather than only that it did.
+		list, lerr := svcclient.Call[tenantReq, listReportsResp](
+			context.Background(), p.reporting(), reportSvc+"/ListReports",
+			tenantReq{TenantID: p.tenant}, p.opts())
+		if lerr == nil {
+			for _, r := range list.Reports {
+				if r.ID == made.Report.ID {
+					reason = r.FailureReason
+				}
+			}
+		}
+		t.Fatalf("the report ended %q rather than completed: %s\n"+
+			"Nothing moved it at all would show as 'pending', which is the state this "+
+			"whole runner was written to leave.", final, reason)
+	}
+
+	// And the bytes come back.
+	content, err := svcclient.Call[idTenantReq, reportContentResp](
+		context.Background(), p.reporting(), reportSvc+"/GetReportContent",
+		idTenantReq{ID: made.Report.ID, TenantID: p.tenant}, p.opts())
+	if err != nil {
+		t.Fatalf("get report content: %v", err)
+	}
+	if len(content.Content) == 0 {
+		t.Fatal("a completed report handed over nothing; even an empty period has a header")
+	}
+	if int64(len(content.Content)) != content.Bytes {
+		t.Errorf("the report says it is %d bytes and %d arrived",
+			content.Bytes, len(content.Content))
+	}
+	if !strings.HasPrefix(content.ContentType, "text/csv") {
+		t.Errorf("content type is %q", content.ContentType)
+	}
+	if !strings.Contains(content.Filename, "collections") ||
+		!strings.HasSuffix(content.Filename, ".csv") {
+		t.Errorf("filename is %q; it is built by the service rather than from the report's "+
+			"name, which is free text", content.Filename)
+	}
+	// The header names the columns, so a period with no milk in it is still a
+	// file somebody can open rather than an empty one they cannot read.
+	head := string(content.Content)
+	for _, col := range []string{"collected_on", "producer_ref", "amount"} {
+		if !strings.Contains(head, col) {
+			t.Errorf("the report has no %s column:\n%s", col, head)
+		}
+	}
+
+	// A download is now offered, because there is something to download.
+	if _, err := svcclient.Call[idTenantReq, downloadURLResp](
+		context.Background(), p.reporting(), reportSvc+"/GetReportDownloadURL",
+		idTenantReq{ID: made.Report.ID, TenantID: p.tenant}, p.opts()); err != nil {
+		t.Errorf("a completed report offers no locator: %v", err)
+	}
+
+	// And a second tenant cannot read the content, which is the tenant's own
+	// collections rather than a file about them.
+	other := newID("tnt")
+	if _, err := svcclient.Call[idTenantReq, reportContentResp](
+		context.Background(), p.reporting(), reportSvc+"/GetReportContent",
+		idTenantReq{ID: made.Report.ID, TenantID: other},
+		actingAs(other, "e2e")); err == nil {
+		t.Error("a second tenant read the contents of a report it did not request")
 	}
 }

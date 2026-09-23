@@ -163,9 +163,21 @@ services:
       # And notification, for telling somebody a payment was held, approved or
       # paid. Also this process.
       NOTIFICATION_URL: "http://127.0.0.1:8080"
-      # And the identity it reads as. Settlement reads collections on its own
-      # behalf rather than as whoever pressed the button, so the trail needs a
-      # name for it; unset, every gather is attributed to nothing.
+      # Reporting's readers, for producing a report. The same three services,
+      # under the names reporting-service reads them by, and all of them this
+      # process. Each is optional and a report whose source is unset fails with
+      # the missing setting named rather than producing an empty file.
+      SETTLEMENT_URL: "http://127.0.0.1:8080"
+      SHADOW_SETTLEMENT_URL: "http://127.0.0.1:8080"
+
+      # And the identity they read as. Settlement reads collections on its own
+      # behalf rather than as whoever pressed the button, and reporting produces
+      # a scheduled report hours after anybody asked for anything — so the trail
+      # needs a name for each; unset, every gather is attributed to nothing.
+      #
+      # One value for both, because in this shape they are one process. Split
+      # them when somebody wants to tell a settlement's reads from a report's in
+      # the audit trail, which is a reason to have two and not a requirement to.
       SERVICE_IDENTITY: "${SETTLEMENT_SERVICE_IDENTITY:-SI_SETTLEMENT_00000000000}"
 
       # Where file-service puts what it is given. Left unset it has no store

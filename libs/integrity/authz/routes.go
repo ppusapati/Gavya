@@ -322,10 +322,17 @@ var table = map[string]Permission{
 	"reporting.v1.ReportingService/GetReport":            PlatformRead,
 	"reporting.v1.ReportingService/ListReports":          PlatformRead,
 	"reporting.v1.ReportingService/GetReportDownloadURL": PlatformRead,
-	"reporting.v1.ReportingService/CreateSchedule":       PlatformWrite,
-	"reporting.v1.ReportingService/ListSchedules":        PlatformRead,
-	"reporting.v1.ReportingService/UpdateSchedule":       PlatformWrite,
-	"reporting.v1.ReportingService/DeleteSchedule":       PlatformAdmin,
+	// The report itself. Read, like everything else about a report: the content
+	// is the tenant's own collections or its own settlement, and anybody
+	// entitled to list a report is entitled to read what it says.
+	"reporting.v1.ReportingService/GetReportContent": PlatformRead,
+	// The catalogue. Read, because choosing a report to ask for is a thing
+	// somebody does before they have asked for one.
+	"reporting.v1.ReportingService/ListReportKinds": PlatformRead,
+	"reporting.v1.ReportingService/CreateSchedule":  PlatformWrite,
+	"reporting.v1.ReportingService/ListSchedules":   PlatformRead,
+	"reporting.v1.ReportingService/UpdateSchedule":  PlatformWrite,
+	"reporting.v1.ReportingService/DeleteSchedule":  PlatformAdmin,
 
 	// settlement.v1.SettlementService
 	"settlement.v1.SettlementService/OpenCycle":              SettlementWrite,

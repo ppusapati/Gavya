@@ -173,7 +173,28 @@ var services = []service{
 	{name: "health-service", database: "e2e_health", schema: "services/health-service/internal/db/schema.sql"},
 	{name: "farm-service", database: "e2e_farm", schema: "services/farm-service/internal/db/schema.sql"},
 	{name: "order-service", database: "e2e_order", schema: "services/order-service/internal/db/schema.sql"},
-	{name: "reporting-service", database: "e2e_reporting", schema: "services/reporting-service/internal/db/schema.sql"},
+	// Reports, and the runner that produces them. It reads what it reports on
+	// rather than recomputing it: a collections report shows what procurement
+	// priced, as procurement priced it, because two implementations of the same
+	// rate card would eventually disagree and the disagreement would surface as
+	// a report differing from the slip a farmer was handed.
+	//
+	// The URLs are not optional in this harness. Without them every report
+	// fails with the missing setting named — which is the right behaviour and
+	// is not what this suite is here to demonstrate.
+	{
+		name: "reporting-service", database: "e2e_reporting",
+		schema: "services/reporting-service/internal/db/schema.sql",
+		needs:  []string{"procurement-service", "settlement-service", "shadow-settlement-service"},
+		envOfDep: map[string]string{
+			"procurement-service":       "PROCUREMENT_URL",
+			"settlement-service":        "SETTLEMENT_URL",
+			"shadow-settlement-service": "SHADOW_SETTLEMENT_URL",
+		},
+		// Short, so a test that asks for a report does not wait a sweep for it.
+		// A request kicks a sweep anyway; this is what the kick falls back to.
+		env: []string{"REPORT_INTERVAL=500ms", "SCHEDULE_INTERVAL=1s"},
+	},
 	{
 		name: "file-service", database: "e2e_file",
 		schema: "services/file-service/internal/db/schema.sql",

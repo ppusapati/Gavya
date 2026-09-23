@@ -1,6 +1,10 @@
 # Who may reach procurement-service.
 #
-# gateway-service, settlement-service, and nothing else.
+# gateway-service, settlement-service, reporting-service, and nothing else.
+#
+# reporting-service reads a period's priced collections to produce a report.
+# It recomputes nothing: a report shows what this service priced, as it priced
+# it, so that a report and the slip a farmer was handed cannot disagree.
 #
 # This service takes the tenant it acts for and the permissions it acts with from
 # headers the gateway sets. Any pod that can reach this port can send a tenant of
@@ -30,6 +34,9 @@ spec:
         - podSelector:
             matchLabels:
               app: settlement-service
+        - podSelector:
+            matchLabels:
+              app: reporting-service
       ports:
         - protocol: TCP
           port: 8103

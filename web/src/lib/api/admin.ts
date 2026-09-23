@@ -8,12 +8,12 @@ import * as T from './types';
  * Five services that had no client. A sub-facade rather than more methods on
  * Gavya, for the reason HerdApi gives.
  *
- * Three things here are deliberately awkward, because the services are.
+ * Two things here are deliberately awkward, because the services are.
  * `updateTenant` demands every field, because the handler writes a whole record
- * and an omitted field is a cleared one. `requestReport` records a request that
- * nothing runs. `fileDownloadPath` and `reportDownloadPath` are named for what
- * they return — a stored path — rather than for the procedures that return it,
- * which are named GetDownloadURL and answer with no URL.
+ * and an omitted field is a cleared one. `fileDownloadPath` and
+ * `reportDownloadPath` are named for what they return — a stored path — rather
+ * than for the procedures that return it, which are named GetDownloadURL and
+ * answer with no URL; `reportContent` is what actually hands a report over.
  */
 export class AdminApi {
 	readonly #client: ApiClient;
@@ -262,11 +262,16 @@ export class AdminApi {
 	/* ---- reports ---- */
 
 	/**
-	 * Record a request for a report.
+	 * Ask for a report.
 	 *
-	 * Not "generate one". The service writes a row with status "pending" and
-	 * this platform has nothing that runs it — no worker, no queue consumer.
-	 * Anything calling this has to say so to whoever pressed the button.
+	 * It used to be worth saying that this only recorded a request, because
+	 * nothing in the platform ran one. reporting-service now has a runner: the
+	 * row goes pending, a sweep claims it within seconds, and it ends
+	 * completed or failed with a reason.
+	 *
+	 * The type and its parameters are checked here rather than at the moment
+	 * the runner picks it up, so a request that cannot be produced is refused
+	 * while somebody is still standing at the screen.
 	 */
 	requestReport(req: Omit<T.RequestReportRequest, 'tenant_id'>, extra?: Partial<CallOptions>) {
 		return this.#client.call<T.RequestReportRequest, T.ReportResponse>(
@@ -293,11 +298,43 @@ export class AdminApi {
 	}
 
 	/** The report's stored file path. The procedure is called GetReportDownloadURL
-	 * and returns the path verbatim; nothing signs it and nothing resolves it. */
+	 * and returns the path verbatim; nothing signs it and nothing resolves it.
+	 * reportContent below is what actually hands the report over. */
 	reportDownloadPath(id: string, extra?: Partial<CallOptions>) {
 		return this.#client.call<T.GetReportDownloadURLRequest, T.ReportDownloadResponse>(
 			`${T.REPORTING}/GetReportDownloadURL`,
 			{ id, tenant_id: this.#tenantId },
+			this.#opts(extra)
+		);
+	}
+
+	/**
+	 * The report itself.
+	 *
+	 * The bytes, base64-encoded, rather than a path. This platform has no
+	 * object storage and never had a URL to give, so a report that cannot be
+	 * read this way is a report nobody can reach.
+	 */
+	reportContent(id: string, extra?: Partial<CallOptions>) {
+		return this.#client.call<T.GetReportContentRequest, T.GetReportContentResponse>(
+			`${T.REPORTING}/GetReportContent`,
+			{ id, tenant_id: this.#tenantId },
+			this.#opts(extra)
+		);
+	}
+
+	/**
+	 * What this platform can produce.
+	 *
+	 * Asked rather than held here, because a client with its own list is one
+	 * that offers a type the platform stopped producing, or hides one it
+	 * started. The same list the runner reads is the list a person chooses
+	 * from.
+	 */
+	reportKinds(extra?: Partial<CallOptions>) {
+		return this.#client.call<T.ListReportKindsRequest, T.ListReportKindsResponse>(
+			`${T.REPORTING}/ListReportKinds`,
+			{},
 			this.#opts(extra)
 		);
 	}

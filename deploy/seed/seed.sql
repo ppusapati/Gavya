@@ -1039,34 +1039,67 @@ VALUES
 ON CONFLICT (id) DO NOTHING;
 
 SET LOCAL search_path = reporting_service, public;  -- set by deploy/seed: this service's own search_path
+--
+-- Both rows name a type the runner actually produces. A seed carrying a type
+-- nobody wrote would be picked up by the schedule below and fail every firing,
+-- which is a worked example of the wrong thing.
+--
+-- `daily_yield` used to be here and has been replaced. It is the report this
+-- platform cannot produce unattended: a yield needs a density to convert
+-- between litres and kilograms, production-service refuses to assume one, and a
+-- runner working at seven in the morning has nobody to ask. The only
+-- unattended yield report it could make is one resting on a figure nobody
+-- measured.
 INSERT INTO reporting_service.reports
     (id, tenant_id, name, report_type, parameters, status, file_path, file_format,
-     requested_by, started_at, completed_at, created_by, updated_by)
+     requested_by, started_at, completed_at, row_count, content_type, attempts,
+     created_by, updated_by)
 VALUES
-    ('RPT_YIELD_SEP_0000001', 'TEN_VALLEY_DAIRY_000000001', 'Daily yield, September',
-     'daily_yield', '{"from":"2026-09-01","to":"2026-09-15"}'::jsonb, 'completed',
-     '/reports/valley/daily-yield-2026-09.csv', 'csv', 'USR_ANITA_MANAGER_00000001',
+    ('RPT_COLLECT_SEP_00001', 'TEN_VALLEY_DAIRY_000000001',
+     'Collections, 1-15 September', 'collections',
+     '{"from":"2026-09-01","to":"2026-09-15"}'::jsonb, 'completed',
+     'reporting_service.reports/RPT_COLLECT_SEP_00001#content', 'csv',
+     'USR_ANITA_MANAGER_00000001',
      '2026-09-16 07:00:00+05:30', '2026-09-16 07:00:12+05:30',
+     1284, 'text/csv; charset=utf-8', 1,
      'USR_ANITA_MANAGER_00000001', 'USR_ANITA_MANAGER_00000001'),
-    -- Failed, with no file. A reports table where everything succeeded is one
-    -- nobody has run in anger.
+    -- Failed, with the reason recorded. A reports table where everything
+    -- succeeded is one nobody has run in anger, and a failure with no reason is
+    -- one the person who asked can do nothing about.
     ('RPT_SETTLEMENT_FAIL_01', 'TEN_VALLEY_DAIRY_000000001', 'Settlement summary',
-     'settlement_summary', '{"cycle":"CYC_SEP_FIRST_00001"}'::jsonb, 'failed',
-     NULL, NULL, 'USR_SUNIL_ACCOUNTS_000001',
+     'settlement_summary', '{"cycle_id":"CYC_SEP_FIRST_00001"}'::jsonb, 'failed',
+     NULL, 'csv', 'USR_SUNIL_ACCOUNTS_000001',
      '2026-09-17 08:00:00+05:30', '2026-09-17 08:00:03+05:30',
+     NULL, NULL, 3,
      'USR_SUNIL_ACCOUNTS_000001', 'USR_SUNIL_ACCOUNTS_000001')
 ON CONFLICT (id) DO NOTHING;
 
+UPDATE reporting_service.reports
+   SET failure_reason = 'read cycle CYC_SEP_FIRST_00001''s payables from settlement: '
+                        'connection refused'
+ WHERE id = 'RPT_SETTLEMENT_FAIL_01' AND failure_reason IS NULL;
+
+--
+-- Every schedule carries the zone its times are in. Seven in the morning is
+-- seven in Maharashtra, which is 01:30 UTC — a schedule evaluated in the
+-- process's zone would fire in the middle of the previous afternoon and its
+-- "yesterday" would be a different day from the one the society means.
 INSERT INTO reporting_service.report_schedules
-    (id, tenant_id, report_type, schedule, parameters, is_active, last_run_at,
+    (id, tenant_id, report_type, schedule, parameters, timezone, is_active, last_run_at,
      next_run_at, created_by, updated_by)
 VALUES
-    ('RSC_YIELD_DAILY_00001', 'TEN_VALLEY_DAIRY_000000001', 'daily_yield', '0 7 * * *',
-     '{"window":"yesterday"}'::jsonb, true,
+    ('RSC_COLLECT_DAILY_001', 'TEN_VALLEY_DAIRY_000000001', 'collections', '0 7 * * *',
+     '{"window":"yesterday"}'::jsonb, 'Asia/Kolkata', true,
      '2026-09-18 07:00:00+05:30', '2026-09-19 07:00:00+05:30',
      'USR_ANITA_MANAGER_00000001', 'USR_ANITA_MANAGER_00000001'),
+    -- Inactive, and it could not be written today: a settlement summary names a
+    -- cycle, and a schedule firing at eight in the morning has no way to know
+    -- which one is meant. CreateSchedule refuses it now. It is left here as the
+    -- row an older version wrote, which is what the runner will actually meet
+    -- in any database that has been running a while — deactivated, so it is
+    -- swept past rather than failing every firing.
     ('RSC_SETTLE_FORTNIGHT1', 'TEN_VALLEY_DAIRY_000000001', 'settlement_summary',
-     '0 8 1,16 * *', '{"window":"last_cycle"}'::jsonb, false, NULL,
+     '0 8 1,16 * *', '{"window":"last_month"}'::jsonb, 'Asia/Kolkata', false, NULL,
      '2026-10-01 08:00:00+05:30',
      'USR_SUNIL_ACCOUNTS_000001', 'USR_SUNIL_ACCOUNTS_000001')
 ON CONFLICT (id) DO NOTHING;

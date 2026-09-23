@@ -326,6 +326,13 @@ services:
       GAVYA_TRACE_ENDPOINT: "http://jaeger:4318"
       # Not encrypted, and this says so. The PostgreSQL is a container beside this one on a private compose network. Point DATABASE_URL at a database anywhere else and this line has to go: set sslmode=verify-full instead.
       GAVYA_INSECURE_DATABASE: "plaintext-to-the-database-is-acceptable-here"
+      # Where a report's data comes from. Each is optional and none has a
+      # default: a report whose source is not set here fails with the missing
+      # setting named, rather than producing an empty file that looks like a
+      # period in which nothing happened.
+      PROCUREMENT_URL: "http://procurement-service:8103"
+      SETTLEMENT_URL: "http://settlement-service:8104"
+      SHADOW_SETTLEMENT_URL: "http://shadow-settlement-service:8090"
     depends_on:
       postgres:
         condition: service_healthy

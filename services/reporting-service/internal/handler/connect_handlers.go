@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 
 	"connectrpc.com/connect"
 
@@ -31,6 +32,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	}
 
 	route("RequestReport", connectjson.Unary(h.RequestReport))
+	route("GetReportContent", connectjson.Unary(h.GetReportContent))
+	route("ListReportKinds", connectjson.Unary(h.ListReportKinds))
 	route("GetReport", connectjson.Unary(h.GetReport))
 	route("ListReports", connectjson.Unary(h.ListReports))
 	route("GetReportDownloadURL", connectjson.Unary(h.GetReportDownloadURL))
@@ -97,7 +100,18 @@ type CreateScheduleRequest struct {
 	ReportType string `json:"report_type"`
 	Schedule   string `json:"schedule"`
 	Parameters string `json:"parameters"`
-	CreatedBy  string `json:"created_by"`
+	// Timezone is the zone the schedule's times are in, as an IANA name such as
+	// Asia/Kolkata. Required, and with no default.
+	//
+	// Seven in the morning is seven where the society is. A default of UTC here
+	// would be this platform deciding what time a co-operative starts work —
+	// quietly, differently from what they typed, and by five and a half hours
+	// in the country most of them are in.
+	Timezone string `json:"timezone"`
+	// Parameters must carry a window: yesterday, last_7_days or last_month. The
+	// period a scheduled report covers has to move with the firing, and a
+	// schedule carrying fixed dates would produce the same report for ever.
+	CreatedBy string `json:"created_by"`
 }
 
 type ScheduleResponse struct {
@@ -126,6 +140,128 @@ type DeleteScheduleRequest struct {
 }
 
 type DeleteScheduleResponse struct{}
+
+// GetReportContentRequest asks for the report itself.
+type GetReportContentRequest struct {
+	ID       string `json:"id"`
+	TenantID string `json:"tenant_id"`
+}
+
+// GetReportContentResponse hands over what the run produced.
+//
+// The bytes, rather than a path. GetReportDownloadURL is the older procedure
+// and it answers with a locator that nothing signs and no browser can fetch —
+// this platform has never had object storage, so there has never been a URL to
+// give. A report that cannot be read is a report that was not produced, so the
+// content travels here.
+type GetReportContentResponse struct {
+	// Content is the report. Go marshals a []byte as base64, which is what a
+	// JSON transport can carry and what every client of this decodes.
+	Content []byte `json:"content"`
+	// ContentType is what it is, including the charset. A spreadsheet that
+	// guesses the encoding gets a producer's name wrong.
+	ContentType string `json:"content_type"`
+	// Filename is what to save it as. Built from the report rather than from
+	// its name, because a name is free text and a filename is not.
+	Filename string `json:"filename"`
+	// Rows is how many rows of data it carries, not counting the header.
+	Rows int64 `json:"row_count"`
+	// Truncated says the run stopped at its ceiling. It travels with the
+	// content because a truncated total somebody acts on is short by an amount
+	// nothing else on the page discloses.
+	Truncated bool `json:"truncated"`
+	// Bytes is the length, so a caller can check what it decoded is all of it.
+	Bytes int64 `json:"bytes"`
+}
+
+func (h *Handler) GetReportContent(ctx context.Context, req *connect.Request[GetReportContentRequest]) (*connect.Response[GetReportContentResponse], error) {
+	rep, err := h.svc.ReportContent(ctx, req.Msg.ID, req.Msg.TenantID)
+	if err != nil {
+		return nil, classify(err)
+	}
+	var rows int64
+	if rep.RowCount != nil {
+		rows = *rep.RowCount
+	}
+	return connect.NewResponse(&GetReportContentResponse{
+		Content:     rep.Content,
+		ContentType: rep.ContentType,
+		Filename:    filenameFor(rep.ReportType, rep.ID, rep.FileFormat),
+		Rows:        rows,
+		Truncated:   rep.Truncated,
+		Bytes:       int64(len(rep.Content)),
+	}), nil
+}
+
+// filenameFor builds a name a filesystem will accept.
+//
+// From the type and the identifier rather than from the report's name, which is
+// free text somebody typed and may hold a slash, a quote or a newline. A
+// filename assembled from free text is how a download writes somewhere nobody
+// meant.
+func filenameFor(reportType, id, format string) string {
+	safe := func(s string) string {
+		var b strings.Builder
+		for _, r := range s {
+			switch {
+			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+				b.WriteRune(r)
+			default:
+				b.WriteRune('_')
+			}
+		}
+		return b.String()
+	}
+	ext := safe(format)
+	if ext == "" {
+		ext = "csv"
+	}
+	return safe(reportType) + "_" + safe(id) + "." + ext
+}
+
+// ReportKindProto is one report this platform can produce.
+type ReportKindProto struct {
+	Name    string `json:"name"`
+	Summary string `json:"summary"`
+	// Needs are the parameter keys without which it cannot run.
+	Needs []string `json:"needs"`
+	// Schedulable says whether a schedule can ask for it. False for a type that
+	// names something a schedule has no way to supply, such as a cycle.
+	Schedulable bool `json:"schedulable"`
+}
+
+// ListReportKindsRequest carries nothing.
+//
+// It had a tenant_id, and the reachability check caught that nothing read it:
+// the reports this platform produces are the same for every co-operative, so a
+// tenant here would be a field a caller supplies, is told nothing about, and
+// which changes no answer. The permission still scopes the call — a caller
+// needs platform.read to ask — and that is carried by the session rather than
+// by the body.
+//
+// identity-service's ListRolesRequest was found the same way and reads the
+// same. A field on the wire that nothing reads is one a caller fills in
+// believing it was kept.
+type ListReportKindsRequest struct{}
+
+type ListReportKindsResponse struct {
+	Kinds []ReportKindProto `json:"kinds"`
+}
+
+// ListReportKinds is the catalogue.
+//
+// Served rather than written into a client, because a client holding its own
+// list is one that offers a type the platform stopped producing, or hides one
+// it started. The same list the runner reads is the list a person chooses from.
+func (h *Handler) ListReportKinds(_ context.Context, _ *connect.Request[ListReportKindsRequest]) (*connect.Response[ListReportKindsResponse], error) {
+	out := &ListReportKindsResponse{Kinds: []ReportKindProto{}}
+	for _, k := range h.svc.Catalogue() {
+		out.Kinds = append(out.Kinds, ReportKindProto{
+			Name: k.Name, Summary: k.Summary, Needs: k.Needs, Schedulable: k.Schedulable,
+		})
+	}
+	return connect.NewResponse(out), nil
+}
 
 func (h *Handler) RequestReport(ctx context.Context, req *connect.Request[RequestReportRequest]) (*connect.Response[ReportResponse], error) {
 	m := req.Msg
@@ -162,7 +298,7 @@ func (h *Handler) GetReportDownloadURL(ctx context.Context, req *connect.Request
 
 func (h *Handler) CreateSchedule(ctx context.Context, req *connect.Request[CreateScheduleRequest]) (*connect.Response[ScheduleResponse], error) {
 	m := req.Msg
-	out, err := h.svc.CreateSchedule(ctx, m.TenantID, m.ReportType, m.Schedule, m.Parameters, m.CreatedBy)
+	out, err := h.svc.CreateSchedule(ctx, m.TenantID, m.ReportType, m.Schedule, m.Parameters, m.Timezone, m.CreatedBy)
 	if err != nil {
 		return nil, classify(err)
 	}

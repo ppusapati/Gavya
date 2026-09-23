@@ -4,11 +4,16 @@
  * Field names mirror the Go handlers' json tags exactly, and clients_test.go
  * compares the two on every run of the gate.
  *
- * Two of these services promise less than their names suggest, and the types say
- * so where the screens have to act on it. `GetDownloadURLResponse.url` and
- * `ReportDownloadResponse.url` are stored paths rather than URLs — neither
- * service signs anything — and a report's `status` is set to "pending" when it
- * is requested and moved by nothing.
+ * One of these services promises less than its name suggests, and the types say
+ * so where the screens have to act on it: `GetDownloadURLResponse.url` and
+ * `ReportDownloadResponse.url` are stored paths rather than URLs, because
+ * neither service signs anything and this platform has no object storage.
+ *
+ * Reports used to be the other. `RequestReport` wrote a row with status
+ * "pending" and nothing in the platform ever moved it, and `next_run_at` was a
+ * column nothing computed. Both are now run by reporting-service's own runner:
+ * a report is produced and its bytes come back from `GetReportContent`, and a
+ * schedule fires in its own timezone.
  */
 
 /* ---- tenants ---- */
@@ -373,13 +378,21 @@ export interface Report {
 	/** Opaque to this client: the service stores whatever string it was given. */
 	parameters: string;
 	/**
-	 * "pending" when requested. Nothing in this platform moves it on — there is
-	 * no worker that runs a report — so a screen must describe requesting as
-	 * recording a request, not as generating anything.
+	 * pending, running, completed or failed.
+	 *
+	 * The runner moves it. A report goes pending on request, running when a
+	 * sweep claims it, and then completed or failed — and a failed one always
+	 * carries `failure_reason`, because a failure nobody can read is one
+	 * nobody can correct.
 	 */
 	status: string;
+	/**
+	 * Where the bytes are. A locator, not a URL, and not something a browser
+	 * can fetch — `GetReportContent` is what hands the report over.
+	 */
 	file_path: string;
 	file_format: string;
+	/** The person who asked, or the schedule that did. */
 	requested_by: string;
 	started_at?: string;
 	completed_at?: string;
@@ -388,6 +401,20 @@ export interface Report {
 	created_by: string;
 	updated_by: string;
 	deleted_at?: string;
+
+	/** What it is, once produced. */
+	content_type?: string;
+	row_count?: number;
+	/**
+	 * The run stopped at its ceiling. Shown wherever the figures are, because a
+	 * truncated total somebody acts on is short by an amount nothing else on
+	 * the page discloses.
+	 */
+	truncated: boolean;
+	/** Why it failed. Always present on a failed report. */
+	failure_reason?: string;
+	/** How many times it has been tried, of three. */
+	attempts: number;
 }
 
 export interface ReportSchedule {
@@ -396,10 +423,26 @@ export interface ReportSchedule {
 	report_type: string;
 	schedule: string;
 	parameters: string;
+	/** Read by the runner: an inactive schedule is not swept. */
 	is_active: boolean;
-	/** Both are columns. Nothing computes next_run_at and nothing fires on it. */
 	last_run_at?: string;
+	/** When it fires next, computed by the runner in `timezone`. */
 	next_run_at?: string;
+	/**
+	 * The zone this schedule's times are in, as an IANA name.
+	 *
+	 * Seven in the morning is seven where the society is. Required when a
+	 * schedule is written and with no default — UTC would be this platform
+	 * deciding what time a co-operative starts work, and by five and a half
+	 * hours in the country most of them are in.
+	 */
+	timezone: string;
+	/**
+	 * What went wrong the last time it fired. A schedule that has stopped
+	 * producing its report is noticed weeks later, when somebody asks where the
+	 * report went; this is the answer.
+	 */
+	last_error?: string;
 	created_at: string;
 	updated_at: string;
 	created_by: string;
@@ -446,10 +489,67 @@ export interface ReportDownloadResponse {
 
 export interface CreateScheduleRequest {
 	tenant_id: string;
+	/** Must be a type whose `schedulable` is true. */
 	report_type: string;
+	/** Five cron fields: minute, hour, day of month, month, day of week. */
 	schedule: string;
+	/**
+	 * Must carry a window — yesterday, last_7_days or last_month — because the
+	 * period a scheduled report covers has to move with the firing. A schedule
+	 * carrying fixed dates would produce the same report for ever.
+	 */
 	parameters: string;
+	/** An IANA zone such as Asia/Kolkata. Required, with no default. */
+	timezone: string;
 	created_by: string;
+}
+
+/** The windows a schedule can ask for. Anything else is refused. */
+export const REPORT_WINDOWS = ['yesterday', 'last_7_days', 'last_month'] as const;
+
+/** One report this platform can produce. */
+export interface ReportKind {
+	name: string;
+	summary: string;
+	/** Parameter keys without which it cannot run. */
+	needs: string[];
+	/**
+	 * Whether a schedule can ask for it. False for a type that names something
+	 * a schedule has no way to supply, such as a cycle.
+	 */
+	schedulable: boolean;
+}
+
+/**
+ * Nothing. The catalogue is the same for every co-operative, so a tenant here
+ * would be a field the caller fills in that changes no answer — and the
+ * permission that scopes the call is carried by the session.
+ */
+export type ListReportKindsRequest = Record<string, never>;
+export interface ListReportKindsResponse {
+	kinds: ReportKind[];
+}
+
+export interface GetReportContentRequest {
+	id: string;
+	tenant_id: string;
+}
+
+/**
+ * The report itself.
+ *
+ * `content` is base64, which is how Go marshals a []byte and what a JSON
+ * transport can carry. It is decoded in the browser rather than shown raw —
+ * this is the one thing on the reports screen that is not text to read.
+ */
+export interface GetReportContentResponse {
+	content: string;
+	content_type: string;
+	/** What to save it as, built by the service rather than from free text. */
+	filename: string;
+	row_count: number;
+	truncated: boolean;
+	bytes: number;
 }
 
 export interface ScheduleResponse {

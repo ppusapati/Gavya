@@ -159,6 +159,24 @@ var noBeforeImage = map[string]string{
 	"settlement-service.NotificationDelivered":   "machine state: the delivery bookkeeping of a queued message, which nobody decides",
 	"settlement-service.NotificationFailed":      "machine state: one failed try at delivering a queued message, and why",
 
+	// The report runner's own bookkeeping about work in progress.
+	//
+	// None of these changes anything the platform asserts about a dairy. They
+	// move a job through pending, running and done — driven by a sweep rather
+	// than by a person — and every one of them would write a row per report per
+	// attempt saying that a machine picked something up. The report row itself
+	// keeps what matters: how many attempts it has had, why the last one
+	// failed, and what it produced.
+	//
+	// ScheduleFired is not here. Its ordinary branch is bookkeeping and writes
+	// no trail, and the branch that deactivates a schedule does: a schedule
+	// that stops producing its report is noticed weeks later, when the report
+	// is missed.
+	"reporting-service.ClaimReports":            "machine state: a sweep taking a pending report, which nobody decides",
+	"reporting-service.ReclaimAbandonedReports": "machine state: putting back work a process was holding when it stopped",
+	"reporting-service.ReportSucceeded":         "fills in fields that were empty: the content a run produced, where there was none",
+	"reporting-service.ReportFailed":            "machine state: one failed attempt at producing a report, and why; the reason and the attempt count are on the row",
+
 	// Recorded elsewhere.
 	"shadow-settlement-service.SupersedeComputation":  "both states are rows: superseding keeps the old computation and writes a new one, and the pair is the record",
 	"shadow-settlement-service.SupersedeAssertion":    "both states are rows, as above",

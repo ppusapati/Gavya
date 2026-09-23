@@ -59,3 +59,37 @@ spec:
       ports:
         - protocol: TCP
           port: 5432
+
+    # procurement-service, settlement-service, shadow-settlement-service.
+    #
+    # Where a report's data comes from. This service reads nobody's database
+    # and recomputes nothing: a collections report shows what procurement
+    # priced, as procurement priced it, because two implementations of the same
+    # rate card would eventually disagree and the disagreement would surface as
+    # a report differing from the slip a farmer was handed.
+    #
+    # Derived from the *_URL settings this service's own config reads. The test
+    # in services/gateway-service/handler compares the two, so a call added in
+    # code and not here is a failing build rather than a timeout in the cluster
+    # — which is how this rule came to be written: the build failed.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: procurement-service
+      ports:
+        - protocol: TCP
+          port: 8103
+    - to:
+        - podSelector:
+            matchLabels:
+              app: settlement-service
+      ports:
+        - protocol: TCP
+          port: 8104
+    - to:
+        - podSelector:
+            matchLabels:
+              app: shadow-settlement-service
+      ports:
+        - protocol: TCP
+          port: 8090

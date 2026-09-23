@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -23,16 +24,43 @@ var ErrNotFound = errors.New("not found")
 // below are positional: adding a column to the table would silently misalign
 // every field after it.
 const reportCols = `id,tenant_id,name,report_type,COALESCE(parameters::text,''),status,COALESCE(file_path,''),COALESCE(file_format,''),` +
-	`requested_by,started_at,completed_at,created_at,updated_at,created_by,updated_by,deleted_at`
+	`requested_by,started_at,completed_at,created_at,updated_at,created_by,updated_by,deleted_at,` +
+	`content,COALESCE(content_type,''),row_count,truncated,COALESCE(failure_reason,''),attempts`
+
+// reportColsNoContent is every column but the bytes.
+//
+// A listing of a hundred reports is a listing of a hundred rendered files if it
+// selects content, which is megabytes over the wire to draw a table of names
+// and statuses. The bytes are fetched by the one procedure that hands them
+// over, and by nothing else.
+const reportColsNoContent = `id,tenant_id,name,report_type,COALESCE(parameters::text,''),status,COALESCE(file_path,''),COALESCE(file_format,''),` +
+	`requested_by,started_at,completed_at,created_at,updated_at,created_by,updated_by,deleted_at,` +
+	`NULL::bytea,COALESCE(content_type,''),row_count,truncated,COALESCE(failure_reason,''),attempts`
 
 const scheduleCols = `id,tenant_id,report_type,schedule,COALESCE(parameters::text,''),is_active,last_run_at,next_run_at,` +
-	`created_at,updated_at,created_by,updated_by,deleted_at`
+	`created_at,updated_at,created_by,updated_by,deleted_at,timezone,COALESCE(last_error,'')`
 
 type Repository interface {
 	CreateReport(ctx context.Context, r *domain.Report) (*domain.Report, error)
 	GetReport(ctx context.Context, id, tenantID string) (*domain.Report, error)
 	ListReports(ctx context.Context, tenantID string) ([]*domain.Report, error)
 	UpdateReportStatus(ctx context.Context, id, tenantID, status, updatedBy string) (*domain.Report, error)
+	// ReportContent is the one read that fetches the bytes.
+	ReportContent(ctx context.Context, id, tenantID string) (*domain.Report, error)
+
+	// The runner's side. All three sweeps read across tenants through the
+	// definer-rights functions in schema.sql, because the isolation policies
+	// refuse a read with no tenant set — correctly — and a sweep has no single
+	// tenant. The writes that follow run under the row's own tenant, which the
+	// runner puts on the context.
+	ClaimReports(ctx context.Context, limit, maxAttempts int) ([]*domain.Report, error)
+	ReportSucceeded(ctx context.Context, r *domain.Report) error
+	ReportFailed(ctx context.Context, id, reason string, permanent bool) error
+	ReclaimAbandonedReports(ctx context.Context, olderThan time.Duration, limit, maxAttempts int) (requeued, failed int, err error)
+
+	DueSchedules(ctx context.Context, limit int) ([]*domain.ReportSchedule, error)
+	ScheduleFired(ctx context.Context, id string, firedAt time.Time, nextRun *time.Time, lastError string) error
+
 	CreateReportSchedule(ctx context.Context, s *domain.ReportSchedule) (*domain.ReportSchedule, error)
 	GetReportSchedule(ctx context.Context, id, tenantID string) (*domain.ReportSchedule, error)
 	ListReportSchedules(ctx context.Context, tenantID string) ([]*domain.ReportSchedule, error)
@@ -68,7 +96,7 @@ func (r *repo) CreateReport(ctx context.Context, rep *domain.Report) (*domain.Re
 
 func (r *repo) GetReport(ctx context.Context, id, tenantID string) (*domain.Report, error) {
 	row := r.pool.QueryRow(ctx,
-		`SELECT `+reportCols+` FROM reports WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL`,
+		`SELECT `+reportColsNoContent+` FROM reports WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL`,
 		id, tenantID,
 	)
 	return scanReport(row)
@@ -76,7 +104,7 @@ func (r *repo) GetReport(ctx context.Context, id, tenantID string) (*domain.Repo
 
 func (r *repo) ListReports(ctx context.Context, tenantID string) ([]*domain.Report, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT `+reportCols+` FROM reports WHERE tenant_id=$1 AND deleted_at IS NULL ORDER BY created_at DESC`,
+		`SELECT `+reportColsNoContent+` FROM reports WHERE tenant_id=$1 AND deleted_at IS NULL ORDER BY created_at DESC`,
 		tenantID,
 	)
 	if err != nil {
@@ -104,9 +132,9 @@ func (r *repo) UpdateReportStatus(ctx context.Context, id, tenantID, status, upd
 
 func (r *repo) CreateReportSchedule(ctx context.Context, s *domain.ReportSchedule) (*domain.ReportSchedule, error) {
 	row := r.pool.QueryRow(ctx,
-		`INSERT INTO report_schedules (id,tenant_id,report_type,schedule,parameters,is_active,next_run_at,created_by,updated_by)
-		 VALUES ($1,$2,$3,$4,NULLIF($5,'')::jsonb,$6,$7,$8,$9) RETURNING `+scheduleCols,
-		s.ID, s.TenantID, s.ReportType, s.Schedule, s.Parameters, s.IsActive, s.NextRunAt, s.CreatedBy, s.UpdatedBy,
+		`INSERT INTO report_schedules (id,tenant_id,report_type,schedule,parameters,is_active,next_run_at,timezone,created_by,updated_by)
+		 VALUES ($1,$2,$3,$4,NULLIF($5,'')::jsonb,$6,$7,$8,$9,$10) RETURNING `+scheduleCols,
+		s.ID, s.TenantID, s.ReportType, s.Schedule, s.Parameters, s.IsActive, s.NextRunAt, s.Timezone, s.CreatedBy, s.UpdatedBy,
 	)
 	return scanSchedule(row)
 }
@@ -184,7 +212,8 @@ func scanReport(s scanner) (*domain.Report, error) {
 	rep := &domain.Report{}
 	err := s.Scan(&rep.ID, &rep.TenantID, &rep.Name, &rep.ReportType, &rep.Parameters,
 		&rep.Status, &rep.FilePath, &rep.FileFormat, &rep.RequestedBy, &rep.StartedAt, &rep.CompletedAt,
-		&rep.CreatedAt, &rep.UpdatedAt, &rep.CreatedBy, &rep.UpdatedBy, &rep.DeletedAt)
+		&rep.CreatedAt, &rep.UpdatedAt, &rep.CreatedBy, &rep.UpdatedBy, &rep.DeletedAt,
+		&rep.Content, &rep.ContentType, &rep.RowCount, &rep.Truncated, &rep.FailureReason, &rep.Attempts)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
@@ -198,7 +227,7 @@ func scanSchedule(s scanner) (*domain.ReportSchedule, error) {
 	sched := &domain.ReportSchedule{}
 	err := s.Scan(&sched.ID, &sched.TenantID, &sched.ReportType, &sched.Schedule, &sched.Parameters,
 		&sched.IsActive, &sched.LastRunAt, &sched.NextRunAt, &sched.CreatedAt, &sched.UpdatedAt,
-		&sched.CreatedBy, &sched.UpdatedBy, &sched.DeletedAt)
+		&sched.CreatedBy, &sched.UpdatedBy, &sched.DeletedAt, &sched.Timezone, &sched.LastError)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
