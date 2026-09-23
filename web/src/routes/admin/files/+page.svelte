@@ -226,31 +226,29 @@
 													<button
 														class="ghost"
 														disabled={stored.pending}
-														onclick={() => stored.run((s) => settings.api().admin.fileDownloadPath(f.id, { signal: s }))}
+														onclick={() => stored.run((s) => settings.api().admin.fileDownloadLink(f.id, { signal: s }))}
 													>
-														Ask where it is stored
+														Get a link
 													</button>
 												</div>
 												{#if stored.settled}
-													<Await task={stored} isEmpty={(p) => !p.url} empty="No path.">
+													<Await task={stored} isEmpty={(p) => !p.url} empty="No link.">
 														{#snippet children(p)}
 															<!--
-																Text, never an anchor.
-
-																GetDownloadURL concatenates the configured bucket with the
-																stored name and returns that. It signs nothing, checks
-																nothing, and the result is not reachable from a browser. A
-																link here would break and would imply the platform had
-																granted access to something.
+																A real link now, and only ever issued for an object the
+																store actually holds. This service records where something
+																else put a file and never receives one itself, so a record
+																can outlive its object — asking for a link is what finds
+																that out, rather than a broken download later.
 															-->
 															<p class="banner">
-																<Chip tone="neutral">stored at</Chip>
-																<span class="mono">{p.url}</span>
+																<a href={p.url} rel="noreferrer">Open the file</a>
 															</p>
-															<p class="muted note">
-																The bucket and the stored name, joined. It is not a signed
-																URL, nothing checked that the object is there, and this
-																console cannot fetch it.
+															<p class="mono link">{p.url}</p>
+															<p class="warn">
+																Anybody holding this link can read the file until it
+																expires — it needs no password and it is not tied to
+																whoever you send it to.
 															</p>
 														{/snippet}
 													</Await>
@@ -276,6 +274,8 @@
 	.actions { display: flex; gap: 0.5rem; }
 	.check { display: flex; gap: 0.4rem; align-items: center; font-size: 0.85rem; }
 	.banner { display: flex; gap: 0.6rem; align-items: baseline; flex-wrap: wrap; max-width: var(--measure); margin: 0.6rem 0; font-size: 0.85rem; }
+	.link { word-break: break-all; font-size: 0.75rem; max-width: var(--measure); }
+	.warn { max-width: var(--measure); margin: 0.5rem 0 0; font-size: 0.82rem; color: var(--bad, #b3261e); }
 	.warning {
 		display: flex;
 		gap: 0.6rem;

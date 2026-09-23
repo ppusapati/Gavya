@@ -9,12 +9,14 @@ package app
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ppusapati/gavya/libs/integrity/authz"
 	"github.com/ppusapati/gavya/libs/integrity/serve"
+	"github.com/ppusapati/gavya/libs/integrity/signedurl"
 	"github.com/ppusapati/gavya/libs/integrity/svcclient"
 	"github.com/ppusapati/gavya/libs/integrity/sys"
 	"github.com/ppusapati/gavya/libs/integrity/tenantctx"
@@ -44,6 +46,19 @@ func Build(ctx context.Context, log *p9log.Helper) (serve.Registrar, *pgxpool.Po
 	}
 	repo := repository.New(pool)
 	svc := service.New(repo, log).WithClock(sys.Clock{})
+
+	// Signed download links.
+	//
+	// A browser following an <a href> sends no Authorization header, so a link
+	// carries its own authority. Without a key this service still starts and
+	// still serves everything else; GetReportDownloadURL refuses with the
+	// setting named, and GetReportContent still hands a report over through
+	// the authenticated channel.
+	links := signedurl.FromEnv()
+	if links.Why != "" {
+		log.Infof("download links: %s", links.Why)
+	}
+	svc.WithDownloads(links.Keys, links.Base, links.Lifetime)
 
 	// The readers a report draws on.
 	//
@@ -114,7 +129,21 @@ func Build(ctx context.Context, log *p9log.Helper) (serve.Registrar, *pgxpool.Po
 			"none of them, and will not fire any schedule")
 	}
 
-	return handler.New(svc), pool, nil
+	h := handler.New(svc)
+	return registrar{h}, pool, nil
+}
+
+// registrar adds the download route beside the procedures.
+//
+// serve.Registrar is one method, and the download route is deliberately not
+// part of Register: it is not a procedure, it is not behind a session, and it
+// is not in the permission table. Keeping it visible here rather than folding
+// it into Register is the point.
+type registrar struct{ h *handler.Handler }
+
+func (r registrar) Register(mux *http.ServeMux) {
+	r.h.Register(mux)
+	r.h.RegisterDownload(mux)
 }
 
 // ulidIDs makes an identifier for a report a schedule creates.

@@ -11,6 +11,11 @@ package e2e
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ppusapati/gavya/libs/integrity/svcclient"
@@ -220,11 +225,24 @@ type deleteFileReq struct {
 func aFileFor(t *testing.T, p *platform, entityType, entityID string) *fileRecordResp {
 	t.Helper()
 	name := newID("doc") + ".pdf"
+
+	// The object, before the record. file-service never receives a file — it
+	// records where something else put one — so a fixture that made only the
+	// record would be a record with nothing behind it, which is a different
+	// state and one this suite tests separately.
+	if err := os.MkdirAll(FileStore, 0o700); err != nil {
+		t.Fatalf("make the store: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(FileStore, name), []byte("%PDF-1.4\n"), 0o600); err != nil {
+		t.Fatalf("write the object: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(filepath.Join(FileStore, name)) })
+
 	out, err := svcclient.Call[createFileRecordReq, fileRecordResp](
 		context.Background(), p.file(), fileSvc+"/CreateFileRecord",
 		createFileRecordReq{TenantID: p.tenant, OriginalName: name,
 			StoredName: name, ContentType: "application/pdf", SizeBytes: 4096,
-			StoragePath: "/files/" + name, EntityType: entityType, EntityID: entityID,
+			StoragePath: filepath.Join(FileStore, name), EntityType: entityType, EntityID: entityID,
 			UploadedBy: "e2e", IsPublic: false, CreatedBy: "e2e"}, p.opts())
 	if err != nil {
 		t.Fatalf("create file record: %v", err)
@@ -314,5 +332,99 @@ func TestADeletedFileStopsBeingHandedOut(t *testing.T) {
 		if f.ID == made.File.ID {
 			t.Error("a deleted file is still listed")
 		}
+	}
+}
+
+// A record with nothing behind it gets no link.
+//
+// file-service never receives a file: it records where something else put one.
+// So a record can outlive its object, or name one that was never written — and
+// the old GetDownloadURL was true of both, because it joined the bucket and the
+// stored name and returned the string without looking.
+//
+// A link handed out for one of those fails after somebody has emailed it, which
+// is the worst moment to find out. Asking for the link is where it is found out
+// instead.
+func TestARecordWithNoObjectGetsNoLink(t *testing.T) {
+	p := startPlatform(t)
+
+	// A record, and deliberately no file written for it.
+	name := newID("ghost") + ".pdf"
+	made, err := svcclient.Call[createFileRecordReq, fileRecordResp](
+		context.Background(), p.file(), fileSvc+"/CreateFileRecord",
+		createFileRecordReq{TenantID: p.tenant, OriginalName: name,
+			StoredName: name, ContentType: "application/pdf", SizeBytes: 4096,
+			StoragePath: filepath.Join(FileStore, name), EntityType: "cattle",
+			EntityID: newID("cow"), UploadedBy: "e2e", IsPublic: false,
+			CreatedBy: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("create file record: %v", err)
+	}
+
+	// The record is really there.
+	if _, err := svcclient.Call[idTenantReq, fileRecordResp](
+		context.Background(), p.file(), fileSvc+"/GetFileRecord",
+		idTenantReq{ID: made.File.ID, TenantID: p.tenant}, p.opts()); err != nil {
+		t.Fatalf("the record itself is missing: %v", err)
+	}
+
+	_, err = svcclient.Call[idTenantReq, downloadURLResp](
+		context.Background(), p.file(), fileSvc+"/GetDownloadURL",
+		idTenantReq{ID: made.File.ID, TenantID: p.tenant}, p.opts())
+	if err == nil {
+		t.Fatal("a link was issued for a record the store has nothing behind; following it " +
+			"would fail after somebody had sent it on")
+	}
+	if !strings.Contains(err.Error(), "does not hold") {
+		t.Errorf("the refusal does not say the object is missing, so it reads as a broken "+
+			"service rather than a record to tidy up: %v", err)
+	}
+}
+
+// A signed link fetches the file, and the file only.
+func TestASignedLinkFetchesTheFile(t *testing.T) {
+	p := startPlatform(t)
+	made := aFileFor(t, p, "cattle", newID("cow"))
+
+	link, err := svcclient.Call[idTenantReq, downloadURLResp](
+		context.Background(), p.file(), fileSvc+"/GetDownloadURL",
+		idTenantReq{ID: made.File.ID, TenantID: p.tenant}, p.opts())
+	if err != nil {
+		t.Fatalf("get download link: %v", err)
+	}
+	if !strings.HasPrefix(link.URL, "/download/file?t=") {
+		t.Fatalf("the link is %q", link.URL)
+	}
+
+	base := p.baseURLs["file-service"]
+	res, err := http.Get(base + link.URL)
+	if err != nil {
+		t.Fatalf("follow the link: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("following the link gave %d: %s", res.StatusCode, body)
+	}
+	body, _ := io.ReadAll(res.Body)
+	if !strings.HasPrefix(string(body), "%PDF") {
+		t.Errorf("the file did not come back: %q", body)
+	}
+	if got := res.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options is %q", got)
+	}
+
+	// A report link is not a file link, whatever key signed it. The two
+	// services hold different keys here, so this is refused twice over — and
+	// the purpose binding is what would still refuse it in the modulith, where
+	// they are one process sharing one key.
+	reportLink := strings.Replace(link.URL, "/download/file", "/download/report", 1)
+	res2, err := http.Get(base + reportLink)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	defer res2.Body.Close()
+	if res2.StatusCode == http.StatusOK {
+		t.Error("a file link fetched something from the report route")
 	}
 }

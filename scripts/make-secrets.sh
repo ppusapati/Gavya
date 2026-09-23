@@ -29,6 +29,18 @@
 # network somebody else can be on, and the one thing worse than no TLS is TLS
 # that does not check who answered. Override --sslmode only for a database on a
 # private network you control, and know that you have.
+#
+# DOWNLOAD_SIGNING_KEY is generated here rather than asked for, unlike the
+# password. The difference is that the password has to match what PostgreSQL was
+# already given, and a signing key has no counterpart: nothing else in the
+# platform needs to know it, so there is nothing for a generated value to
+# disagree with. A distinct key per service, so a compromise of one cannot forge
+# the other's links.
+#
+# Rotating one: put the current value in DOWNLOAD_SIGNING_KEY_PREVIOUS, generate
+# a new DOWNLOAD_SIGNING_KEY, and drop the previous one after a day. Changing it
+# with no overlap invalidates every link already sent, which somebody discovers
+# as a morning of reports that will not open.
 set -euo pipefail
 
 password=""
@@ -70,6 +82,32 @@ fi
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 
+# Which services sign download links, read from their own config rather than
+# listed here. Same principle as the loop below: a list is a thing somebody has
+# to remember to add a service to.
+needs_key() {
+  local svc="$1"
+  grep -rqs 'signedurl.FromEnv()' "$root/services/$svc/" && return 0
+  return 1
+}
+
+# A key per service. Refuses rather than falling back to something weaker: a
+# signing key from a source that is not the system's random device is not one.
+signing_key() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -base64 32
+    return
+  fi
+  if [ -r /dev/urandom ]; then
+    head -c 32 /dev/urandom | base64 | tr -d '\n'
+    echo
+    return
+  fi
+  echo "make-secrets: no openssl and no /dev/urandom, so a signing key cannot be" >&2
+  echo "make-secrets: generated. A key from anything weaker is not a key." >&2
+  exit 1
+}
+
 # The services that reference a secret, read from the deployments rather than
 # listed here. A list is a thing somebody has to remember to add a new service
 # to, and forgetting is the failure this script exists to fix.
@@ -99,10 +137,21 @@ metadata:
   namespace: ${namespace}
 type: Opaque
 stringData:
-  # The only credential any service reads. Everything else it needs is in its
+  # The credentials this service reads. Everything else it needs is in its
   # ConfigMap, which is why that one is in git and this one is not.
   DATABASE_URL: "postgres://gavya_app:${encoded}@${host}:${port}/${dbname}?sslmode=${sslmode}"
 EOF
+  if needs_key "$svc"; then
+    cat <<EOF
+  # What signs this service's download links. A browser following an <a href>
+  # sends no Authorization header, so a link carries its own authority: a token
+  # naming the purpose, the tenant, the one resource it may fetch and when it
+  # stops working. Whoever holds this key can mint one for anything.
+  #
+  # Distinct per service, so a compromise of one cannot forge the other's links.
+  DOWNLOAD_SIGNING_KEY: "$(signing_key)"
+EOF
+  fi
 }
 
 if [ "$to_stdout" = "1" ]; then

@@ -4,16 +4,19 @@
  * Field names mirror the Go handlers' json tags exactly, and clients_test.go
  * compares the two on every run of the gate.
  *
- * One of these services promises less than its name suggests, and the types say
- * so where the screens have to act on it: `GetDownloadURLResponse.url` and
- * `ReportDownloadResponse.url` are stored paths rather than URLs, because
- * neither service signs anything and this platform has no object storage.
+ * Two things here used to promise more than they did, and both are now real.
  *
- * Reports used to be the other. `RequestReport` wrote a row with status
- * "pending" and nothing in the platform ever moved it, and `next_run_at` was a
- * column nothing computed. Both are now run by reporting-service's own runner:
- * a report is produced and its bytes come back from `GetReportContent`, and a
- * schedule fires in its own timezone.
+ * `RequestReport` wrote a row with status "pending" and nothing ever moved it;
+ * `next_run_at` was a column nothing computed. reporting-service has a runner
+ * now: a report is produced within seconds and a schedule fires in its own
+ * timezone.
+ *
+ * `GetDownloadURL` and `GetReportDownloadURL` returned a stored path — not a
+ * URL, not signed, not fetchable by anything. Both now return a signed link
+ * with an expiry, which a browser can follow and a person can send to somebody
+ * else. What has not changed is that a link is a bearer credential: it appears
+ * in history, in logs, and in whatever it is pasted into, and the expiry is the
+ * only thing that limits that.
  */
 
 /* ---- tenants ---- */
@@ -482,7 +485,13 @@ export interface GetReportDownloadURLRequest {
 	tenant_id: string;
 }
 
-/** Named url; it is the report's stored file path, unsigned and unresolved. */
+/**
+ * A signed link to a report.
+ *
+ * Absolute when the deployment set a public base, root-relative otherwise —
+ * which the console resolves against the gateway it is already talking to, and
+ * an email client cannot.
+ */
 export interface ReportDownloadResponse {
 	url: string;
 }
@@ -656,9 +665,12 @@ export interface GetDownloadURLRequest {
 }
 
 /**
- * Named url; it is `<bucket>/<stored_name>`, concatenated. Nothing signs it and
- * nothing checks that the object is there. Rendering it as a link would produce
- * a broken one and imply the platform granted access to something.
+ * A signed link to a file.
+ *
+ * Issued only when the object is actually in the store: file-service records
+ * where something else put a file and never receives one itself, so a record
+ * can outlive its object, and a link handed out for one of those would fail
+ * after somebody had emailed it.
  */
 export interface FileDownloadResponse {
 	url: string;

@@ -302,12 +302,12 @@ nothing computed and `is_active` a flag nothing read. **Both runners are now
 built** — see the section below — so this paragraph describes what was found
 rather than what is true.
 
-**`file.v1/GetDownloadURL` returns no URL.** It concatenates the configured
-bucket with the stored name and returns the result. Nothing signs it, nothing
-checks the object is there, and a browser cannot fetch it. The same is true of
-`reporting.v1/GetReportDownloadURL`, which returns `file_path` verbatim. Both are
-rendered as text on a line that says what they are; an anchor would produce a
-broken link and imply the platform had granted access to something.
+**`file.v1/GetDownloadURL` returned no URL.** It concatenated the configured
+bucket with the stored name and returned the result: nothing signed it, nothing
+checked the object was there, and a browser could not fetch it. The same was
+true of `reporting.v1/GetReportDownloadURL`. **Both are signed links now** —
+see the section below — so this paragraph describes what was found rather than
+what is true.
 
 **file-service never sees a file.** Its five procedures are a register of records
 about files something else stored — there is no multipart route and no
@@ -434,13 +434,66 @@ coverage check refused five new writes until each said why it needed no
 before-image; four are machine bookkeeping, and the fifth now writes a trail,
 because a schedule that stops producing its report is noticed weeks later.
 
+## Signed download links
+
+Built. Both procedures now return a link a browser can follow and a person can
+send on.
+
+**Not a presigned S3 URL.** This platform has no object storage, and a presigner
+for a bucket nobody has would be a large amount of code that could not be run.
+The service holding the bytes serves them, and the token is what lets it answer
+a request with no session behind it — which is the whole problem: a browser
+following an `<a href>` sends no Authorization header, and neither does curl or
+whoever the link was forwarded to.
+
+**Three bindings and an expiry**, in `libs/integrity/signedurl`. A token names
+its purpose, its tenant, the one resource it may fetch and when it stops
+working, and the HMAC covers all four. Purpose stops a report link fetching a
+file — which matters most in the modulith, where the two services are one
+process and may share one key. Tenant is the authority the request acts under,
+taken from the verified token and never from a header, because on a request that
+reached the service without a session every header is whatever the caller typed.
+A link lasts fifteen minutes by default and a day at most, and a caller asking
+for longer is refused rather than quietly given less.
+
+**The gateway exempts two exact paths**, not a prefix. A prefix test is one `..`
+away from being wrong — this middleware runs in front of the whole mux in the
+modulith, where it can see a path the router has not cleaned, and
+`/download/../cattle.v1.CattleService/ListCattle` has the prefix and names a
+procedure.
+
+**file-service is the interesting half**, because `stored_name` is the caller's
+word for where something else put a file, and this code turns it into a path it
+opens and streams to a browser. Two defences: the name must be a plain base
+name, and the resolved path must still be inside the store after symlinks are
+followed. The second is the boundary — a plain name is a plain name, and a
+symlink called `invoice.pdf` pointing at `/etc/shadow` passes every check on the
+name. Containment is compared component-wise rather than as a string prefix,
+because `/data` is a prefix of `/database`.
+
+It also only issues a link when the object is really there. A record can outlive
+its object — this service records where something else put a file and never
+receives one — and a link handed out for one of those fails after somebody has
+emailed it, which is the worst moment to find out.
+
+**What a signed link is, and the documentation says so**: a bearer credential in
+a place that gets written down. It appears in browser history, in a proxy's
+access log, and in whatever it is pasted into. Signing stops it being forged or
+widened; it does not stop it being copied, and nothing can. The console says
+this next to every link it shows. There is no revocation short of rotating the
+key, which cancels every link signed with it — the keyring verifies against a
+previous key so a rotation does not break the links already sent.
+
+One property is pinned by reading the source rather than by behaviour: the
+signature comparison is `hmac.Equal`. A test cannot tell that from `==` — both
+refuse the same tokens and return the same errors, and the difference is a
+timing signal — so the check reads the file with its comments stripped, because
+a check searching the whole file would be satisfied by the paragraph explaining
+it.
+
 ## Pending
 
-Signed download URLs. `file.v1/GetDownloadURL` and
-`reporting.v1/GetReportDownloadURL` still answer with a stored path, because
-this platform has no object storage to sign against. Reports are reachable
-anyway, through `GetReportContent`; files registered by file-service are not,
-and that remains true.
+Nothing in the code from this cross-check.
 
 Unchanged: the platform has never been deployed anywhere and has no real users or
 real data, and three things are blocked on somebody outside this repository — one

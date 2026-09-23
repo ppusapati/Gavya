@@ -230,7 +230,43 @@ var unauthenticated = []string{
 	"/gavya.identity.v1.IdentityService/VerifySession",
 }
 
+// signedDownloads are the paths a request may reach with no session.
+//
+// A download link is followed by a browser, by curl, or by whoever it was
+// forwarded to, and none of them sends an Authorization header. So the link
+// carries its own authority: a token naming the purpose, the tenant, the one
+// resource it may fetch and when it stops working, signed by the service that
+// issued it and verified by that service before it does anything.
+//
+// # WHY THIS IS A LIST AND NOT A PREFIX
+//
+// A prefix test is one `..` away from being wrong. This middleware runs in
+// front of the whole mux in the modulith, so it can see a path the router has
+// not cleaned, and `/download/../cattle.v1.CattleService/ListCattle` has the
+// prefix `/download/` while naming a procedure. Exact paths cannot be widened
+// that way, and adding a third download is then a deliberate edit to a list
+// that decides who may skip authentication — which is the right amount of
+// friction for that.
+//
+// # WHAT THIS EXEMPTION IS NOT
+//
+// It is not a hole. The service behind it verifies the signature first and
+// takes the tenant out of the verified token, never from a header: on a request
+// that got here without a session, every header is whatever the caller typed.
+// strip() above has already removed the ones this gateway asserts, so a caller
+// cannot smuggle one through either. The service ignoring them regardless is
+// the second half of that, and both halves are deliberate.
+var signedDownloads = []string{
+	"/download/report",
+	"/download/file",
+}
+
 func isUnauthenticated(path string) bool {
+	for _, p := range signedDownloads {
+		if path == p {
+			return true
+		}
+	}
 	for _, p := range unauthenticated {
 		if path == p {
 			return true

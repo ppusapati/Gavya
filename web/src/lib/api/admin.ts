@@ -8,12 +8,9 @@ import * as T from './types';
  * Five services that had no client. A sub-facade rather than more methods on
  * Gavya, for the reason HerdApi gives.
  *
- * Two things here are deliberately awkward, because the services are.
+ * One thing here is deliberately awkward, because the service is:
  * `updateTenant` demands every field, because the handler writes a whole record
- * and an omitted field is a cleared one. `fileDownloadPath` and
- * `reportDownloadPath` are named for what they return — a stored path — rather
- * than for the procedures that return it, which are named GetDownloadURL and
- * answer with no URL; `reportContent` is what actually hands a report over.
+ * and an omitted field is a cleared one.
  */
 export class AdminApi {
 	readonly #client: ApiClient;
@@ -297,10 +294,15 @@ export class AdminApi {
 		);
 	}
 
-	/** The report's stored file path. The procedure is called GetReportDownloadURL
-	 * and returns the path verbatim; nothing signs it and nothing resolves it.
-	 * reportContent below is what actually hands the report over. */
-	reportDownloadPath(id: string, extra?: Partial<CallOptions>) {
+	/**
+	 * A signed link to a report, which a person can follow or send on.
+	 *
+	 * The link carries its own authority and an expiry, because a browser
+	 * following an <a href> sends no Authorization header and neither does
+	 * whoever it was forwarded to. reportContent below is the other way in:
+	 * the bytes through the authenticated channel, for showing in the page.
+	 */
+	reportDownloadLink(id: string, extra?: Partial<CallOptions>) {
 		return this.#client.call<T.GetReportDownloadURLRequest, T.ReportDownloadResponse>(
 			`${T.REPORTING}/GetReportDownloadURL`,
 			{ id, tenant_id: this.#tenantId },
@@ -412,8 +414,13 @@ export class AdminApi {
 		);
 	}
 
-	/** `<bucket>/<stored_name>`, concatenated. Not a URL and not signed. */
-	fileDownloadPath(id: string, extra?: Partial<CallOptions>) {
+	/**
+	 * A signed link to a file.
+	 *
+	 * Refused when the store does not hold the object, rather than handing out
+	 * a link that fails after somebody has emailed it.
+	 */
+	fileDownloadLink(id: string, extra?: Partial<CallOptions>) {
 		return this.#client.call<T.GetDownloadURLRequest, T.FileDownloadResponse>(
 			`${T.FILE}/GetDownloadURL`,
 			{ id, tenant_id: this.#tenantId },

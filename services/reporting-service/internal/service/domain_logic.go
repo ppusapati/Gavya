@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ppusapati/gavya/libs/integrity/signedurl"
+
 	"github.com/ppusapati/gavya/services/reporting-service/internal/cron"
 	"github.com/ppusapati/gavya/services/reporting-service/internal/domain"
 	"github.com/ppusapati/gavya/services/reporting-service/internal/report"
@@ -94,14 +96,59 @@ func (s *Service) GetReportDownloadURL(ctx context.Context, id, tenantID string)
 	if err != nil {
 		return "", err
 	}
-	if rep.FilePath == "" {
-		// Still the honest answer, and now a rarer one: a completed report has
-		// a locator. What comes back is that locator and not a URL — this
-		// procedure has never had one to give, and GetReportContent is what
-		// actually hands the report over.
-		return "", invalid("report file not yet available; this report is " + rep.Status)
+	if rep.Status != "completed" {
+		return "", invalid("this report is " + rep.Status + " and there is nothing to download yet")
 	}
-	return rep.FilePath, nil
+	if s.keys == nil {
+		// No link can be signed, and one handed out unsigned would be a link
+		// that fetches nothing. Named, so somebody reading this knows what to
+		// set rather than that downloads are simply broken.
+		return "", invalid("this deployment has no DOWNLOAD_SIGNING_KEY set, so it cannot " +
+			"issue a download link; GetReportContent still returns the report itself")
+	}
+
+	lifetime := s.linkFor
+	if lifetime <= 0 {
+		lifetime = signedurl.DefaultLifetime
+	}
+	now := s.now()
+	token, err := s.keys.Sign(signedurl.Grant{
+		Purpose:  handlerPurpose,
+		TenantID: tenantID,
+		Resource: rep.ID,
+		Expires:  now.Add(lifetime),
+	}, now)
+	if err != nil {
+		return "", err
+	}
+	return signedurl.Link(s.linkBase, downloadPath, token), nil
+}
+
+// The path and purpose a report link carries.
+//
+// Duplicated from the handler package rather than imported, because the handler
+// imports this one and Go will not have it both ways. Held to the handler's by
+// a test there, so the two cannot drift into a link that points at a route
+// nothing serves.
+const (
+	downloadPath   = "/download/report"
+	handlerPurpose = "report"
+)
+
+// DownloadReport is what the signed-link route serves.
+//
+// Separate from ReportContent because the two are reached differently and it is
+// worth being able to see which is which: this one is reached by a link with no
+// session behind it, and the tenant it is given came out of a verified token.
+func (s *Service) DownloadReport(ctx context.Context, id, tenantID string) (*domain.Report, error) {
+	rep, err := s.repo.ReportContent(ctx, id, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if rep.Status != "completed" || len(rep.Content) == 0 {
+		return nil, invalid("this report has produced nothing")
+	}
+	return rep, nil
 }
 
 // CreateSchedule writes a schedule the runner can actually fire.

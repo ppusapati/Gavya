@@ -156,6 +156,30 @@
 	 */
 	let downloading = $state<string | undefined>(undefined);
 
+	/**
+	 * Copying a link.
+	 *
+	 * The clipboard needs a secure context and permission, and refuses in a
+	 * plain-http development setup — so the link is printed on the page as
+	 * well, and a failure to copy says so rather than appearing to work.
+	 */
+	let copied = $state<string | undefined>(undefined);
+
+	async function copy(text: string) {
+		try {
+			await navigator.clipboard.writeText(text);
+			copied = text;
+			setTimeout(() => (copied = undefined), 2000);
+		} catch {
+			saveError = new ApiError(
+				'unknown',
+				'This browser would not let the page use the clipboard. The link is printed below; select it and copy it.',
+				0,
+				''
+			);
+		}
+	}
+
 	async function download(id: string) {
 		if (downloading) return;
 		downloading = id;
@@ -378,29 +402,35 @@
 												<button
 													class="ghost"
 													disabled={stored.pending}
-													onclick={() => stored.run((s) => settings.api().admin.reportDownloadPath(r.id, { signal: s }))}
+													onclick={() => stored.run((s) => settings.api().admin.reportDownloadLink(r.id, { signal: s }))}
 												>
-													Ask where it is stored
+													Get a link to send
 												</button>
 											</div>
 											{#if stored.settled}
-												<Await task={stored} isEmpty={(p) => !p.url} empty="No path.">
+												<Await task={stored} isEmpty={(p) => !p.url} empty="No link.">
 													{#snippet children(p)}
 														<!--
-															Shown as text, never as a link.
+															A real link now, so it is shown as one.
 
-															GetReportDownloadURL is the older procedure and returns a
-															locator, not a URL — this platform has no object storage and
-															never had one to give. An anchor here would produce a broken
-															link and imply the platform had granted access to something.
-															Download above is what actually hands the report over.
+															It carries its own authority rather than a session, which is
+															what lets a browser follow it and what lets somebody send it
+															on. That is also why the warning below is not decoration: a
+															link is a bearer credential, and anybody who has it can
+															fetch this report until it expires.
 														-->
 														<p class="banner">
-															<Chip tone="neutral">stored at</Chip>
-															<span class="mono">{p.url}</span>
+															<a href={p.url} rel="noreferrer">Open the report</a>
+															<button class="linklike" onclick={() => copy(p.url)}>
+																{copied === p.url ? 'Copied' : 'Copy the link'}
+															</button>
 														</p>
-														<p class="muted note">
-															Where the bytes are, not a link. Use Download to fetch them.
+														<p class="mono link">{p.url}</p>
+														<p class="warn">
+															Anybody holding this link can read the report until it
+															expires — it needs no password and it is not tied to whoever
+															you send it to. It appears in browser history and in the logs
+															of anything it passes through.
 														</p>
 													{/snippet}
 												</Await>
@@ -557,4 +587,14 @@
 	.banner { display: flex; gap: 0.6rem; align-items: baseline; flex-wrap: wrap; max-width: var(--measure); margin: 0.6rem 0; font-size: 0.85rem; }
 	.warn { max-width: var(--measure); margin: 0.6rem 0 0; font-size: 0.82rem; color: var(--bad, #b3261e); }
 	.pre { white-space: pre-wrap; word-break: break-word; }
+	.link { word-break: break-all; font-size: 0.75rem; max-width: var(--measure); }
+	.linklike {
+		background: none;
+		border: 0;
+		padding: 0;
+		color: inherit;
+		font: inherit;
+		cursor: pointer;
+		text-decoration: underline;
+	}
 </style>

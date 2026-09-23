@@ -10,10 +10,13 @@ package app
 import (
 	"context"
 	"fmt"
+	"net/http"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ppusapati/gavya/libs/integrity/serve"
+	"github.com/ppusapati/gavya/libs/integrity/signedurl"
+	"github.com/ppusapati/gavya/libs/integrity/sys"
 	"github.com/ppusapati/gavya/libs/integrity/tenantdb"
 
 	"github.com/ppusapati/gavya/services/file-service/internal/config"
@@ -36,5 +39,31 @@ func Build(ctx context.Context, log *p9log.Helper) (serve.Registrar, *pgxpool.Po
 	}
 	repo := repository.New(pool)
 	svc := service.New(repo, cfg, log)
-	return handler.New(svc), pool, nil
+
+	// Signed download links.
+	//
+	// This service never receives a file: it records where something else put
+	// one. So a link is only issued when the object is actually in the store,
+	// and every check on the path runs again when the link is followed —
+	// a store is a filesystem something else writes to.
+	links := signedurl.FromEnv()
+	if links.Why != "" {
+		log.Infof("download links: %s", links.Why)
+	}
+	svc.WithDownloads(links.Keys, links.Base, links.Lifetime, sys.Clock{})
+
+	h := handler.New(svc)
+	return registrar{h}, pool, nil
+}
+
+// registrar adds the download route beside the procedures.
+//
+// Not part of Register, because the download route is not a procedure, is not
+// behind a session and is not in the permission table. Keeping it visible here
+// is the point.
+type registrar struct{ h *handler.Handler }
+
+func (r registrar) Register(mux *http.ServeMux) {
+	r.h.Register(mux)
+	r.h.RegisterDownload(mux)
 }

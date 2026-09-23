@@ -186,6 +186,18 @@ services:
       STORAGE_PROVIDER: "${STORAGE_PROVIDER:-local}"
       STORAGE_BUCKET: "${STORAGE_BUCKET:-/var/lib/gavya/files}"
 
+      # What signs download links. One key here, because in this shape the two
+      # services that issue them are one process and there is nowhere to keep a
+      # second — which is precisely the arrangement each token's purpose exists
+      # for: a link to a report is refused by the file route and the other way
+      # round, whatever key signed it.
+      #
+      # No default: a key committed to this repository would be one every
+      # deployment shared. Unset, the two procedures that issue links refuse
+      # with the setting named and everything else goes on working.
+      DOWNLOAD_SIGNING_KEY: "${DOWNLOAD_SIGNING_KEY:-}"
+      DOWNLOAD_PUBLIC_BASE_URL: "${DOWNLOAD_PUBLIC_BASE_URL:-}"
+
       # The ML tier, when it is running. Every one of these is advisory: left
       # unset, a reading is still recorded, a window is still reconciled and a
       # divergence is still classified — deterministically, by the Go tier, which

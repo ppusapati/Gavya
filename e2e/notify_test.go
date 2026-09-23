@@ -15,6 +15,8 @@ package e2e
 
 import (
 	"context"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -598,4 +600,156 @@ func TestARequestedReportIsProducedAndHandedOver(t *testing.T) {
 		actingAs(other, "e2e")); err == nil {
 		t.Error("a second tenant read the contents of a report it did not request")
 	}
+}
+
+// A signed link fetches the report, and nothing else does.
+//
+// This is the property the whole arrangement exists for: a browser following an
+// <a href> sends no Authorization header, and neither does curl or whoever the
+// link was forwarded to. So the link carries its own authority — and the same
+// request without a valid one has to get nothing.
+//
+// The link is fetched with a plain HTTP client rather than the Connect one,
+// deliberately. A test that fetched it through the platform's own client would
+// be proving something about the client; what matters is that anything at all
+// can follow it.
+func TestASignedLinkFetchesTheReportAndNothingElseDoes(t *testing.T) {
+	p := startPlatform(t)
+
+	made, err := svcclient.Call[requestReportReq, reportResp](
+		context.Background(), p.reporting(), reportSvc+"/RequestReport",
+		requestReportReq{TenantID: p.tenant, Name: "a fortnight",
+			ReportType: "collections", Parameters: `{"from":"2026-02-01","to":"2026-02-15"}`,
+			FileFormat: "csv", RequestedBy: "e2e", CreatedBy: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("request report: %v", err)
+	}
+	waitForReport(t, p, made.Report.ID, "completed")
+
+	link, err := svcclient.Call[idTenantReq, downloadURLResp](
+		context.Background(), p.reporting(), reportSvc+"/GetReportDownloadURL",
+		idTenantReq{ID: made.Report.ID, TenantID: p.tenant}, p.opts())
+	if err != nil {
+		t.Fatalf("get download link: %v", err)
+	}
+	if !strings.HasPrefix(link.URL, "/download/report?t=") {
+		t.Fatalf("the link is %q; with no public base configured it should be root-relative "+
+			"so a console can resolve it against the gateway it is already talking to", link.URL)
+	}
+
+	base := p.baseURLs["reporting-service"]
+
+	// The link, followed by something that knows nothing about this platform.
+	res, err := http.Get(base + link.URL)
+	if err != nil {
+		t.Fatalf("follow the link: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("following the link gave %d: %s", res.StatusCode, body)
+	}
+
+	// The headers that stop a tenant's own text becoming script on this
+	// platform's origin.
+	if got := res.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options is %q", got)
+	}
+	if got := res.Header.Get("Content-Disposition"); !strings.HasPrefix(got, "attachment;") {
+		t.Errorf("Content-Disposition is %q, which does not force a download", got)
+	}
+	if got := res.Header.Get("Cache-Control"); !strings.Contains(got, "no-store") {
+		t.Errorf("Cache-Control is %q; a link is a bearer credential and a shared cache "+
+			"would serve the answer after the link stopped working", got)
+	}
+
+	body, _ := io.ReadAll(res.Body)
+	if !strings.Contains(string(body), "collected_on") {
+		t.Errorf("the report did not come back:\n%s", body)
+	}
+
+	// And now the other half. Each of these is a way somebody might try to turn
+	// one link into a key to the table, and every one of them has to fail.
+	for _, tc := range []struct {
+		name string
+		url  string
+		want int
+	}{
+		{"no token at all", base + "/download/report", http.StatusForbidden},
+		{"an empty token", base + "/download/report?t=", http.StatusForbidden},
+		{"a token that is not one", base + "/download/report?t=let-me-in", http.StatusForbidden},
+		{"one character changed", base + tamper(link.URL), http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := http.Get(tc.url)
+			if err != nil {
+				t.Fatalf("%v", err)
+			}
+			defer res.Body.Close()
+			body, _ := io.ReadAll(res.Body)
+			if res.StatusCode != tc.want {
+				t.Errorf("gave %d, want %d: %s", res.StatusCode, tc.want, body)
+			}
+			if strings.Contains(string(body), "collected_on") {
+				t.Errorf("a request with %s was served the report", tc.name)
+			}
+		})
+	}
+
+	// A report that has not been produced has no link to give.
+	pendingReport, err := svcclient.Call[requestReportReq, reportResp](
+		context.Background(), p.reporting(), reportSvc+"/RequestReport",
+		requestReportReq{TenantID: p.tenant, Name: "will fail",
+			ReportType: "settlement_summary", Parameters: `{"cycle_id":"CYC_NOT_A_CYCLE"}`,
+			FileFormat: "csv", RequestedBy: "e2e", CreatedBy: "e2e"}, p.opts())
+	if err != nil {
+		t.Fatalf("request a report that cannot be produced: %v", err)
+	}
+	waitForReport(t, p, pendingReport.Report.ID, "failed")
+	if _, err := svcclient.Call[idTenantReq, downloadURLResp](
+		context.Background(), p.reporting(), reportSvc+"/GetReportDownloadURL",
+		idTenantReq{ID: pendingReport.Report.ID, TenantID: p.tenant}, p.opts()); err == nil {
+		t.Error("a link was issued for a report that produced nothing, so following it would " +
+			"fail after somebody had sent it on")
+	}
+}
+
+// tamper changes one character of the token in a link.
+func tamper(link string) string {
+	i := strings.Index(link, "t=")
+	if i < 0 || i+2 >= len(link) {
+		return link
+	}
+	b := []byte(link)
+	// The last character of the token, which is inside the signature.
+	if b[len(b)-1] == 'A' {
+		b[len(b)-1] = 'B'
+	} else {
+		b[len(b)-1] = 'A'
+	}
+	return string(b)
+}
+
+// waitForReport polls until a report reaches a settled state.
+func waitForReport(t *testing.T, p *platform, id, want string) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	var last string
+	for time.Now().Before(deadline) {
+		got, err := svcclient.Call[idTenantReq, reportResp](
+			context.Background(), p.reporting(), reportSvc+"/GetReport",
+			idTenantReq{ID: id, TenantID: p.tenant}, p.opts())
+		if err != nil {
+			t.Fatalf("get report: %v", err)
+		}
+		last = got.Report.Status
+		if last == want {
+			return
+		}
+		if last == "completed" || last == "failed" {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Fatalf("the report ended %q rather than %q", last, want)
 }

@@ -166,6 +166,14 @@ data:
   STORAGE_PROVIDER: local
   STORAGE_BUCKET: /var/lib/gavya/files
 
+  # Where this platform is reached from outside, so a download link can be
+  # absolute. Unset gives a root-relative link, which the console resolves
+  # against the gateway it is already talking to and an email client cannot.
+  #
+  # DOWNLOAD_SIGNING_KEY is not here: it is a credential and belongs in the
+  # Secret, which scripts/make-secrets.sh generates. This ConfigMap is in git.
+  DOWNLOAD_PUBLIC_BASE_URL: ""
+
   # Where spans go. Empty turns tracing off and the platform is complete without
   # it, the same way it is complete without the ML tier.
   GAVYA_TRACE_ENDPOINT: "http://otel-collector:4318"

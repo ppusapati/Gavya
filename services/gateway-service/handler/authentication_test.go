@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -348,6 +349,59 @@ func TestTheRefusalDoesNotSayWhyBeyondNotSignedIn(t *testing.T) {
 	for _, leak := range []string{"expired", "revoked", "no such session"} {
 		if strings.Contains(strings.ToLower(body), leak) {
 			t.Errorf("the refusal says %q: %s", leak, body)
+		}
+	}
+}
+
+// The download exemption cannot be widened into a way past authentication.
+//
+// This is the one place a request may reach this platform with no session, so
+// it is the one place worth being paranoid about. A prefix test would let
+// `/download/../cattle.v1.CattleService/ListCattle` through — it has the
+// prefix and it names a procedure — and this middleware runs in front of the
+// whole mux in the modulith, where it can see a path the router has not
+// cleaned.
+func TestOnlyTheDownloadPathsThemselvesSkipAuthentication(t *testing.T) {
+	for _, exempt := range signedDownloads {
+		if !isUnauthenticated(exempt) {
+			t.Errorf("%s is not exempt, so every signed link to it is refused as not "+
+				"signed in", exempt)
+		}
+	}
+
+	for _, path := range []string{
+		"/download/",
+		"/download",
+		"/download/reports",
+		"/download/report/extra",
+		"/download/../cattle.v1.CattleService/ListCattle",
+		"/download/..%2Fcattle.v1.CattleService/ListCattle",
+		"/download/report/../../settlement.v1.SettlementService/ApprovePayable",
+		"/download/report%00/x",
+		"//download/report",
+		"/Download/report",
+		"/cattle.v1.CattleService/ListCattle",
+	} {
+		if isUnauthenticated(path) {
+			t.Errorf("%q skips authentication; only the exact download paths may", path)
+		}
+	}
+}
+
+// And the exempt paths are the ones the gateway actually routes.
+//
+// A path exempted and not routed is a 404 that looks like a hole in the
+// authentication list; a path routed and not exempted is a signed link refused
+// as not signed in, which is the one thing a signed link exists to avoid.
+func TestEveryExemptDownloadIsRouted(t *testing.T) {
+	src, err := os.ReadFile("connect_handlers.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes := string(src)
+	for _, exempt := range signedDownloads {
+		if !strings.Contains(routes, `"`+exempt+`"`) {
+			t.Errorf("%s skips authentication and the gateway routes it nowhere", exempt)
 		}
 	}
 }

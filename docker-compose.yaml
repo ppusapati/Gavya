@@ -333,6 +333,19 @@ services:
       PROCUREMENT_URL: "http://procurement-service:8103"
       SETTLEMENT_URL: "http://settlement-service:8104"
       SHADOW_SETTLEMENT_URL: "http://shadow-settlement-service:8090"
+      # What signs this service's download links. A browser following an <a href>
+      # sends no Authorization header, so a link carries its own authority.
+      #
+      # Unset here on purpose, and there is no default: a key committed to this
+      # repository would be one every deployment shared and every reader of it
+      # holds. Generate one — `openssl rand -base64 32` — and put it in .env, or
+      # leave it unset and the two procedures that issue links refuse with the
+      # setting named while everything else goes on working.
+      DOWNLOAD_SIGNING_KEY: "${DOWNLOAD_SIGNING_KEY:-}"
+      # Where this platform is reached from outside, so a link can be absolute.
+      # Unset gives a root-relative link, which the console resolves against the
+      # gateway it is already talking to and an email client cannot.
+      DOWNLOAD_PUBLIC_BASE_URL: "${DOWNLOAD_PUBLIC_BASE_URL:-}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -369,6 +382,19 @@ services:
       GAVYA_INSECURE_DATABASE: "plaintext-to-the-database-is-acceptable-here"
       STORAGE_PROVIDER: local
       STORAGE_BUCKET: /data/uploads
+      # What signs this service's download links. A browser following an <a href>
+      # sends no Authorization header, so a link carries its own authority.
+      #
+      # Unset here on purpose, and there is no default: a key committed to this
+      # repository would be one every deployment shared and every reader of it
+      # holds. Generate one — `openssl rand -base64 32` — and put it in .env, or
+      # leave it unset and the procedure that issues links refuses with the
+      # setting named while everything else goes on working.
+      #
+      # Distinct from reporting-service's, so a compromise of one cannot forge
+      # the other's links.
+      DOWNLOAD_SIGNING_KEY: "${FILE_DOWNLOAD_SIGNING_KEY:-}"
+      DOWNLOAD_PUBLIC_BASE_URL: "${DOWNLOAD_PUBLIC_BASE_URL:-}"
     volumes:
       - file_uploads:/data/uploads
     depends_on:

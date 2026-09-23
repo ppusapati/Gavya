@@ -193,7 +193,16 @@ var services = []service{
 		},
 		// Short, so a test that asks for a report does not wait a sweep for it.
 		// A request kicks a sweep anyway; this is what the kick falls back to.
-		env: []string{"REPORT_INTERVAL=500ms", "SCHEDULE_INTERVAL=1s"},
+		//
+		// The signing key is a fixed value because this is a test harness and
+		// the key's only job here is to exist. It is thirty-two bytes, which is
+		// the shortest the platform will use, and it is not a credential for
+		// anything: every service here is a process this test started, on a
+		// port it chose, holding a database it created.
+		env: []string{
+			"REPORT_INTERVAL=500ms", "SCHEDULE_INTERVAL=1s",
+			"DOWNLOAD_SIGNING_KEY=ZTJlLW9ubHktbm90LWEtcmVhbC1zaWduaW5nLWtleSE=",
+		},
 	},
 	{
 		name: "file-service", database: "e2e_file",
@@ -201,9 +210,27 @@ var services = []service{
 		// It refuses to start without somewhere to put a file, which is the
 		// right refusal: a file service that silently accepts uploads and drops
 		// them is worse than one that will not start.
-		env: []string{"STORAGE_PROVIDER=local", "STORAGE_BUCKET=/tmp/gavya-e2e-files"},
+		//
+		// The signing key is a fixed value because this is a test harness and
+		// the key's only job here is to exist. Distinct from reporting's, so
+		// that the two services in this suite are as separate as they are in a
+		// real deployment — a shared key would leave the purpose binding as the
+		// only thing keeping their links apart, and a test should exercise the
+		// arrangement that ships.
+		env: []string{
+			"STORAGE_PROVIDER=local", "STORAGE_BUCKET=" + FileStore,
+			"DOWNLOAD_SIGNING_KEY=ZmlsZS1lMmUtb25seS1ub3QtYS1yZWFsLWtleSEhISE=",
+		},
 	},
 }
+
+// FileStore is where file-service reads objects from in this suite.
+//
+// A test that wants a record with a real file behind it writes the object here
+// first. That is not a detail of the harness: file-service never receives a
+// file, it records where something else put one, so a record with nothing
+// behind it is an ordinary state and the tests have to be able to make both.
+const FileStore = "/tmp/gavya-e2e-files"
 
 // platform is a running set of services, addressed by name.
 type platform struct {

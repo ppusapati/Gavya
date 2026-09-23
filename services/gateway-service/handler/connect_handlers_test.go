@@ -90,15 +90,19 @@ func TestEveryUpstreamRoutesARealProcedurePath(t *testing.T) {
 	}
 
 	// And the other direction: no upstream is left unexercised.
+	//
+	// The procedure routes only. A download route is one whole path carrying a
+	// signed token rather than a package with methods under it, and it is
+	// exercised by TestEveryExemptDownloadIsRouted instead.
 	covered := map[string]bool{}
 	for _, path := range procedures {
-		for _, rt := range h.routes {
+		for _, rt := range h.procedureRoutes() {
 			if strings.HasPrefix(path, rt.prefix) {
 				covered[rt.prefix] = true
 			}
 		}
 	}
-	for _, rt := range h.routes {
+	for _, rt := range h.procedureRoutes() {
 		if !covered[rt.prefix] {
 			t.Errorf("the gateway routes %s and no procedure here exercises it, so nothing "+
 				"proves a caller can reach that service", rt.prefix)
@@ -319,10 +323,14 @@ func TestEveryRoutedUpstreamHasAPort(t *testing.T) {
 	}
 	// Counted against the port table rather than a number written here, so
 	// adding a service updates both sides at once or neither.
-	if len(h.routes) != len(ports.All)-1 {
+	//
+	// The procedure routes only: a download route points at a service that is
+	// already routed by its package, so counting both would report that service
+	// twice and this check would want a port that does not exist.
+	if got := len(h.procedureRoutes()); got != len(ports.All)-1 {
 		t.Errorf("%d upstreams are routed and %d services have ports (the gateway itself is "+
 			"not an upstream); a service with a port and no route is unreachable, and a route "+
-			"with no port dials nothing", len(h.routes), len(ports.All))
+			"with no port dials nothing", got, len(ports.All))
 	}
 }
 
