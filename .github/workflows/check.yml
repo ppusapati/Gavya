@@ -14,46 +14,49 @@
 # stops calling that script.
 #
 # ---------------------------------------------------------------------------
-# THIS WORKFLOW HAS NEVER RUN, AND THE REASON IS NOT IN THIS FILE
+# WHY THE FIRST THIRTY-TWO RUNS OF THIS WORKFLOW EXECUTED NOTHING
 # ---------------------------------------------------------------------------
 #
-# Every run since the first one on 14 September 2026 has failed within a few
-# seconds. Not one of them has executed a step. What the API says about them:
+# Kept because it took a day to establish and would take another day to
+# establish again, and because the same symptom has an entirely different cause
+# now that this repository is public.
+#
+# Every run from the first on 14 September 2026 to run 32 on 23 September failed
+# within a few seconds, and not one executed a step. What the API said:
 #
 #   runner_id: 0, runner_name: "", runner_group_id: 0, runner_group_name: ""
-#   job logs: HTTP 404 — there are none
+#   job logs: HTTP 404 — there were none
 #   check run output: empty
 #   billable time: total_ms 0, on every job of every run
 #
-# Zero billable milliseconds is the decisive one. The jobs were created, marked
+# Zero billable milliseconds was the decisive one. The jobs were created, marked
 # started and failed without a runner ever being assigned, so nothing ran and
-# nothing was charged. No edit to this file changes that: the YAML is valid —
-# an invalid one would be a startup_failure and would say so — and ubuntu-24.04
-# is a current GitHub-hosted label.
+# nothing was charged. No edit to this file would have changed it: the YAML is
+# valid — an invalid one is a startup_failure and says so — and ubuntu-24.04 is
+# a current GitHub-hosted label.
 #
-# This repository is private, on a personal account. Private repositories bill
+# The repository was private, on a personal account. Private repositories bill
 # Actions minutes against the account's allowance, and when that allowance is
 # spent with no spending limit raised, or a payment method has failed, GitHub
 # does exactly this: it accepts the workflow, creates the jobs, and refuses to
 # give them a machine.
 #
-# It is fixed in one of three places, all outside this repository, and which one
-# is a decision rather than a lookup:
+# It was made public on 24 September 2026, which is the one remedy that costs
+# nothing: public repositories get GitHub-hosted runners at no charge and no
+# limit. The others were a spending limit, a payment method, or a self-hosted
+# runner. The price paid instead is that a co-operative's source, its schemas
+# and its deployment manifests are now readable by anyone — no credential,
+# because none is committed, but the whole shape of the platform.
 #
-#   - Billing and plans → Spending limit, on the account. Raising it past zero
-#     lets private-repository minutes be billed.
-#   - Billing and plans → Payment information, if a card has been declined.
-#   - Making this repository public. Public repositories get GitHub-hosted
-#     runners at no charge and no limit. It is the only free answer and it puts
-#     a co-operative's source, its schemas and its deployment manifests where
-#     anybody can read them — no credential, because none is committed, but the
-#     whole shape of the platform.
+# So the runs from here on are the first that can reach a machine, and they are
+# the first time scripts/check-all.sh and the thirty Docker builds have run
+# anywhere but a developer's container. Expect the first ones to find things.
+# Every "gate green" before this date means the script passed where the change
+# was written, which is a weaker claim than a green tick.
 #
-# A self-hosted runner is the fourth answer and needs a machine to run it on.
-#
-# Until one of those happens, scripts/check-all.sh is the gate and a person runs
-# it. That is the arrangement this workflow was written to replace, and saying
-# so here is better than a green tick that means nobody looked.
+# If jobs ever fail in seconds with total_ms 0 again, this is no longer the
+# explanation — a public repository is not billed. Look at concurrency limits
+# or a repository-level Actions setting instead.
 name: check
 
 on:
