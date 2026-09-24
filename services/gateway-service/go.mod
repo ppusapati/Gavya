@@ -1,6 +1,6 @@
 module github.com/ppusapati/gavya/services/gateway-service
 
-go 1.26.1
+go 1.26.6
 
 require (
 	golang.org/x/net v0.40.0

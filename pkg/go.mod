@@ -1,6 +1,6 @@
 module p9e.in/samavaya/packages
 
-go 1.26.1
+go 1.26.6
 
 require (
 	github.com/fatih/color v1.18.0

@@ -1,6 +1,6 @@
 module github.com/ppusapati/gavya/services/settlement-service
 
-go 1.26.1
+go 1.26.6
 
 require (
 	connectrpc.com/connect v1.19.1

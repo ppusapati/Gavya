@@ -1,6 +1,6 @@
 module github.com/ppusapati/gavya/services/identity-service
 
-go 1.26.1
+go 1.26.6
 
 replace p9e.in/samavaya/packages => ../../pkg
 
