@@ -186,6 +186,23 @@ jobs:
 
       - uses: subosito/flutter-action@v2
         with:
+          # Pinned, where the Rust toolchain beside it floats on stable.
+          #
+          # Not an inconsistency worth removing: the two are different bets. A
+          # Rust release that broke this workspace would break it in clippy or
+          # the compiler, loudly, on the next push. Flutter carries the Dart
+          # SDK, the analyzer, the lint set in flutter_lints and the widget test
+          # framework, and a minor release moves all four — a new lint alone
+          # turns a clean analyze into a failed build with no change in this
+          # repository, and analyze exits non-zero on an `info`, as the doc
+          # comment in connect.dart demonstrated.
+          #
+          # 3.47.5 is the version the bench was actually run against when the
+          # analyzer and the seventy tests were executed for the first time:
+          # analyze clean, 71 tests passing. Pinning it means the build that
+          # passes is the build somebody checked, and moving it is a commit
+          # with a run behind it rather than a morning's surprise.
+          flutter-version: 3.47.5
           channel: stable
           cache: true
 
@@ -196,7 +213,14 @@ jobs:
         # which is the thing `cargo --offline` and `npm ci` are both arranged to
         # avoid — a build that reaches the network mid-run fails for reasons
         # that have nothing to do with the change.
-        run: flutter pub get --directory mobile
+        #
+        # The version is printed because nothing else records it. Working out
+        # which Flutter a past run used meant reading an archive that does not
+        # keep per-step logs, and the answer to "what was this built with"
+        # should be in the build's own output rather than inferred.
+        run: |
+          flutter --version
+          flutter pub get --directory mobile
 
       - uses: dtolnay/rust-toolchain@stable
         with:
