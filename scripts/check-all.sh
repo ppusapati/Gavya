@@ -100,8 +100,33 @@ step "vet e2e (build-tagged)" bash -c "cd '$ROOT/e2e' && go vet -tags e2e ./..."
 # did not run. npm ci is not run here — an install is not the gate's job, and a
 # gate that reaches the network mid-run fails for reasons that have nothing to
 # do with the change.
+#
+# GAVYA_REQUIRE_WEB_CHECK turns that skip into a refusal, and CI sets it.
+# Skipping by name is honest on a laptop, where somebody may not have installed
+# the console's dependencies and should not be stopped from running the Go
+# checks. It is not honest under a green tick: CI ran for the first time on 24
+# September 2026 and reported "all checks passed" without ever typechecking the
+# console, because no step installed node_modules and the skip above said so to
+# a log nobody reads. Every screen for twenty-eight services lives there, and
+# exact.Fixed crosses the wire as a string — a field read as a number is exactly
+# what svelte-check catches and nothing else does.
+#
+# So the requirement is declared here rather than assumed from the environment.
+# A check that is arranged somewhere else and merely hoped for in here is one
+# that goes quiet the day the arrangement is edited, which is the whole failure
+# this variable exists to stop.
 if command -v npm >/dev/null 2>&1 && [ -d "$ROOT/web/node_modules" ]; then
   step "web typecheck" bash -c "cd '$ROOT/web' && npm run --silent check"
+elif [ -n "${GAVYA_REQUIRE_WEB_CHECK:-}" ]; then
+  echo; echo "==> web typecheck"
+  if command -v npm >/dev/null 2>&1; then
+    echo "    FAILED: GAVYA_REQUIRE_WEB_CHECK is set and web/node_modules is absent."
+    echo "    Whatever installs it before the gate did not run. The gate does not"
+    echo "    install: an install mid-run fails for reasons unrelated to the change."
+  else
+    echo "    FAILED: GAVYA_REQUIRE_WEB_CHECK is set and npm is not on PATH."
+  fi
+  fail=1
 elif command -v npm >/dev/null 2>&1; then
   echo; echo "==> web: node_modules is absent, skipping the console's typecheck"
   echo "    run 'npm install' in web/ to include it"
