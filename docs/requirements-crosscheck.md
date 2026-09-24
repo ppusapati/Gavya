@@ -498,7 +498,7 @@ signature and the test only failed when it picked one of them — which it did o
 CI's second run. The decoder is strict now, and the section below has the
 arithmetic.
 
-## Continuous integration, and the four things it found in four runs
+## Continuous integration, and what it found
 
 This section said "continuous integration has never run" until 24 September
 2026. It ran. What follows is kept in two halves — why it did not, because that
@@ -547,8 +547,13 @@ explanation: a public repository is not billed for hosted runners.
 
 ### What it found
 
-Four runs, four findings, none of which a local run had produced in the months
-the gate had been passing locally.
+Runs 33 to 38, on 24 September 2026. None of what follows had been produced by a
+local run in the months the gate had been passing locally.
+
+No count in the heading, deliberately. A heading that says "the four things"
+needs editing the day there is a fifth, and the thing this section is a record
+of is exactly that class of sentence — true when written, wrong later, and
+nothing to notice.
 
 **Run 33 — the gate and the images were fine.** `scripts/check-all.sh` passed on
 a machine that was not the one that wrote the change, first attempt, and all
@@ -601,13 +606,50 @@ stop anybody running the Go checks.
 **Run 36** typechecked the console in CI for the first time — 0 errors, 0
 warnings, about five seconds — and is green.
 
+**Run 38 — a test that asserted the defect it was supposed to guard.** The
+bench's `flutter analyze` and `flutter test` were named in the gate and had
+never executed either, for the same reason: no Dart toolchain, in the gate's
+environment or in the workflow. Seventy tests the repository owned and had never
+run. The analyzer found a doc comment whose angle brackets parse as HTML — one
+line, there since the file was written, and enough to make the analyzer exit 1
+so nothing else it had to say could be heard.
+
+The test suite found a test that was itself wrong. `connect_test.dart` required
+the tenant to travel in an `X-Tenant-ID` header, which is precisely the defect
+that had been found and removed: the bench sent that header and no credential,
+the gateway answered 401 on everything but sign-in, and the bench delivered
+nothing from the day authorisation was added while correctly keeping every
+record in its outbox. Nothing lost, nothing delivered, until somebody
+telephoned.
+
+So the test asserted the broken behaviour and went on asserting it after the
+fix, contradicting the code, the code's own doc comment and the platform. It
+would have sent the next person to put the header back. **An unrun test is not
+neutral.** It is a claim nobody has checked, and it gathers credibility in
+proportion to how long it sits there. It now guards the fix — no tenant in any
+header under any spelling, the session present as a bearer token — verified by
+putting the header back and watching it fail.
+
+Both clients are checked in CI now, each on the same two halves: the workflow
+installs the toolchain, and `GAVYA_REQUIRE_WEB_CHECK` / `GAVYA_REQUIRE_MOBILE_CHECK`
+make the gate refuse to skip rather than go quiet if the install step is ever
+edited away. The bench costs about 78 seconds on a cold cache.
+
 ### What CI still does not cover
 
-The collection bench. `flutter analyze` and `flutter test` have never run
-anywhere: there is no Dart toolchain in the gate's environment and none in the
-workflow. The skip says so out loud, and the only thing standing over the bench
-is `clients_auth_test.go`, which reads its source as text. This is the same
-position the console was in until run 36.
+Not a skipped check: the gate skips nothing in CI now, and both guards fail the
+build if it ever starts to.
+
+What it does not do is run the platform anywhere. The Kubernetes manifests are
+read by Go tests as text and have never been applied to a cluster; the images
+are built and never started; the compose files are parsed and never brought up.
+`docker build` proves a Dockerfile names the files it needs, which is a
+different claim from a container that serves a request, and the end-to-end suite
+drives thirty processes over real HTTP on one machine, which is a different
+claim again from a deployment.
+
+Coverage is also not measured as a percentage, by choice, and the reasoning is
+under NFR3.1.
 
 ## Pending
 
