@@ -222,8 +222,25 @@ jobs:
           flutter --version
           flutter pub get --directory mobile
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.1
         with:
+          # Pinned for the same reason Flutter is: `stable` installs whatever is
+          # newest on the morning of the build, so a release elsewhere can fail
+          # this build with no commit here and nothing to point at.
+          #
+          # 1.98.1 is what CI has been installing and passing on since the first
+          # run that reached a machine, and the full gate passes on it here. The
+          # workspace declares rust-version = "1.82" as its minimum, which this
+          # satisfies with room; the pin is about what the build uses, not what
+          # the crates require.
+          #
+          # clippy is requested and the gate does not run it. That is a gap
+          # rather than a decision — scripts/check-all.sh runs cargo build,
+          # cargo test and the contract test, and nothing lints the Rust tier
+          # the way golangci-lint lints the Go. Left as it was rather than
+          # fixed in a commit about pinning: turning it on is a change with its
+          # own findings, and it should arrive with them rather than hidden
+          # inside this.
           components: clippy
 
       - uses: Swatinem/rust-cache@v2
@@ -235,7 +252,13 @@ jobs:
         # reaches the network mid-run is one that fails for a reason that has
         # nothing to do with the change. Offline needs the registry populated
         # first, which is this step's whole job.
-        run: cargo fetch --manifest-path ml/Cargo.toml
+        #
+        # The version is printed for the same reason Flutter's is: a pin is only
+        # useful if the build says what it used, and working that out after the
+        # fact meant reading an archive that does not keep per-step logs.
+        run: |
+          rustc --version
+          cargo fetch --manifest-path ml/Cargo.toml
 
       - name: Run the gate
         env:
