@@ -162,8 +162,27 @@ jobs:
         # the difference between a gate and most of a gate. Built from source
         # against the workspace's Go version on purpose: the released binaries
         # are built with an older toolchain and refuse a module targeting a newer
-        # one, which is how this first failed.
-        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+        # one, which is how this first failed. `go install` at a version tag
+        # keeps that — it still compiles from source — and only fixes which
+        # source.
+        #
+        # Pinned, and this is the one where a floating version was most likely
+        # to bite. Rust's pin protects a compiler, which changes slowly and
+        # loudly; this is a linter, and a linter's whole job is to start
+        # objecting to code it used to accept. A new release enabling one check
+        # by default turns a green build red with no commit here — golangci-lint
+        # found six real defects the first time it ran on this repository, which
+        # is the same mechanism working in the direction nobody minds.
+        #
+        # v2.14.0 is what @latest resolved to on 24 September 2026 and therefore
+        # what CI had been running; the full gate passes on it here. Worth
+        # saying that this was drift rather than a hypothetical: this container
+        # had 2.5.0, built a year earlier, so every local "the gate passes" in
+        # this session linted with a different tool from the one CI used, and
+        # neither of us knew which.
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
+          golangci-lint --version
 
       - uses: actions/setup-node@v4
         with:
