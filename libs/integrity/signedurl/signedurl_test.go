@@ -61,6 +61,61 @@ func TestATokenRoundTrips(t *testing.T) {
 	}
 }
 
+// Every single character of a token, changed to every other character, is
+// refused — with no run of luck involved.
+//
+// The end-to-end suite already changed the last character of a link and asked
+// for a refusal, and that is how this was found. It is also why it took until
+// the first CI run to find it: a 32-byte signature is 43 base64 characters,
+// 258 bits carrying 256, so the final character has two bits encoding nothing.
+// With the default decoder those two bits are ignored, four final characters
+// decode to the same signature, and the end-to-end test only failed when it
+// happened to pick one of the four — 4 times in 64, and it had won that toss
+// on every run before.
+//
+// A test that finds a defect one run in sixteen is not a guard, so the
+// exhaustive version lives here where it is cheap and deterministic: every
+// position, every replacement, 64 characters wide. It fails on the lenient
+// decoder at the final position and passes on the strict one.
+//
+// The defect was never a way past the signature — all four spellings carry the
+// same signature over the same payload — but it meant one grant had four
+// tokens, and a token that is not canonical cannot be logged, de-duplicated or
+// revoked as one thing.
+func TestNoSingleCharacterChangeIsEverAccepted(t *testing.T) {
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
+	k := ring(t)
+	token, err := k.Sign(grant(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := k.Verify(token, now); err != nil {
+		t.Fatalf("the untouched token does not verify: %v", err)
+	}
+
+	accepted := 0
+	for i := range len(token) {
+		for _, c := range []byte(alphabet) {
+			if token[i] == c {
+				continue
+			}
+			altered := []byte(token)
+			altered[i] = c
+			if _, err := k.Verify(string(altered), now); err == nil {
+				accepted++
+				if accepted <= 5 {
+					t.Errorf("position %d of %d changed from %q to %q and the token "+
+						"was still accepted", i, len(token), token[i], c)
+				}
+			}
+		}
+	}
+	if accepted > 5 {
+		t.Errorf("... and %d more single-character changes were accepted", accepted-5)
+	}
+}
+
 // Changing any part of a token breaks it.
 //
 // This is the property the whole package exists for. Each case alters one

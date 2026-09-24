@@ -342,7 +342,26 @@ func mac(secret []byte, over string) []byte {
 // that some of those mangle.
 func encode(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }
 
+// Strict, so that a token has exactly one spelling.
+//
+// A 32-byte HMAC is 43 base64 characters: 43 sixes is 258 bits carrying 256,
+// so the last character has two bits that encode nothing. The default decoder
+// ignores them, which means four different final characters decode to the same
+// signature and one grant has four spellings. The end-to-end test that changes
+// one character of a link and demands a refusal caught this by landing on one
+// of those four, which it does about one run in sixteen — it had passed on
+// every run before.
+//
+// This is not a way past the signature. All four spellings carry the same
+// signature over the same payload, so whoever holds one already holds a valid
+// link and gains nothing by respelling it. What it costs is canonicality: the
+// token string stops being an identifier for the grant, and anything that keys
+// on it — a log line, a replay cache, a revocation list somebody adds later —
+// sees four different tokens where there is one. Strict decoding refuses the
+// non-zero trailing bits, so there is one spelling and any single character
+// changed anywhere in the token is refused every time rather than 15 times in
+// 16.
 func decode(s string) (string, error) {
-	b, err := base64.RawURLEncoding.DecodeString(s)
+	b, err := base64.RawURLEncoding.Strict().DecodeString(s)
 	return string(b), err
 }
