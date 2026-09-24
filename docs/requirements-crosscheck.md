@@ -491,13 +491,25 @@ timing signal — so the check reads the file with its comments stripped, becaus
 a check searching the whole file would be satisfied by the paragraph explaining
 it.
 
-## Continuous integration has never run
+One thing written here was not yet true when it was written. The end-to-end test
+that changes a character of a link and demands a refusal was passing by luck:
+base64 decoding was not strict, so four spellings of a token decoded to the same
+signature and the test only failed when it picked one of them — which it did on
+CI's second run. The decoder is strict now, and the section below has the
+arithmetic.
 
-Worth writing down, because it is the kind of thing that gets rediscovered.
+## Continuous integration, and the four things it found in four runs
 
-`.github/workflows/check.yml` has been in this repository since 14 September
-2026 and has produced thirty runs. Every one failed within a few seconds and not
-one executed a step. The API is unambiguous about why:
+This section said "continuous integration has never run" until 24 September
+2026. It ran. What follows is kept in two halves — why it did not, because that
+took a day to establish and would take another day to establish again, and what
+it found in the four runs since, because that is the argument for having it.
+
+### Why the first thirty-two runs executed nothing
+
+`.github/workflows/check.yml` had been in this repository since 14 September
+2026 and had produced thirty-two runs. Every one failed within a few seconds and
+not one executed a step. The API was unambiguous about why:
 
 | | |
 |---|---|
@@ -507,42 +519,104 @@ one executed a step. The API is unambiguous about why:
 | check run output | empty |
 | billable time | `total_ms: 0` |
 
-Zero billable milliseconds is the one that settles it. The jobs were created,
+Zero billable milliseconds is the one that settled it. The jobs were created,
 marked started, and failed without a machine ever being assigned. Nothing ran,
 so nothing was charged.
 
-**This is not a defect in the workflow.** The YAML is valid — an invalid one
+**It was never a defect in the workflow.** The YAML was valid — an invalid one
 fails as `startup_failure` and says so — and `ubuntu-24.04` is a current
-GitHub-hosted label. The workflow is also not obviously wrong on any axis that
-could be checked statically, which is as much as anybody can say about a file
-that has never executed.
+GitHub-hosted label.
 
-It is an account-level refusal. This repository is private and on a personal
-account, so its Actions minutes bill against the account's allowance; spent,
+It was an account-level refusal. The repository was private and on a personal
+account, so its Actions minutes billed against that account's allowance; spent,
 with no spending limit raised or a payment method declined, GitHub accepts the
-workflow, creates the jobs, and gives them no runner. The remedy is a spending
-limit, a payment method, making the repository public, or a self-hosted runner
-— a decision rather than a lookup, and the reasoning for each is in the header
-of the workflow file where somebody looking at a red tick will find it.
+workflow, creates the jobs, and gives them no runner. The remedies were a
+spending limit, a payment method, making the repository public, or a self-hosted
+runner.
 
-Two consequences worth stating rather than leaving implied.
+**The repository was made public on 24 September 2026**, which is the one remedy
+that costs nothing. What it costs instead is that this co-operative's source,
+its schemas and its deployment manifests are readable by anyone. No credential
+went with them — the history was scanned across every ref for keys, tokens and
+non-empty password assignments before the switch was thrown, and the only thing
+it turned up was seventeen per-service `docker-compose.yaml` files carrying a
+password for a container that exists nowhere, since deleted.
 
-**The gate's record is a local one.** Every "gate green" in this repository's
-history means the script passed on one machine — the same machine that wrote
-the change. That is a weaker claim than a green tick, and it is the claim being
-made.
+If jobs ever fail in seconds with `total_ms: 0` again, this is no longer the
+explanation: a public repository is not billed for hosted runners.
 
-**No image has ever been built.** The `images` job exists because `go build` in
-the gate stood in for building an image and the two are not the same claim, and
-that job has never run either. `services/modulith/Dockerfile` was found broken
-by reading it rather than by building it. The rest are in the same position:
-read, and not run.
+### What it found
+
+Four runs, four findings, none of which a local run had produced in the months
+the gate had been passing locally.
+
+**Run 33 — the gate and the images were fine.** `scripts/check-all.sh` passed on
+a machine that was not the one that wrote the change, first attempt, and all
+thirty-one images built. Those were the two claims nobody had ever been able to
+make, and they held.
+
+**Run 33 — fifteen reachable standard library advisories.** `govulncheck` had
+never run either. Every one was the Go standard library this workspace pinned at
+1.26.1, reached from real call paths in `server.main`: an auth bypass in
+`crypto/x509` where `excludedSubtrees` name constraints were compared
+case-sensitively, a TLS 1.3 KeyUpdate denial of service reachable by anyone who
+can open a connection, an HTTP/2 transport that loops for ever on a bad
+`SETTINGS_MAX_FRAME_SIZE`, and twelve more. Fixed by moving thirty-seven pins —
+`go.work` and thirty-six `go.mod` files — to 1.26.6, the earliest release that
+clears all fifteen.
+
+**Run 34 — a defect behind a test that fails one run in sixteen.** The
+end-to-end test that changes one character of a signed download link and demands
+a refusal was served the report instead, `200`. It had passed on every run
+before, including one an hour earlier and every local run since the links were
+written. A 32-byte signature is 43 base64 characters — 258 bits carrying 256 —
+so the final character has two bits that encode nothing, and the default decoder
+ignores them: four characters decode to the same signature. Measured over
+200,000 random signatures, 6.21% against the 6.25% the arithmetic gives.
+
+Not a way past the signature — all four spellings carry the same signature over
+the same payload — but it meant one grant had four tokens, and a token that is
+not canonical cannot be logged, de-duplicated or revoked as one thing. Decoding
+is now strict. The exhaustive check lives in the unit tests, where it is
+deterministic: every position of the token against all 64 replacements. A check
+that catches a defect one run in sixteen is one that reports success while doing
+nothing the other fifteen.
+
+**Run 35 — green, and not checking the console.** The first fully green run
+reported `all checks passed` having never compiled a line of `web/`. The gate
+typechecks the console when `web/node_modules` is present and skips it by name
+when it is not; nothing in the workflow installed it, so every run skipped it
+and said so to a log nobody reads. Every screen for twenty-eight services lives
+there, and `exact.Fixed` crosses the wire as a string rather than a number.
+
+Fixed in two halves, because either alone leaves the hole open: the workflow
+installs (`setup-node`, then `npm ci --prefix web`), and the gate refuses to skip
+when `GAVYA_REQUIRE_WEB_CHECK` is set, which the workflow sets. The install step
+alone would have worked until somebody edited it away, and then the tick would
+have gone back to green without the console being checked — the same silence,
+reintroduced, with nothing to notice it. Skipping by name remains the behaviour
+on a laptop, where not having installed the console's dependencies should not
+stop anybody running the Go checks.
+
+**Run 36** typechecked the console in CI for the first time — 0 errors, 0
+warnings, about five seconds — and is green.
+
+### What CI still does not cover
+
+The collection bench. `flutter analyze` and `flutter test` have never run
+anywhere: there is no Dart toolchain in the gate's environment and none in the
+workflow. The skip says so out loud, and the only thing standing over the bench
+is `clients_auth_test.go`, which reads its source as text. This is the same
+position the console was in until run 36.
 
 ## Pending
 
 Nothing in the code from this cross-check.
 
-Unchanged: the platform has never been deployed anywhere and has no real users or
-real data, and four things are blocked on somebody outside this repository — an
-Actions allowance this account will spend, one real AMCU export file, one
-analyser bench capture, and twenty conversations with people who would buy it.
+The platform has never been deployed anywhere and has no real users or real
+data. Three things are blocked on somebody outside this repository: one real
+AMCU export file, one analyser bench capture, and twenty conversations with
+people who would buy it.
+
+The fourth — an Actions allowance this account will spend — is resolved, by
+making the repository public rather than by paying for it.
