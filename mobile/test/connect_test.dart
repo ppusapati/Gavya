@@ -31,12 +31,51 @@ void main() {
     expect(seen.toString(), 'http://gateway.test/ingestion.v1.IngestionService/RegisterDevice');
   });
 
-  test('the tenant travels in the header the gateway forwards', () async {
+  // This test used to require the opposite, and had never run.
+  //
+  // It asserted that the tenant travels in an X-Tenant-ID header — which is
+  // precisely the defect that was found and removed. The bench sent that header
+  // and no credential at all, the gateway answered 401 on everything but
+  // sign-in, and nothing was delivered from the day authorisation was added.
+  // The fix was to carry authority in the session and the tenant in the body;
+  // ConnectClient says so in its own doc comment.
+  //
+  // So the test contradicted the code, the code's comment and the platform, and
+  // nothing said so, because there is no Dart toolchain in the gate and this
+  // file had never been executed. An unrun test is not neutral: it is a claim
+  // nobody has checked, and this one would have sent the next person to put the
+  // header back.
+  //
+  // What it guards now is the fix. The tenant must not appear in any header
+  // under any spelling, and the session must.
+  test('the tenant is not in a header, and the session is', () async {
+    Map<String, String>? headers;
+    final client = clientReturning(200, {}, inspect: (r) => headers = r.headers);
+    client.session = 'sess-1';
+    await client.call('svc/Method', {});
+
+    final tenantish = (headers ?? {})
+        .entries
+        .where((e) =>
+            e.key.toLowerCase().contains('tenant') ||
+            e.value.contains('tenant-1'))
+        .toList();
+    expect(tenantish, isEmpty,
+        reason: 'the gateway asserts the tenant from the session and strips any '
+            'arriving claim, so a tenant header is ignored at best and '
+            'misleading at worst');
+
+    expect(headers?['Authorization'], 'Bearer sess-1');
+  });
+
+  test('before sign-in there is no credential to send', () async {
     Map<String, String>? headers;
     final client = clientReturning(200, {}, inspect: (r) => headers = r.headers);
     await client.call('svc/Method', {});
 
-    expect(headers?['X-Tenant-ID'], 'tenant-1');
+    expect(headers?.containsKey('Authorization'), isFalse,
+        reason: 'an empty bearer token is a credential the gateway has to '
+            'refuse; sending none says the bench has not signed in');
   });
 
   test("the service's own code beats anything inferred from the status", () async {

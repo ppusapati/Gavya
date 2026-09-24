@@ -137,7 +137,7 @@ class ApiException implements Exception {
 /// The identity service, which is where a session comes from.
 ///
 /// Its package carries an extra segment — gavya.identity.v1, where every other
-/// service is <name>.v1 — and that is worth knowing rather than worth changing:
+/// service is `<name>.v1` — and that is worth knowing rather than worth changing:
 /// the comparison in gateway-service/handler/clients_test.go could not see a
 /// package of that shape until it was widened for this.
 const identityService = 'gavya.identity.v1.IdentityService';

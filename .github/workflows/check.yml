@@ -184,6 +184,20 @@ jobs:
         # chose.
         run: npm ci --prefix web
 
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Resolve the bench's dependencies
+        # Same split as the console: the workflow provisions, the gate checks.
+        # flutter analyze and flutter test would resolve this themselves on
+        # first use, but that puts a network fetch in the middle of the gate,
+        # which is the thing `cargo --offline` and `npm ci` are both arranged to
+        # avoid — a build that reaches the network mid-run fails for reasons
+        # that have nothing to do with the change.
+        run: flutter pub get --directory mobile
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -210,6 +224,10 @@ jobs:
           # skip a failure, so deleting the install step above fails the build
           # rather than quietly going back to not checking the console.
           GAVYA_REQUIRE_WEB_CHECK: '1'
+          # And the same for the bench, for the same reason: both clients skip
+          # themselves when their toolchain is absent, which is right on a
+          # laptop and wrong under a tick.
+          GAVYA_REQUIRE_MOBILE_CHECK: '1'
         run: bash scripts/check-all.sh
 
   vulnerabilities:

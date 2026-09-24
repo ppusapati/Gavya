@@ -134,16 +134,37 @@ else
   echo; echo "==> web: npm not found, skipping the console's typecheck"
 fi
 
-# The collection bench is not checked here at all.
+# The collection bench, on the same terms as the console.
 #
-# flutter analyze and flutter test exist and have never run in this
-# environment, because there is no Dart toolchain in it. Said out loud rather
-# than left as an absence: the bench carries the same class of defect the
-# console did, and the only thing standing over it is clients_auth_test.go,
-# which reads its source as text.
+# These two lines existed for a long time and never ran: there was no Dart
+# toolchain in the gate's environment and none in CI, so the bench's seventy
+# tests and its analyzer were a thing the repository owned and had never once
+# executed. What that cost, the first time they were run:
+#
+#   - flutter analyze failed on a doc comment whose angle brackets parse as
+#     HTML. Small, and it had been there since the file was written.
+#   - one test failed, and it was the test that was wrong. It required the
+#     tenant to travel in an X-Tenant-ID header — the exact defect that was
+#     found and removed, where the bench sent that header and no credential and
+#     the gateway answered 401 on everything but sign-in. The test contradicted
+#     the code, the code's own comment and the platform, and would have sent
+#     the next person to put the header back.
+#
+# An unrun test is not a neutral thing. It is a claim nobody has checked, and
+# it accumulates confidence in proportion to how long it sits there.
+#
+# GAVYA_REQUIRE_MOBILE_CHECK makes the skip a refusal, the way
+# GAVYA_REQUIRE_WEB_CHECK does for the console, and CI sets both. Skipping by
+# name stays right on a laptop: a Dart toolchain is a gigabyte, and not having
+# one should not stop anybody running the Go checks.
 if command -v flutter >/dev/null 2>&1; then
   step "mobile analyze" bash -c "cd '$ROOT/mobile' && flutter analyze"
   step "mobile test" bash -c "cd '$ROOT/mobile' && flutter test"
+elif [ -n "${GAVYA_REQUIRE_MOBILE_CHECK:-}" ]; then
+  echo; echo "==> mobile analyze"
+  echo "    FAILED: GAVYA_REQUIRE_MOBILE_CHECK is set and flutter is not on PATH."
+  echo "    Whatever installs the Dart toolchain before the gate did not run."
+  fail=1
 else
   echo; echo "==> mobile: flutter not found, skipping the bench's analyze and tests"
 fi
